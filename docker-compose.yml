@@ -1,0 +1,43 @@
+# Image taken from what's already on this machine (Docker Desktop log shows
+# pgvector/pgvector:0.8.1-pg18-trixie in heavy use).
+services:
+  graphdb:
+    image: pgvector/pgvector:0.8.1-pg18-trixie
+    container_name: chunkgraph-pg
+    environment:
+      POSTGRES_USER: graph
+      POSTGRES_PASSWORD: graph
+      POSTGRES_DB: graph
+    ports:
+      # 5432 on this host is already taken by the langchain_postgres container
+      # (same image). Host 5433 -> container 5432.
+      - "5433:5432"
+    volumes:
+      # PG18+ images store data in a major-version subdirectory; the mount
+      # must sit at /var/lib/postgresql, NOT /var/lib/postgresql/data.
+      - graphdata:/var/lib/postgresql
+      # EVERY *.sql here runs once, alphabetically, on an empty data dir.
+      # Keep this dir migrations-only -- the query cookbook lives in
+      # ./cookbook so psql placeholders never execute at init.
+      - ./sql:/docker-entrypoint-initdb.d:ro
+    # Louvain-sized sorts and HNSW builds want room; default 64MB shm is tight.
+    shm_size: "1gb"
+    command:
+      - postgres
+      - -c
+      - maintenance_work_mem=1GB      # HNSW build
+      - -c
+      - work_mem=64MB                 # recursive CTE hash joins
+      - -c
+      - max_parallel_maintenance_workers=4
+      - -c
+      - jit=off                       # short analytic queries; JIT is a net loss
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U graph -d graph"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+volumes:
+  graphdata:
