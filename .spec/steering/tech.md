@@ -35,9 +35,21 @@ These are paid-for. Violating them has already cost time.
    `src`/`dst` are real indexed integer columns — that is what makes k-hop
    expansion an index scan instead of full-table GIN work. A "tidy-up" that
    moves a traversal key into jsonb is a regression.
-4. **Embedding dimension is immutable after first ingest.** `pg_store.py` stamps
-   it from `model_dir`; `ALTER COLUMN embedding vector(d)` against existing rows
-   is a hazard. Changing models means a new run, not a migration. Pinned by test.
+4. **Retune the model, regenerate the run — never migrate the vectors.**
+   `pg_store.py` stamps `embed_dim` from the model that produced `cg.E`, and
+   `ALTER COLUMN embedding TYPE vector(d)` runs only while the column is still
+   unconstrained. That stamp is legitimate; it is how the column earns an HNSW
+   index. The hazard is the *other* direction: re-widening a column that already
+   holds vectors, which fails outright, and — worse — reusing vectors produced by
+   a model you have since retuned or re-distilled. Those are silently
+   incomparable even at identical width. If the model changes at all (different
+   base, different `pca_dims`, different distillation), the run is regenerated
+   from it, not patched.
+
+   The dimension is a property of the **column**, so it is global to a database.
+   Two runs at different widths cannot coexist in one; that is why
+   `tests/test_pg_store.py` provisions its own `graph_test` database rather than
+   sharing the dev one. Pinned by test.
 5. **No materialized n×n dense product** (R10) — thresholding happens inside the
    block loop. A dense product exhausts memory at ~18k chunks.
 6. **Louvain membership is never LLM-assigned.** Partition is deterministic;
