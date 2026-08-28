@@ -286,3 +286,56 @@ def test_why_renders_every_hop_and_the_doc_lineage(conn, run):
     for p in r["prov_path"]:
         assert f"--{p}-->" in line
     assert " > ".join(r["doc_path"]) in line
+
+
+# ------------------------------------------------------- term_stats (W8)
+
+
+def test_term_stats_reports_absent_terms_rather_than_dropping_them(conn, run):
+    """W8: a df-0 term is the usual reason a query looks broken. Keep it."""
+    rows = gt.term_stats(conn, run, "jury quokka")
+    terms = {r["term"]: r for r in rows}
+    assert "quokka" in terms, "absent term was silently dropped"
+    assert terms["quokka"]["df"] == 0
+    assert terms["jury"]["df"] > 0
+
+
+def test_term_stats_orders_rarest_first(conn, run):
+    rows = gt.term_stats(conn, run, "jury trial investigation grand")
+    dfs = [r["df"] for r in rows]
+    assert dfs == sorted(dfs), "most discriminating term should read first"
+
+
+def test_term_stats_drops_stopwords_like_search_does(conn, run):
+    assert gt.term_stats(conn, run, "the of and to") == []
+
+
+def test_term_stats_hits_are_confined_to_the_supplied_ords(conn, run):
+    scope = [n["ord"] for n in gt.neighbors(conn, run, HUB, limit=10)]
+    for r in gt.term_stats(conn, run, "jury trial investigation", scope):
+        assert set(r["hits"]) <= set(scope)
+
+
+def test_term_stats_hits_agree_with_the_stored_tf_map(conn, run):
+    scope = [n["ord"] for n in gt.neighbors(conn, run, HUB, limit=25)]
+    rows = gt.term_stats(conn, run, "jury trial investigation report", scope)
+    for r in rows:
+        for o in r["hits"]:
+            assert r["term"] in gt.node(conn, run, o)["tf"], (
+                f"{r['term']} claimed in #{o} but absent from its tf map")
+
+
+def test_term_stats_separates_lexical_from_graph_reached(conn, run):
+    """The whole point: chunks with NO query term came from the graph.
+
+    If every sampled chunk carried a query term, the graph added nothing over
+    plain lexical search and the walk would be decoration.
+    """
+    import sampler
+    b = sampler.evidence(conn, run, "jury trial grand jury investigation")
+    rows = gt.term_stats(conn, run, "jury trial grand jury investigation",
+                         b.sampled)
+    lex = {o for r in rows for o in r["hits"]}
+    graph_only = set(b.sampled) - lex
+    assert lex, "some evidence should be lexically anchored"
+    assert graph_only, "graph contributed nothing beyond lexical hits"

@@ -27,6 +27,7 @@ TOOL SURFACE
 | quotient            | how communities interconnect, corpus-wide    | limit  |
 | subgraph_edges      | induced edges among a visited set (drawing)  | set    |
 | walk                | reach + WHY: prov_path/doc_path per result   | cap    |
+| term_stats          | which query terms exist, and who carries them| terms  |
 
 GUARDS (EARS)
 W1  Every statement SHALL be run-scoped: run_id is the first predicate, so the
@@ -41,6 +42,10 @@ W5  WHERE a run has no dense space (embed_dim NULL or zero embedding rows),
     capability SHALL report sparse-only rather than failing.
 W6  Live rows only: valid_to IS NULL on edges, superseded_at IS NULL on runs
     (the live_run view). Note graph_run has NO valid_to column.
+W8  term_stats() SHALL report a query term the corpus does NOT contain, with
+    df 0, rather than dropping it. A term absent from the run's vocabulary is
+    the single most common reason a retrieval looks wrong, and silently
+    omitting it makes the query look like it asked for less than it did.
 W7  walk() SHALL return, per reached node, the EDGE PROVENANCE and SOURCE DOC of
     every hop that reached it -- not merely the node ids traversed. A route that
     cannot name its own justification is a browser, not an evidence instrument.
@@ -347,6 +352,36 @@ def why(row: dict) -> str:
     for i, prov in enumerate(row["prov_path"]):
         steps.append(f"{row['node_path'][i]} --{prov}--> {row['node_path'][i+1]}")
     return f"{' | '.join(steps)}  [{' > '.join(row['doc_path'])}]"
+
+
+def term_stats(conn, run: RunHandle, query: str,
+               ords: list[int] | None = None) -> list[dict]:
+    """Per query term: corpus df, and which of `ords` carry it (W8).
+
+    Separates the two ways a chunk enters a result set. A chunk carrying query
+    terms was found LEXICALLY. A chunk carrying none was reached through the
+    GRAPH -- by an edge, or by a term it shares with something that did match.
+    Only the second kind is evidence the graph contributed anything.
+
+    Require:  query is raw user text; ords, if given, are live node ordinals.
+    Guarantee: one row per tokenized term, df 0 included, ordered by df ASC so
+              the rarest (most discriminating) term reads first.
+    """
+    terms = tokenize(query)
+    if not terms:
+        return []
+    with conn.cursor() as cur:
+        cur.execute("""
+            WITH q AS (SELECT unnest(%s::text[]) AS term)
+            SELECT q.term,
+                   count(n.ord) AS df,
+                   COALESCE(array_agg(n.ord ORDER BY n.ord)
+                            FILTER (WHERE n.ord = ANY(%s::int[])), '{}') AS hits
+              FROM q LEFT JOIN node n
+                ON n.run_id = %s AND n.attrs -> 'tf' ? q.term
+             GROUP BY q.term ORDER BY df, q.term""",
+            (terms, ords or [], run.run_id))
+        return cur.fetchall()
 
 
 def _decorate(conn, run: RunHandle, rows: list[dict]) -> list[dict]:

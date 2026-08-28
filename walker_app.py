@@ -337,6 +337,33 @@ with tab_find:
                 st.info(f"n >= candidate set, so this enumerated all "
                         f"{b.candidates} rather than sampling.")
 
+            st.markdown("#### Query terms")
+            ts = gt.term_stats(conn, run, fq, b.sampled)
+            lex = {o for t in ts for o in t["hits"]}
+            graph_only = [o for o in b.sampled if o not in lex]
+            n_samp = len(b.sampled)
+            for t in ts:
+                miss = t["df"] == 0
+                dim = ".45" if miss else ".85"
+                tail = (" — not in this corpus" if miss
+                        else " · carried by %d of %d sampled"
+                             % (len(t["hits"]), n_samp))
+                st.markdown(
+                    "<span style='font-family:monospace'>%s</span>"
+                    "<span style='opacity:%s'>df %d%s</span>"
+                    % (t["term"].ljust(16).replace(" ", "&nbsp;"),
+                       dim, t["df"], tail),
+                    unsafe_allow_html=True)
+            g1, g2 = st.columns(2)
+            g1.metric("found lexically", len(lex))
+            g2.metric("reached via the graph", len(graph_only))
+            st.caption(
+                "A term with df 0 is absent from the run's vocabulary and cannot "
+                "retrieve anything — the usual reason a query looks broken. "
+                "Chunks carrying no query term were reached by an edge, not by "
+                "the words: that count is the graph's contribution over plain "
+                "lexical search.")
+
             st.markdown("#### Communities the evidence landed in")
             worst = max(c["hits"] for c in b.communities)
             for c in b.communities:
