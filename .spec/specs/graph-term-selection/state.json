@@ -3,13 +3,15 @@
   "kind": "feature",
   "phase": "requirements",
   "approvals": {
-    "requirements": null,
+    "requirements": "2026-08-28",
     "design": null,
     "tasks": null
   },
   "scope": [
     "chunkgraph.py",
     "salient_grams.py",
+    "pg_store.py",
+    "sql/*.sql",
     "tests/*.py"
   ],
   "created": "2026-08-27T00:00:00Z"
