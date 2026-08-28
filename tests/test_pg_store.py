@@ -97,25 +97,60 @@ class FakeGraph:
 # ---------------------------------------------------------------- fixtures
 
 
+TEST_DB = "graph_test"          # this suite owns a database, not just a label
+
+
 def _dsn() -> str:
-    return pg_store.DSN
+    """The suite's OWN database, not the dev one.
+
+    node_embedding's dimension is stamped on the COLUMN, so it is global to a
+    database. This suite's stub is 8-dim; a real ingest is 256. They cannot
+    coexist -- steering hard constraint 4 from the test side. Label isolation is
+    not enough; the schema itself has to be separate.
+    """
+    return pg_store.DSN.rsplit("/", 1)[0] + "/" + TEST_DB
+
+
+def _provision() -> None:
+    """Create the test database and apply sql/ migrations. Idempotent."""
+    admin = pg_store.DSN
+    with psycopg.connect(admin, autocommit=True) as conn:
+        exists = conn.execute("SELECT 1 FROM pg_database WHERE datname = %s",
+                              (TEST_DB,)).fetchone()
+        if not exists:
+            conn.execute(f'CREATE DATABASE "{TEST_DB}"')
+    ddl = sorted((Path(__file__).resolve().parent.parent / "sql").glob("*.sql"))
+    with psycopg.connect(_dsn(), autocommit=True) as conn:
+        has = conn.execute("SELECT to_regclass('node_embedding')").fetchone()[0]
+        if has is None:
+            for f in ddl:
+                conn.execute(f.read_text(encoding="utf-8"))
 
 
 @pytest.fixture(scope="module")
 def db():
     try:
+        _provision()
         with psycopg.connect(_dsn(), connect_timeout=5) as conn:
             conn.execute("SELECT 1")
     except Exception as exc:                      # pragma: no cover
         pytest.skip(f"no Postgres at {_dsn()}: {exc}")
     yield _dsn()
-    # Teardown: drop our runs and un-pin the embedding column so a later real
-    # (384-dim) ingest into this dev database is not blocked by the stub's dim.
+    # Teardown: drop our runs, then un-pin the embedding column so a later real
+    # ingest into this dev database is not blocked by the stub's dim.
+    #
+    # Un-pinning is ONLY safe once no embedding rows remain. This suite is not
+    # the only writer: a real run (brown-50-dual, 256-dim) leaves rows behind,
+    # and un-pinning over them produces a bare `vector` column holding 256-dim
+    # data -- so the NEXT stamp fails with "expected N dimensions, not 256",
+    # pointing at the stub rather than at this teardown. Steering hard
+    # constraint 4 is the same hazard from the other side.
     with psycopg.connect(_dsn(), autocommit=True) as conn:
         conn.execute("DELETE FROM graph_run WHERE label LIKE %s", (LABEL + "%",))
         conn.execute("DROP INDEX IF EXISTS node_embedding_hnsw")
-        conn.execute("ALTER TABLE node_embedding "
-                     "ALTER COLUMN embedding TYPE vector")
+        if conn.execute("SELECT count(*) FROM node_embedding").fetchone()[0] == 0:
+            conn.execute("ALTER TABLE node_embedding "
+                         "ALTER COLUMN embedding TYPE vector")
 
 
 @pytest.fixture(scope="module")

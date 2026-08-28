@@ -1,0 +1,16 @@
+{
+  "feature": "graph-term-selection",
+  "kind": "feature",
+  "phase": "requirements",
+  "approvals": {
+    "requirements": null,
+    "design": null,
+    "tasks": null
+  },
+  "scope": [
+    "chunkgraph.py",
+    "salient_grams.py",
+    "tests/*.py"
+  ],
+  "created": "2026-08-27T00:00:00Z"
+}

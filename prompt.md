@@ -1,11 +1,25 @@
 # Session Handoff — HANDOFF
-Generated: 2026-08-24 20:46
+Generated: 2026-08-25 15:31
 Mode: handoff
 
 ## Objective
 [not specified]
 
 ## State
+## Uncommitted Changes
+```
+.gitignore             |  5 +++++
+ .spec/steering/tech.md |  1 -
+ prompt.md              | 16 +++++++++++++++-
+ 3 files changed, 20 insertions(+), 2 deletions(-)
+```
+
+## Recent Commits
+```
+53aeb92 spec-init: arm repo for spec-driven development
+954568e Initial commit: chunkgraph ingest, salient-grams vocab, Postgres jsonb graph store
+```
+
 ## Next Steps
 [no explicit next steps — review state above]
 

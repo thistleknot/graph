@@ -25,8 +25,15 @@ R2 IF post-Box-Cox kurtosis > KURT_OK for a space, THEN its edge cut SHALL be
    budget-matched to the other space's edge count instead of k-sigma.
 R3 IF Box-Cox fails (degenerate distribution), THEN blend strength SHALL fall
    back to mean rank across spaces.
-R4 The GIST-walk SHALL accept a threshold only if the greedy fills >= MINK
-   slots (min-cardinality feasibility).
+R4 The GIST-walk SHALL implement Algorithm 1 of Fahrbach et al.
+   (arXiv:2405.18754) as published: classic greedy at d=0, the diameter-pair
+   candidate, then the (1+EPS)^i threshold sweep, returning the argmax of
+   f(S) = g(S) + LAM*div(S). It SHALL NOT gate a threshold on minimum
+   cardinality -- a small maximal independent set at a wide threshold is a
+   legitimate high-diversity solution, and Theorem 3.3's LAM*d* bound is
+   carried by exactly those sets. WHERE seeds (anchors) are supplied, picks
+   SHALL additionally stay >= d from every seed; this is our extension for
+   anchored retrieval, not part of the published algorithm.
 R7 WHEN edges are built, each node SHALL retain its KNN nearest neighbors in
    each space regardless of significance; significance ranks edges, the
    backbone guarantees connectivity (a k-sigma cut alone leaves isolates).
@@ -44,6 +51,20 @@ R12 WHERE vocab is supplied, the CSR SHALL be built over those terms only.
    Callers pass a selected vocabulary (e.g. salient_grams.select_vocab_unified
    -> result['terms']); idf and qterms are recomputed over the restriction so
    scoring stays internally consistent.
+R13 WHEN the graph is drawn, the layout SHALL take the partition as INPUT --
+   community meta-graph for blob centres, then each community's induced
+   subgraph -- rather than relying on one global force simulation to
+   rediscover it. Measured on a planted partition matched to the live graph's
+   density (~3.4 mean degree, ~80% intra), single-pass spring_layout misplaces
+   39% of nodes at k=0.9 and 58% at the networkx default; two-pass misplaces
+   0%. Lowering k makes it WORSE, so this is architectural, not a parameter.
+   Pinned by tests/test_render_graph.py::TestCommunityLayout.
+R14 WHERE model_dir holds a model2vec artifact, default_embed_fn SHALL use the
+   static model and SHALL return float32, casting BEFORE fit() normalizes.
+   Normalizing in float16 then casting leaves norms off unity by ~the float16
+   epsilon -- systematic, magnitude-biased, and silent: `<#>` still returns
+   plausibly ranked rows while no longer being cosine, so short chunks quietly
+   stop retrieving. INV-1: every stored embedding satisfies |norm-1| <= 1e-6.
 R6 WHEN both estimators (median/1.4826*MAD vs mean/std) diverge > DIV_WARN in
    BC space, fit() SHALL record a warning in self.diagnostics.
 
@@ -71,7 +92,7 @@ from collections import Counter
 from datetime import datetime, timezone
 from scipy import stats
 
-DISC_M, MINK, KURT_OK, DIV_WARN, KNN = 25, 3, 0.5, 0.15, 2
+DISC_M, KURT_OK, DIV_WARN, KNN = 25, 0.5, 0.15, 2   # MINK dropped with the R4 gate
 SIM_FLOOR, BLOCK = 0.02, 512   # R10: in-loop threshold, block rows
 _STOP = set("""the of and to a in that is was he for it with as his on be at by i
 this had not are but from or have an they which one you were her all she there
@@ -97,7 +118,28 @@ def _chunk(doc, target=120, max_len=200):
     return out
 
 def default_embed_fn(model_dir):
-    """Guarantee: texts -> L2-normalized np.ndarray. Requires torch+transformers."""
+    """Guarantee: texts -> float32 np.ndarray, one row per text (R14).
+
+    Dispatches on what `model_dir` actually holds. A model2vec artifact is a
+    static token-embedding matrix -- a table lookup and a weighted mean, no
+    transformer forward pass -- so the dense space is reproducible on CPU from a
+    committed artifact with no GPU, no network, and no inference-time variance.
+    That is the reason to prefer it here, not throughput.
+
+    float16 is cast to float32 BEFORE fit() normalizes. Normalizing in float16
+    and casting after leaves norms off unity by roughly the float16 epsilon --
+    small, but systematic and biased by vector magnitude (INV-1).
+    """
+    try:
+        from model2vec import StaticModel
+        sm = StaticModel.from_pretrained(model_dir)
+    except Exception:
+        pass
+    else:
+        def embed_static(texts):
+            return np.asarray(sm.encode(texts, show_progress_bar=False),
+                              dtype=np.float32)                       # cast, then fit() normalizes
+        return embed_static
     import torch, torch.nn.functional as F
     from transformers import AutoTokenizer, AutoModel
     tok = AutoTokenizer.from_pretrained(model_dir)
@@ -316,23 +358,63 @@ class ChunkGraph:
         return dict(anchors=anchors, expansion=sel, scores=scores,
                     texts=[self.chunks[j][:160] for j in anchors + sel])
 
+    def _f(self, sel, scores, dmax):
+        """f(S) = g(S) + LAM*div(S), the MDMS objective. g is LINEAR here
+        (fixed per-item BM25 weights), which puts us in Fahrbach et al. S3.1:
+        Theorem 3.3 gives 2/3-eps rather than the general 1/2-eps."""
+        if not sel: return -1.0
+        dv = min((self.D[a, b] for a in sel for b in sel if a != b), default=dmax)
+        return sum(scores[v] for v in sel) + self.LAM*dv
+
+    def _greedy_ind_set(self, seeds, cand, scores, d):
+        """GreedyIndependentSet(V, g, d, k) -- Algorithm 1, second function.
+        Adds the highest-utility v with dist(v, S) >= d until |S| = k or no
+        candidate remains. The seeds clause is OURS, not the paper's: anchors
+        are already committed, so the walk keeps its picks d-apart from them
+        too (documented deviation, see R4)."""
+        sel, pool = [], list(cand)
+        while len(sel) < self.K and pool:
+            v = max(pool, key=lambda x: scores[x])
+            sel.append(v)
+            pool = [x for x in pool if x != v and self.D[x, v] >= d
+                    and all(self.D[x, s] >= d for s in seeds)]
+        return sel
+
     def _gist_walk(self, seeds, cand, scores):
+        """GIST, per Algorithm 1 of Fahrbach et al. (arXiv:2405.18754).
+
+        Sweeps distance thresholds, running a greedy weighted independent set
+        at each, and returns the argmax of f. Two pieces that a
+        threshold-sweep-only implementation drops, both restored here:
+
+        - the DIAMETER PAIR (lines 3-6): the two farthest points are their own
+          candidate solution. Theorem 3.3 bounds ALG below by
+          max{g(S*) + LAM*d*/(2(1+eps)), LAM*d*}, and that second term IS this
+          pair. Omitting it forfeits half the guarantee.
+        - no min-cardinality gate: GreedyIndependentSet legitimately returns a
+          SMALL maximal independent set at wide thresholds, and those are
+          exactly the high-diversity solutions. Skipping them discards the
+          candidates the bound relies on (R4).
+        """
         if not cand: return []
         dmax = max((self.D[a, b] for a in cand for b in cand), default=1) or 1
-        ths, t = [0.0], self.EPS*dmax/2
-        while t <= dmax: ths.append(t); t *= (1+self.EPS)
-        best, bestf = [], -1
-        for d in ths:
-            sel, pool = [], list(cand)
-            while len(sel) < self.K and pool:
-                v = max(pool, key=lambda x: scores[x])
-                sel.append(v)
-                pool = [x for x in pool if x != v and self.D[x, v] >= d
-                        and all(self.D[x, s] >= d for s in seeds)]
-            if len(sel) < min(MINK, len(cand)): continue              # R4
-            dv = min((self.D[a, b] for a in sel for b in sel if a != b), default=dmax)
-            f = sum(scores[v] for v in sel) + self.LAM*dv
-            if f > bestf: bestf, best = f, sel
+
+        best = self._greedy_ind_set(seeds, cand, scores, 0.0)   # classic greedy
+        bestf = self._f(best, scores, dmax)
+
+        if self.K >= 2 and len(cand) >= 2:                      # diameter pair
+            a, b = max(((a, b) for a in cand for b in cand if a != b),
+                       key=lambda ab: self.D[ab[0], ab[1]])
+            pair = [a, b]
+            if (fp := self._f(pair, scores, dmax)) > bestf:
+                bestf, best = fp, pair
+
+        t = self.EPS*dmax/2
+        while t <= dmax:                                        # D thresholds
+            sel = self._greedy_ind_set(seeds, cand, scores, t)
+            if (f := self._f(sel, scores, dmax)) >= bestf:
+                bestf, best = f, sel
+            t *= (1+self.EPS)
         return best
 
     # ---------- COMMUNITY ----------
@@ -379,6 +461,49 @@ class ChunkGraph:
         return out
 
     # ---------- DRAW ----------
+    @staticmethod
+    def _community_layout(Gx, part, nx):
+        """Guarantee: {node: (x,y)} where same-community nodes are co-located (R13).
+
+        A single global spring pass cannot show the partition: at k=0.9 against a
+        networkx default of 1/sqrt(n) (0.047 at n=445), repulsion dominates
+        attraction and nodes spread to uniform spacing regardless of their edges.
+        A 76.4%-intra-community graph rendered that way looks like a disc.
+
+        Two passes instead: spring the community meta-graph for blob centres (so
+        related communities land near each other), spring each community's induced
+        subgraph for member placement, then scale centres apart until no two blobs
+        overlap.
+        """
+        import numpy as _np
+        groups = {}
+        for v, c in part.items(): groups.setdefault(c, []).append(v)
+
+        meta = nx.Graph(); meta.add_nodes_from(groups)
+        for a, b, d in Gx.edges(data=True):
+            ca, cb = part[a], part[b]
+            if ca != cb:
+                w = meta.get_edge_data(ca, cb, {}).get("weight", 0.0) + d["weight"]
+                meta.add_edge(ca, cb, weight=w)
+        ctr = nx.spring_layout(meta, weight="weight", iterations=200, seed=7)
+
+        rad = {c: 0.6*math.sqrt(len(vs)) for c, vs in groups.items()}
+        scale = 1.0                                   # push blobs apart, no overlap
+        for a in groups:
+            for b in groups:
+                if a >= b: continue
+                d = float(_np.linalg.norm(ctr[a] - ctr[b])) or 1e-9
+                scale = max(scale, 1.15*(rad[a] + rad[b])/d)
+
+        pos = {}
+        for c, vs in groups.items():
+            cx, cy = ctr[c]*scale
+            sub = nx.spring_layout(Gx.subgraph(vs), weight="weight", seed=7,
+                                   k=2.0/math.sqrt(len(vs) + 1), iterations=80)
+            for v, p in sub.items():
+                pos[v] = (cx + p[0]*rad[c], cy + p[1]*rad[c])
+        return pos
+
     def draw(self, path, min_size=5):
         import matplotlib; matplotlib.use("Agg")
         import matplotlib.pyplot as plt, networkx as nx
@@ -388,7 +513,7 @@ class ChunkGraph:
             raw = (self.sim_dense[a, b] if self.sim_dense is not None
                    else self.sim_sparse[a, b])
             Gx.add_edge(int(a), int(b), weight=float(max(raw, .05)))   # nominal scale
-        pos = nx.spring_layout(Gx, weight="weight", k=0.9, iterations=200, seed=7)
+        pos = self._community_layout(Gx, self._part, nx)
         fig, ax = plt.subplots(figsize=(15, 11), dpi=110)
         cmap = plt.get_cmap("tab20")
         for a, b in Gx.edges():

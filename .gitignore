@@ -3,3 +3,13 @@ __pycache__/
 .benchmarks/
 *.log
 .spec/BYPASS
+
+# secrets -- never commit
+.env
+.env.*
+!.env.example
+
+# generated artifacts -- regenerable, run-scoped, or bulky
+community_labels.json      # model DRAFT labels; regenerate with label_communities.py
+trigram.zip                # duplicate of trigram/
+trigram/*.jpg              # photos of trigram.md; the markdown is the source

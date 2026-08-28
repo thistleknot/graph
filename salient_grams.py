@@ -111,6 +111,20 @@ R9  WHERE no background is supplied, select_vocab_unified SHALL subtract
     dict); neither wordfreq nor a hardcoded word list SHALL ship as a
     silent default. Rationale: the prior encodes a register assumption
     about the corpus, and a wrong assumption is worse than none.
+R10 Selection is a constrained program, and the system SHALL name the row that
+    binds. Cost per term is (len+1)*df/N -- pg_trgm emits len+1 trigrams, so
+    the padding tax is part of the price. Three rows: chars/row budget (weight),
+    max_terms (cardinality), max_term_chars (domain). WHEN the weight row binds,
+    selection SHALL rank by value DENSITY u/cost and SHALL exclude nonpositive
+    utility (it lowers the objective and consumes budget). OTHERWISE selection
+    SHALL rank by VALUE -- under a cardinality cap top-k is exactly optimal for
+    the modular part, and density is strictly worse. The result SHALL report
+    binding_constraint and cost_if_all_eligible, because a budget with slack is
+    not a size dial: measured on brown-50, all 7,256 eligible terms cost 228.1
+    chars/row, so budgets of 315/2000/8000 are equally inert and only a term
+    cap or tighter eligibility changes the vocabulary. max_term_chars=35 is
+    likewise inert there (longest selected term is 17); both are pathology
+    guards, and firing on nothing is them working.
 
 BACKGROUND PRIOR ALTERNATIVES
 ------------------------------
@@ -576,7 +590,9 @@ def select_vocab_unified(docs: list, target_chars_per_row: float = 315,
                          mad_k: float = 2.0, stopwords: frozenset = None,
                          anomaly: bool = True, collapse: bool = True,
                          spline_refine: bool = True,
-                         pooled_df: bool = False):
+                         pooled_df: bool = False,
+                         max_term_chars: int = 35,
+                         max_terms: int | None = None):
     """Single-pass unified selection with composite objective.
 
     Combines BM25 utility, keyness suppression, and diversity into one scoring
@@ -626,6 +642,11 @@ def select_vocab_unified(docs: list, target_chars_per_row: float = 315,
 
     df_floor = signature_pooled_df(terms, df_arr) if pooled_df else df_arr
     eligible = (df_floor >= df_min) & (df_arr <= max(df_min, df_max_frac * N))
+    if max_term_chars:      # R10 hard filter: a term longer than the trigram
+        # pattern window cannot be matched whole, so it only costs index space.
+        # A pathology guard -- on clean prose it fires on nothing (measured:
+        # 0 of 13,543 terms on brown-50, longest 27 chars).
+        eligible &= np.array([len(t) <= max_term_chars for t in terms])
     if stopwords:
         eligible &= np.array([t not in stopwords for t in terms])
     if anomaly:
@@ -686,26 +707,64 @@ def select_vocab_unified(docs: list, target_chars_per_row: float = 315,
     # `selected`. Selection order and output are unchanged.
     base = np.where(eligible, w_bm25 * bm25_n + w_keyness * keyness_n, -np.inf)
 
+    # R10: cost is (len + 1) * df/N, not len * df/N. pg_trgm emits len+1
+    # trigrams per token -- two leading pads, one trailing -- so a term's true
+    # index cost carries the padding tax. Measured: show_trgm('in') is 3
+    # trigrams for a 2-char token, all padding.
+    cost = (np.array([len(t) for t in terms], float) + 1.0) * (df_arr / N)
+
+    # R10: decide WHICH constraint is live before choosing the greedy rule.
+    # These are different problems and the correct rule differs:
+    #   weight-bound (knapsack)  -> greedy by value DENSITY  u/cost
+    #   cardinality-bound        -> greedy by VALUE; top-k is exactly optimal
+    #                               for the modular part, (1-1/e) with the
+    #                               submodular diversity term
+    # Picking density under a cardinality budget is strictly worse: it buys
+    # cheap low-value terms that a term-count cap has no reason to prefer.
+    total_cost = float(cost[eligible].sum())
+    weight_bound = total_cost > target_chars_per_row
+    cap = n_eligible if max_terms is None else min(int(max_terms), n_eligible)
+    hit_cap = budget_rejected = False
+
     for _ in range(n_eligible):
+        if len(selected) >= cap:                       # cardinality constraint
+            hit_cap = True
+            break
         score = base - w_diversity * max_corr
 
-        j = int(np.argmax(score))
-        if not np.isfinite(score[j]):
+        if weight_bound:
+            # A negative-value item can never help: it lowers the objective AND
+            # consumes budget, so it is excluded rather than ranked.
+            with np.errstate(divide="ignore", invalid="ignore"):
+                rank_by = np.where(score > 0, score / np.maximum(cost, 1e-12),
+                                   -np.inf)
+        else:
+            rank_by = score
+
+        j = int(np.argmax(rank_by))
+        if not np.isfinite(rank_by[j]):
             break
 
-        contribution = len(terms[j]) * (df_arr[j] / N)
-        if running_chars + contribution > target_chars_per_row:
+        if running_chars + cost[j] > target_chars_per_row:
             eligible[j] = False
             base[j] = -np.inf
+            budget_rejected = True
             continue
 
         selected.append(j)
         base[j] = -np.inf
-        running_chars += contribution
+        running_chars += cost[j]
 
         cov = np.asarray(P.T.dot(P[:, j].toarray()).ravel()) / N - mu * mu[j]
         corr = cov / (sd * max(sd[j], 1e-12))
         max_corr = np.maximum(max_corr, corr)
+
+    # R10: name the row that actually stopped the loop, not the one predicted
+    # to. With both a tight budget and a tight term cap, whichever is reached
+    # first is the real constraint -- reporting the other sends you to tune a
+    # dial that was never touching anything.
+    binding = ("max_terms" if hit_cap
+               else ("chars_per_row" if budget_rejected else "eligibility"))
 
     # --- Post-selection: box-cox length round-off ---
     keep_set = {terms[j] for j in selected}
@@ -735,6 +794,15 @@ def select_vocab_unified(docs: list, target_chars_per_row: float = 315,
         "chars_per_row": running_chars,
         "n_eligible": n_eligible,
         "n_selected": len(keep_set),
+        # R10 diagnostics: which constraint actually bound, and how much slack
+        # the others had. A budget that never fills is not a size dial, and
+        # reporting it as one is how a vocabulary silently stops being tuned.
+        "binding_constraint": binding,
+        "greedy_rule": "density" if weight_bound else "value",
+        "cost_if_all_eligible": total_cost,
+        "chars_budget": float(target_chars_per_row),
+        "max_terms": max_terms,
+        "max_term_chars": max_term_chars,
         "docs": kept,
         "salient": salient_col,
     }

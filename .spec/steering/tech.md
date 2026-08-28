@@ -56,4 +56,3 @@ inner product equals cosine and is cheaper.
 
 - **No LLM in the graph construction path.** Chunking, edges, fusion, and
   community membership are deterministic. *(Inferred from design, now explicit.)*
-- No moving embeddings or memory off-machine.

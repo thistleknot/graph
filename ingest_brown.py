@@ -7,6 +7,11 @@ ChunkGraph (embed_fn=None, so no model2vec/torch), and persists via pg_store.
 Usage:
     python ingest_brown.py [label] [n_docs]
 
+Set CHUNKGRAPH_MODEL_DIR to a local sentence-transformer directory to exercise
+the DENSE arm as well; unset, the run stays sparse-only per R5. The dense arm is
+what makes edge provenance discriminating -- without it every edge is `sparse`
+and the provenance column carries no information.
+
 Swap `load_docs()` for your own corpus; everything downstream is unchanged.
 """
 import sys, os
@@ -38,9 +43,11 @@ def main():
     doc_ids, docs = load_docs(n_docs)
     print(f"corpus: {len(docs)} docs, {sum(len(d) for d in docs):,} chars")
 
-    cg = ChunkGraph(embed_fn=None)          # sparse-only: no dense arm
+    model_dir = os.environ.get("CHUNKGRAPH_MODEL_DIR")   # R5: absent -> sparse-only
+    print(f"dense : {model_dir or 'DISABLED (sparse-only, R5)'}")
+    cg = ChunkGraph(model_dir=model_dir) if model_dir else ChunkGraph(embed_fn=None)
     cg.fit(docs, doc_ids=doc_ids)
-    print(f"fitted: {cg.n} chunks, blend_mode={cg.blend_mode}")
+    print(f"fitted: {cg.n} chunks, blend_mode={cg.blend_mode}", flush=True)
 
     edges = cg.edges()
     comms = cg.communities(min_size=5)

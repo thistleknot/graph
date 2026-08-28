@@ -1,0 +1,19 @@
+{
+  "feature": "community-labelling",
+  "kind": "feature",
+  "phase": "requirements",
+  "approvals": {
+    "requirements": null,
+    "design": null,
+    "tasks": null
+  },
+  "scope": [
+    "pg_store.py",
+    "chunkgraph.py",
+    "community_labels.py",
+    "sql/*.sql",
+    "tests/*.py",
+    "cookbook/*.sql"
+  ],
+  "created": "2026-08-25T04:03:14Z"
+}
