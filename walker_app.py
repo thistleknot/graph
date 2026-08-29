@@ -343,7 +343,10 @@ with tab_walk:
                         st.error("Cited in the answer but NOT judged entailing: "
                                  + ", ".join(f"#{o}" for o in res["self_contradicting"]))
                     st.markdown("**Answer**")
-                    st.markdown(res["answer"] or "_the model found nothing that entails an answer_")
+                    st.markdown(res["answer"] or
+                                "_Empty by design: no chunk was judged to entail an "
+                                "answer, so there is nothing to answer from. The "
+                                "model's per-chunk reasons are under **Neutral** below._")
                     why = {v["ord"]: v["why"] for v in res["verdicts"]}
                     for label, ords_, colour in (("Entails", res["entailed"], "#2a7"),
                                                  ("Contradicts", res["contradicts"], "#c33")):
@@ -358,8 +361,21 @@ with tab_walk:
                                     f"<span style='opacity:.75;font-size:.88em'>"
                                     f"{_clip(nd['body'], 300)}</span>",
                                     unsafe_allow_html=True)
+                    neutral = [v for v in res["verdicts"]
+                               if v["verdict"] == "neutral" and v["ord"] in set(res["shown"])]
+                    if neutral:
+                        with st.expander(f"Neutral ({len(neutral)}) — retrieved, judged "
+                                         f"not evidence; the model's reason for each"):
+                            for v in neutral:
+                                nd = gt.node(conn, run, v["ord"])
+                                st.markdown(
+                                    f"<span style='color:#999'>●</span> `#{v['ord']}` · "
+                                    f"{nd['doc_id']} · c{nd['cid']} — <i>{v['why']}</i>",
+                                    unsafe_allow_html=True)
                     with st.expander("Exactly what the model was shown"):
                         st.code(res["evidence"], language="text")
+                    with st.expander("Exactly what the model returned (raw)"):
+                        st.code(res["text"], language="json")
 
             xc = gt.cross_community(conn, run, bnd.sampled)
             if xc:
