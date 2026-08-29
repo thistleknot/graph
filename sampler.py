@@ -97,7 +97,17 @@ import graph_tools as gt
 DEFAULT_N = 24             # measured: top-3 communities populated and clean
 DEFAULT_T = 0.0            # argmax. Boltzmann measured worse -- see MEASURED
 DEFAULT_HOPS = 2
-DEFAULT_EF  = 24           # HNSW's ef: result width, the tuned dial (S10)
+DEFAULT_EF  = 64           # HNSW's ef: result width, the tuned dial (S10)
+                           # MEASURED brown-50-dual, 6 queries, T=0.7, m=3,
+                           # ef in {8..128}: top-3 community stability vs 2*ef
+                           # 0.61 0.64 0.58 0.64 0.67 0.75 0.75 -- first holds
+                           # >= 0.75 at 64. NO KNEE: expanded == ef-1 at every
+                           # ef, so the stop rule fires only after every held
+                           # result is expanded and cost is linear in ef. On
+                           # this corpus ef is a cost dial more than a quality
+                           # dial. 6 queries x Jaccard-of-3 is underpowered
+                           # (~20 needed for a 5% delta); treat 64 as a floor,
+                           # not a tuned optimum.
 DEFAULT_M   = 3            # neighbours expanded per pop. MEASURED: candidate
                            # pools after seen-filtering have median 2, max 10,
                            # so m=8 enumerates and T never applies (S11 inert).
@@ -232,9 +242,14 @@ def ef_search(conn, run: gt.RunHandle, query: str, ef: int = DEFAULT_EF,
     Guarantee: (results, telemetry) where results is {ord: score} of size <= ef
               and telemetry names the depth reached and the stop reason (S12).
     """
+    if ef < 1 or m < 1 or max_hops < 1:
+        raise ValueError(f"ef, m, max_hops must all be >= 1 "
+                         f"(got {ef}, {m}, {max_hops})")
     hits = gt.search(conn, run, query, k=k_anchor)
     if not hits:
-        return {}, {"stop": "no_anchor", "depth": 0, "expanded": 0, "seen": 0}
+        return {}, {"stop": "no_anchor", "depth": 0, "expanded": 0, "seen": 0,
+                    "hop_capped": 0, "pool_median": 0, "pools_over_m": 0,
+                    "pools": 0, "ef": ef, "T": T, "m": m}
     top = max(h["score"] for h in hits) or 1.0
 
     W = {h["ord"]: h["score"] / top for h in hits}          # result set
@@ -291,6 +306,29 @@ def ef_search(conn, run: gt.RunHandle, query: str, ef: int = DEFAULT_EF,
                "pool_median": (sorted(pools)[len(pools) // 2] if pools else 0),
                "pools_over_m": n_sampled, "pools": len(pools),
                "ef": ef, "T": T, "m": m}
+
+
+def ef_evidence(conn, run: gt.RunHandle, query: str, ef: int = DEFAULT_EF,
+                T: float = DEFAULT_T, m: int = DEFAULT_M, k_anchor: int = 3,
+                seed: int = 0, k_comm: int = None) -> tuple["Bundle", dict]:
+    """evidence() with ef_search in place of fixed-hop expansion.
+
+    Same Bundle shape so community_histogram, term_stats and the walker's
+    rendering are unchanged; the second return is ef_search's telemetry (S12).
+    Everything in W is the evidence -- there is no second sampling step, because
+    ef IS the evidence budget and W is already the best ef reachable.
+    """
+    W, tele = ef_search(conn, run, query, ef=ef, T=T, m=m,
+                        k_anchor=k_anchor, seed=seed)
+    anchors = [h["ord"] for h in gt.search(conn, run, query, k=k_anchor)]
+    sampled = sorted(W, key=lambda o: (-W[o], o))
+    comms = community_histogram(conn, run, sampled, k_comm=k_comm)
+    b = Bundle(query=query, run_id=str(run.run_id), anchors=anchors,
+               candidates=tele["seen"], sampled=sampled, communities=comms,
+               enumerated=False,
+               params={"ef": ef, "T": T, "m": m, "seed": seed,
+                       "k_anchor": k_anchor, "k_comm": k_comm, **tele})
+    return b, tele
 
 
 def community_histogram(conn, run: gt.RunHandle, sampled: list,

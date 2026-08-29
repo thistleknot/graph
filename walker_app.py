@@ -305,37 +305,42 @@ with tab_walk:
 
 # ================================================================ FIND
 with tab_find:
-    st.subheader("Deterministic evidence walk")
+    st.subheader("Evidence search")
     st.caption(
-        "`sampler.evidence()` — anchors by BM25, expand 2 hops scoring each node "
-        "by anchor score x product of edge strengths, take top-n, group by the "
-        "run's **stored** cid. No model, and at T=0 no randomness: same query, "
-        "same evidence, every time.")
+        "`sampler.ef_evidence()` — anchors by BM25, then best-first expansion "
+        "with HNSW's stop rule: hold the best **ef** results, expand the best "
+        "frontier candidate, stop when nothing reachable can beat the worst "
+        "result held. **No hop count** — depth is whatever convergence took. "
+        "T > 0 Boltzmann-samples which neighbours to expand, not what to return.")
 
     fq = st.text_input("Question", "jury trial grand jury investigation",
                        key="q_find")
     c1, c2, c3 = st.columns(3)
     with c1:
-        f_n = st.slider("n — chunks sampled", 4, 80, sampler.DEFAULT_N)
+        f_ef = st.select_slider("ef — result width (the dial)",
+                                [8, 16, 24, 32, 48, 64, 96, 128],
+                                sampler.DEFAULT_EF)
     with c2:
-        f_T = st.slider("T — 0 is argmax", 0.0, 3.0, sampler.DEFAULT_T, 0.1)
+        f_T = st.slider("T — 0 expands greedily", 0.0, 3.0, 0.7, 0.1)
     with c3:
         f_k = st.slider("communities shown", 1, 10, 4)
 
     if fq.strip():
-        b = sampler.evidence(conn, run, fq, n=f_n, T=f_T, k_comm=f_k)
+        b, tele = sampler.ef_evidence(conn, run, fq, ef=f_ef, T=f_T, k_comm=f_k)
 
         if not b.sampled:
             st.warning("No lexical anchor matched. Nothing to walk from.")
         else:
-            m1, m2, m3, m4 = st.columns(4)
+            m1, m2, m3, m4, m5 = st.columns(5)
             m1.metric("anchors", len(b.anchors))
-            m2.metric("candidates", b.candidates)
-            m3.metric("sampled", len(b.sampled))
-            m4.metric("top-community share", f"{b.concentration():.0%}")
-            if b.enumerated:
-                st.info(f"n >= candidate set, so this enumerated all "
-                        f"{b.candidates} rather than sampling.")
+            m2.metric("depth reached", tele["depth"])
+            m3.metric("expanded", tele["expanded"])
+            m4.metric("evidence", len(b.sampled))
+            m5.metric("top-community share", f"{b.concentration():.0%}")
+            st.caption(
+                f"stop: **{tele['stop']}** · seen {tele['seen']} · "
+                f"T applied on {tele['pools_over_m']} of {tele['pools']} expansions"
+                + (" · hop cap hit — ef is mis-tuned" if tele["hop_capped"] else ""))
 
             st.markdown("#### Query terms")
             ts = gt.term_stats(conn, run, fq, b.sampled)

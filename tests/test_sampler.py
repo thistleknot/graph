@@ -222,3 +222,93 @@ def test_k_comm_truncates_the_histogram(live):
     conn, run = live
     b = sp.evidence(conn, run, "church religious faith congregation", k_comm=2)
     assert len(b.communities) <= 2
+
+
+# ------------------------------------------------ ef_search (S9-S12)
+
+
+def _dual(live):
+    conn, _ = live
+    try:
+        return conn, gt.get_run(conn, "brown-50-dual")
+    except Exception as e:                                # pragma: no cover
+        pytest.skip(f"no dual run: {e}")
+
+
+Q = "jury trial grand jury investigation"
+
+
+def test_ef_search_depth_is_set_by_ef_not_by_the_hop_cap(live):
+    """S9: depth is emergent. Raising max_hops must not change the answer."""
+    conn, run = _dual(live)
+    W8, t8 = sp.ef_search(conn, run, Q, ef=24, T=0.0, m=3, max_hops=8)
+    W40, t40 = sp.ef_search(conn, run, Q, ef=24, T=0.0, m=3, max_hops=40)
+    assert W8 == W40
+    assert t8["depth"] == t40["depth"]
+    assert t8["hop_capped"] == 0 and t40["hop_capped"] == 0
+    assert t8["stop"] == "converged"
+
+
+def test_ef_search_result_width_is_ef(live):
+    conn, run = _dual(live)
+    for ef in (8, 24, 64):
+        W, t = sp.ef_search(conn, run, Q, ef=ef, T=0.0, m=3)
+        assert len(W) == ef, f"ef={ef} returned {len(W)}"
+        assert t["ef"] == ef
+
+
+def test_ef_search_larger_ef_reaches_deeper(live):
+    """S10: ef is the dial. More width -> more exploration -> more depth."""
+    conn, run = _dual(live)
+    _, t_small = sp.ef_search(conn, run, Q, ef=8, T=0.0, m=3)
+    _, t_big = sp.ef_search(conn, run, Q, ef=64, T=0.0, m=3)
+    assert t_big["depth"] > t_small["depth"]
+    assert t_big["expanded"] > t_small["expanded"]
+
+
+def test_ef_search_results_are_monotone_in_score_and_carry_anchor(live):
+    conn, run = _dual(live)
+    W, _ = sp.ef_search(conn, run, Q, ef=24, T=0.0, m=3)
+    anchors = {h["ord"] for h in gt.search(conn, run, Q, k=3)}
+    assert anchors & set(W), "top anchor must survive into W"
+    assert all(0.0 <= v <= 1.0 for v in W.values()), "bounded path scores (R15)"
+
+
+def test_ef_search_temperature_changes_frontier_but_not_width(live):
+    """S11: T samples WHICH neighbours expand. Output width is still ef."""
+    conn, run = _dual(live)
+    W0, t0 = sp.ef_search(conn, run, Q, ef=24, T=0.0, m=3)
+    W1, t1 = sp.ef_search(conn, run, Q, ef=24, T=0.7, m=3, seed=1)
+    assert len(W0) == len(W1) == 24
+    assert t1["pools_over_m"] > 0, "T never applied -- m is above the pool size"
+    assert set(W0) != set(W1), "T=0.7 explored an identical frontier to greedy"
+
+
+def test_ef_search_is_a_pure_function_of_its_seed(live):
+    """S1 carried over: same seed, same answer."""
+    conn, run = _dual(live)
+    a = sp.ef_search(conn, run, Q, ef=24, T=0.7, m=3, seed=3)
+    b = sp.ef_search(conn, run, Q, ef=24, T=0.7, m=3, seed=3)
+    assert a == b
+
+
+def test_ef_search_reports_no_anchor_rather_than_walking_nothing(live):
+    conn, run = _dual(live)
+    W, t = sp.ef_search(conn, run, "quokka wombat", ef=24)
+    assert W == {} and t["stop"] == "no_anchor" and t["depth"] == 0
+
+
+def test_ef_search_rejects_a_zero_hop_guard(live):
+    conn, run = _dual(live)
+    with pytest.raises(ValueError):
+        sp.ef_search(conn, run, Q, ef=24, max_hops=0)
+
+
+def test_ef_evidence_bundle_carries_telemetry_and_no_second_sampling(live):
+    """S7 + S12: the Bundle re-derives exactly, and W IS the evidence."""
+    conn, run = _dual(live)
+    b, tele = sp.ef_evidence(conn, run, Q, ef=24, T=0.0)
+    assert len(b.sampled) == 24 and not b.enumerated
+    assert b.params["ef"] == 24 and b.params["stop"] == tele["stop"]
+    assert b.params["depth"] == tele["depth"]
+    assert b.communities, "histogram over W should be non-empty"
