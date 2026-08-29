@@ -5,11 +5,9 @@ Two ways into the same graph, all sharing one deterministic tool surface
 (`graph_tools`): read-only at the server, run-scoped, traversing the indexed
 src/dst columns only.
 
-    Walk       you drive, stepping neighbour by neighbour
-    Reach      gt.walk() from here: every result carries the provenance and
-               source-doc of each hop that reached it (graph_tools W7)
-    Find       sampler.evidence() runs the deterministic walk and shows what
-               it found: communities, evidence chunks, and the bundle params
+    Walk       type a prompt, get the walked graph. sampler.ef_evidence()
+               expands from BM25 anchors and stops itself (HNSW rule); the
+               result set is drawn coloured by stored cid. Nothing else.
     Map        the community quotient graph and draft labels
 
 Nothing here re-partitions anything. Communities are the run's own stored cids.
@@ -104,32 +102,6 @@ if labels:
     st.sidebar.caption(f"{len(labels)} draft community labels loaded "
                        f"(italic = model-authored)")
 
-st.sidebar.divider()
-limit = st.sidebar.slider("Neighbours per step", 5, 60, 25)
-min_strength = st.sidebar.slider("Min edge strength (the disclosed floor)",
-                                 0.0, 0.6, 0.0, 0.01)
-st.sidebar.caption(
-    "The cookbook traversal hard-codes a 0.05 floor. Here it is a visible dial.")
-
-# ---------------------------------------------------------------- state
-ss = st.session_state
-ss.setdefault("trail", [])
-ss.setdefault("visited", [])
-ss.setdefault("sat", [])
-ss.setdefault("hits", [])
-
-
-def visit(ord_: int):
-    ss.trail.append(ord_)
-    if ord_ not in ss.visited:
-        ss.visited.append(ord_)
-    ss.sat.append(len(gt.communities_touched(conn, run, ss.visited)))
-
-
-def reset():
-    ss.trail, ss.visited, ss.sat = [], [], []
-
-
 def draw_subgraph(ords, trail, current=None, height=340):
     """Shared renderer: nodes coloured by STORED cid, trail dotted."""
     if not ords:
@@ -191,228 +163,20 @@ def community_panel(ords):
     return touched
 
 
-tab_walk, tab_find, tab_map = st.tabs(["Walk", "Find", "Map"])
+tab_walk, tab_map = st.tabs(["Walk", "Map"])
 
 # ================================================================ WALK
 with tab_walk:
-    st.caption("**Manual.** One click, one hop — you drive. For the tuned "
-               "search that expands and stops on its own, use the **Find** tab.")
-    c_search, c_reset = st.columns([4, 1])
-    with c_search:
-        query = st.text_input("Find an anchor", "", key="q_walk")
-    with c_reset:
-        st.write("")
-        if st.button("Reset", use_container_width=True):
-            reset()
-    if query.strip() and st.button("Search", key="btn_search"):
-        ss.hits = gt.search(conn, run, query, k=8)
-
-    if ss.hits and not ss.visited:
-        st.caption("Lexical hits — click one to start walking")
-        for h in ss.hits:
-            if st.button(
-                    f"#{h['ord']} · {h['doc_id']} · score {h['score']:.1f} · "
-                    f"{cid_badge(h['cid'], labels)}",
-                    key=f"anchor{h['ord']}", use_container_width=True):
-                reset()
-                visit(h["ord"])
-                st.rerun()
-
-    if not ss.visited:
-        st.info("Search above to drop an anchor, then step neighbour by neighbour.")
-    else:
-        cur_ord = ss.trail[-1]
-        cur = gt.node(conn, run, cur_ord)
-        left, right = st.columns([1.05, 1])
-
-        with left:
-            st.subheader(f"Chunk #{cur['ord']}")
-            st.caption(f"doc **{cur['doc_id']}** · {cur['n_tok']} tokens · "
-                       f"{cid_badge(cur['cid'], labels)}")
-            if cur["cid"] is None:
-                st.warning("This chunk belongs to no community (below min_size=5 "
-                           "at ingest).")
-            st.markdown(
-                f"<div style='background:#00000010;padding:.7rem;"
-                f"border-radius:.4rem;max-height:180px;overflow:auto'>"
-                f"{cur['body'][:1400]}</div>", unsafe_allow_html=True)
-
-            st.markdown("#### Step to a neighbour")
-            nbrs = gt.neighbors(conn, run, cur_ord, limit=limit,
-                                min_strength=min_strength)
-            if not nbrs:
-                st.info("No neighbours above the floor. Lower the dial.")
-            for n in nbrs:
-                c1, c2 = st.columns([1, 3.4])
-                with c1:
-                    seen = "· seen" if n["ord"] in ss.visited else ""
-                    if st.button(f"→ #{n['ord']} {seen}",
-                                 key=f"step{cur_ord}_{n['ord']}",
-                                 use_container_width=True):
-                        visit(n["ord"])
-                        st.rerun()
-                with c2:
-                    st.markdown(
-                        f"<span style='color:{PROV_COLOR.get(n['provenance'],'#999')}'>●</span> "
-                        f"**{n['strength']:.3f}** · {n['provenance']} · "
-                        f"{cid_badge(n['cid'], labels)} · {n['doc_id']}<br>"
-                        f"<span style='opacity:.65;font-size:.86em'>"
-                        f"{(n['preview'] or '')[:140]}…</span>",
-                        unsafe_allow_html=True)
-
-        with right:
-            st.subheader("What you are walking into")
-            touched = community_panel(ss.visited)
-            fig = draw_subgraph(ss.visited, ss.trail, cur_ord)
-            if fig:
-                st.plotly_chart(fig, use_container_width=True)
-            if len(ss.sat) > 1:
-                st.caption("Communities touched per step — flattening means covered")
-                st.line_chart(ss.sat, height=110)
-            if len(touched) >= 2:
-                a, b = touched[0]["cid"], touched[1]["cid"]
-                st.markdown(f"#### Bridges: c{a} ↔ c{b}")
-                for e in gt.bridges(conn, run, a, b, limit=5):
-                    st.caption(f"#{e['src']} ({e['src_doc']}) ↔ #{e['dst']} "
-                               f"({e['dst_doc']}) · {e['strength']:.3f}")
-
-            st.markdown("#### Reach from here — with the reason")
-            rc1, rc2 = st.columns(2)
-            hops = rc1.slider("hops", 1, 3, 2, key="reach_hops")
-            floor = rc2.slider("score floor", 0.0, 0.30, 0.05, 0.01,
-                               key="reach_floor")
-            reach = gt.walk(conn, run, cur_ord, hops=hops,
-                            min_score=floor, cap=25)
-            if not reach:
-                st.info("Nothing survives the score floor. Lower it.")
-            else:
-                nx_doc = sum(1 for r in reach if r["cross_doc"])
-                st.caption(f"{len(reach)} reached · {nx_doc} cross-document "
-                           f"({100*nx_doc/len(reach):.0f}%)")
-                for r in reach:
-                    dot = "".join(
-                        f"<span style='color:{PROV_COLOR.get(pv,'#999')}'>●</span>"
-                        for pv in r["prov_path"])
-                    arrow = " ".join(
-                        f"{r['node_path'][i]}<span style='opacity:.5'>"
-                        f"–{pv}→</span>" for i, pv in enumerate(r["prov_path"]))
-                    st.markdown(
-                        f"{dot} **#{r['ord']}** · {r['score']:.4f} · h{r['hop']}"
-                        f"{' · CROSS-DOC' if r['cross_doc'] else ''}<br>"
-                        f"<span style='font-family:monospace;font-size:.82em'>"
-                        f"{arrow}{r['node_path'][-1]}</span><br>"
-                        f"<span style='opacity:.6;font-size:.8em'>"
-                        f"{' › '.join(r['doc_path'])}</span>",
-                        unsafe_allow_html=True)
-
-# ================================================================ FIND
-with tab_find:
-    st.subheader("Evidence search")
-    st.caption(
-        "`sampler.ef_evidence()` — anchors by BM25, then best-first expansion "
-        "with HNSW's stop rule: hold the best **ef** results, expand the best "
-        "frontier candidate, stop when nothing reachable can beat the worst "
-        "result held. **No hop count** — depth is whatever convergence took. "
-        "T > 0 Boltzmann-samples which neighbours to expand, not what to return.")
-
-    fq = st.text_input("Question", "jury trial grand jury investigation",
-                       key="q_find")
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        f_ef = st.select_slider("ef — result width (the dial)",
-                                [8, 16, 24, 32, 48, 64, 96, 128],
-                                sampler.DEFAULT_EF)
-    with c2:
-        f_T = st.slider("T — 0 expands greedily", 0.0, 3.0, 0.7, 0.1)
-    with c3:
-        f_k = st.slider("communities shown", 1, 10, 4)
-
-    if fq.strip():
-        b, tele = sampler.ef_evidence(conn, run, fq, ef=f_ef, T=f_T, k_comm=f_k)
-
+    q = st.text_input("Prompt", "", key="q", placeholder="ask the corpus")
+    if q.strip():
+        b, tele = sampler.ef_evidence(conn, run, q)
         if not b.sampled:
             st.warning("No lexical anchor matched. Nothing to walk from.")
         else:
-            m1, m2, m3, m4, m5 = st.columns(5)
-            m1.metric("anchors", len(b.anchors))
-            m2.metric("depth reached", tele["depth"])
-            m3.metric("expanded", tele["expanded"])
-            m4.metric("evidence", len(b.sampled))
-            m5.metric("top-community share", f"{b.concentration():.0%}")
-            st.caption(
-                f"stop: **{tele['stop']}** · seen {tele['seen']} · "
-                f"T applied on {tele['pools_over_m']} of {tele['pools']} expansions"
-                + (" · hop cap hit — ef is mis-tuned" if tele["hop_capped"] else ""))
-
-            st.markdown("#### Query terms")
-            ts = gt.term_stats(conn, run, fq, b.sampled)
-            lex = {o for t in ts for o in t["hits"]}
-            graph_only = [o for o in b.sampled if o not in lex]
-            n_samp = len(b.sampled)
-            for t in ts:
-                miss = t["df"] == 0
-                dim = ".45" if miss else ".85"
-                tail = (" — not in this corpus" if miss
-                        else " · carried by %d of %d sampled"
-                             % (len(t["hits"]), n_samp))
-                st.markdown(
-                    "<span style='font-family:monospace'>%s</span>"
-                    "<span style='opacity:%s'>df %d%s</span>"
-                    % (t["term"].ljust(16).replace(" ", "&nbsp;"),
-                       dim, t["df"], tail),
-                    unsafe_allow_html=True)
-            g1, g2 = st.columns(2)
-            g1.metric("found lexically", len(lex))
-            g2.metric("reached via the graph", len(graph_only))
-            st.caption(
-                "A term with df 0 is absent from the run's vocabulary and cannot "
-                "retrieve anything — the usual reason a query looks broken. "
-                "Chunks carrying no query term were reached by an edge, not by "
-                "the words: that count is the graph's contribution over plain "
-                "lexical search.")
-
-            st.markdown("#### Communities the evidence landed in")
-            worst = max(c["hits"] for c in b.communities)
-            for c in b.communities:
-                bar = "█" * max(1, round(18 * c["hits"] / worst))
-                lab = labels.get(c["cid"])
-                st.markdown(
-                    f"<span style='color:{cid_color(c['cid'])}'>{bar}</span> "
-                    f"**c{c['cid']}** · {c['hits']} of {len(b.sampled)} "
-                    f"{'· *' + lab['label'] + '*' if lab else ''}<br>"
-                    f"<span style='opacity:.7;font-size:.86em'>"
-                    f"{', '.join(c['keywords'])}</span>",
-                    unsafe_allow_html=True)
-
-            st.caption(
-                "Keywords are corpus-derived tf*idf and are the trustworthy "
-                "layer. Italic labels are model-authored drafts and can "
-                "misdescribe their own community — c1 reads 'Rural road funding' "
-                "but its keywords are jury, election, department, mayor.")
-
-            st.markdown("#### The evidence")
-            by_cid: dict = {}
-            for o in b.sampled:
-                nd = gt.node(conn, run, o)
-                by_cid.setdefault(nd["cid"], []).append(nd)
-            for c in b.communities:
-                for nd in by_cid.get(c["cid"], []):
-                    with st.expander(
-                            f"#{nd['ord']} · {nd['doc_id']} · "
-                            f"{cid_badge(nd['cid'], labels)}"):
-                        st.write(nd["body"][:1200])
-
-            fig = draw_subgraph(b.sampled, b.anchors,
-                                b.anchors[0] if b.anchors else None, height=320)
-            if fig:
-                st.markdown("#### Sampled subgraph")
-                st.plotly_chart(fig, use_container_width=True)
-
-            with st.expander("Bundle parameters — this is what makes it re-derivable"):
-                st.json({"run_id": b.run_id, "anchors": b.anchors,
-                         "sampled": b.sampled, "top_cids": b.top_cids,
-                         **b.params})
-
+            fig = draw_subgraph(b.sampled, [], b.anchors[0], height=680)
+            st.plotly_chart(fig, use_container_width=True)
+            st.caption(f"{len(b.sampled)} chunks · depth {tele['depth']} · "
+                       f"{tele['stop']}")
 
 # ================================================================ MAP
 with tab_map:

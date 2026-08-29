@@ -116,25 +116,19 @@ def test_missing_label_file_is_not_an_error(app):
     assert isinstance(app.load_labels(), dict)
 
 
-# ------------------------------------------- the Find tab renders end to end
+# ------------------------------------------- the Walk tab renders end to end
 
 
-def test_find_tab_renders_ef_evidence_headlessly():
-    """ast.parse proves syntax; only a real run proves the tab renders.
-
-    Drives the whole app through Streamlit's AppTest with the default question,
-    so a wrong name inside the Find branch (which the Walk-tab tests never
-    reach) fails here instead of in the browser.
-    """
+def test_walk_tab_renders_a_graph_from_a_prompt():
+    """ast.parse proves syntax; only a real run proves the tab renders."""
     from streamlit.testing.v1 import AppTest
     try:
         at = AppTest.from_file("walker_app.py", default_timeout=120)
         at.run()
+        at.text_input("q").set_value("jury trial grand jury investigation").run()
     except Exception as e:                                # pragma: no cover
         pytest.skip(f"app could not start (no db?): {e}")
     errs = [e.value for e in at.exception]
-    assert not errs, f"Find tab raised: {errs}"
-    labels = {m.label for m in at.metric}
-    for want in ("depth reached", "expanded", "evidence",
-                 "found lexically", "reached via the graph"):
-        assert want in labels, f"metric {want!r} not rendered; got {sorted(labels)}"
+    assert not errs, f"Walk tab raised: {errs}"
+    assert at.get("plotly_chart"), "prompt produced no graph"
+    assert any("depth" in c.value for c in at.caption), "no depth caption"
