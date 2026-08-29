@@ -114,3 +114,27 @@ def test_cid_badge_never_hides_the_cid(app):
 def test_missing_label_file_is_not_an_error(app):
     """Labels are optional; their absence is the normal state."""
     assert isinstance(app.load_labels(), dict)
+
+
+# ------------------------------------------- the Find tab renders end to end
+
+
+def test_find_tab_renders_ef_evidence_headlessly():
+    """ast.parse proves syntax; only a real run proves the tab renders.
+
+    Drives the whole app through Streamlit's AppTest with the default question,
+    so a wrong name inside the Find branch (which the Walk-tab tests never
+    reach) fails here instead of in the browser.
+    """
+    from streamlit.testing.v1 import AppTest
+    try:
+        at = AppTest.from_file("walker_app.py", default_timeout=120)
+        at.run()
+    except Exception as e:                                # pragma: no cover
+        pytest.skip(f"app could not start (no db?): {e}")
+    errs = [e.value for e in at.exception]
+    assert not errs, f"Find tab raised: {errs}"
+    labels = {m.label for m in at.metric}
+    for want in ("depth reached", "expanded", "evidence",
+                 "found lexically", "reached via the graph"):
+        assert want in labels, f"metric {want!r} not rendered; got {sorted(labels)}"
