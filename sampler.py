@@ -40,6 +40,20 @@ S7  Every bundle SHALL carry the parameters that produced it, so it can be
 S8  The default SHALL be T=0 (argmax). Boltzmann sampling is retained as an
     opt-in and is documented as MEASURED WORSE on this corpus.
 
+S9  ef_search() SHALL NOT take a hop count. Depth is EMERGENT: expansion stops
+    when the best remaining candidate cannot beat the worst result already
+    held, exactly as HNSW terminates. A fixed `hops` is the operator guessing
+    how far is far enough; the stopping rule measures it per query.
+S10 The tuned dial SHALL be `ef` -- the width of the result set, and hence of
+    the candidate frontier. It is HNSW's `ef` in both name and role: larger ef
+    explores longer before the stop condition bites, and depth follows from it.
+S11 WHERE T > 0, Boltzmann sampling SHALL choose WHICH neighbours to expand,
+    not which results to return. Sampling the frontier is exploration; sampling
+    the output is noise, and S8's measurement is about the latter.
+S12 ef_search() SHALL report the depth it reached and why it stopped
+    (converged / hop cap / frontier exhausted). A search that always hits the
+    cap is not converging and its ef is mis-tuned.
+
 MEASURED (brown-50, 6 queries, 2026-08-26) -- the sampling premise did not hold
 ------------------------------------------------------------------------------
 Stability (mean pairwise Jaccard of top-3 community sets across seeds) is NOT
@@ -83,6 +97,12 @@ import graph_tools as gt
 DEFAULT_N = 24             # measured: top-3 communities populated and clean
 DEFAULT_T = 0.0            # argmax. Boltzmann measured worse -- see MEASURED
 DEFAULT_HOPS = 2
+DEFAULT_EF  = 24           # HNSW's ef: result width, the tuned dial (S10)
+DEFAULT_M   = 3            # neighbours expanded per pop. MEASURED: candidate
+                           # pools after seen-filtering have median 2, max 10,
+                           # so m=8 enumerates and T never applies (S11 inert).
+                           # m must sit BELOW the pool for sampling to exist.
+MAX_HOPS    = 8            # runaway guard, NOT a depth policy (S9)
 DEFAULT_CAP = 150          # R4.4 neighbourhood bound, 2-hop p99 is 111
 
 
@@ -180,6 +200,97 @@ def boltzmann_sample(scores: dict, n: int = DEFAULT_N, T: float = DEFAULT_T,
     g = rng.gumbel(size=len(logits))            # S3 via Gumbel top-k
     pick = np.argsort(-(logits + g))[:n]
     return [ords[i] for i in pick], False
+
+
+def ef_search(conn, run: gt.RunHandle, query: str, ef: int = DEFAULT_EF,
+              T: float = DEFAULT_T, m: int = DEFAULT_M,
+              k_anchor: int = 3, max_hops: int = MAX_HOPS,
+              seed: int = 0) -> tuple[dict, dict]:
+    """Best-first expansion with an HNSW stop condition (S9-S12).
+
+    HNSW does not take a hop count. It holds a result set W of width `ef` and a
+    candidate frontier C, and stops when the best remaining candidate cannot
+    beat the worst member of W -- nothing reachable from here can improve the
+    answer. Depth is whatever that took.
+
+    The same rule applies to this graph, with BM25 anchors as entry points and
+    strength-decayed path score in place of distance:
+
+        W  <- anchors                       result set, capped at ef
+        C  <- anchors                       frontier, best-first
+        while C:
+            c = best of C
+            if score(c) <= worst(W) and |W| = ef:  STOP    <- S9
+            expand c's neighbours, keep any that improve W
+
+    WHERE T > 0 the neighbours of c are Boltzmann-sampled rather than all
+    expanded (S11). That is exploration of the frontier, which is a different
+    question from S8's measurement -- S8 found sampling the OUTPUT surfaced
+    off-topic communities, and this does not touch the output.
+
+    Require:  ef >= 1; m >= 1; max_hops >= 1 as a runaway guard, not a policy.
+    Guarantee: (results, telemetry) where results is {ord: score} of size <= ef
+              and telemetry names the depth reached and the stop reason (S12).
+    """
+    hits = gt.search(conn, run, query, k=k_anchor)
+    if not hits:
+        return {}, {"stop": "no_anchor", "depth": 0, "expanded": 0, "seen": 0}
+    top = max(h["score"] for h in hits) or 1.0
+
+    W = {h["ord"]: h["score"] / top for h in hits}          # result set
+    C = {h["ord"]: (h["score"] / top, 0) for h in hits}     # frontier: ord -> (score, hop)
+    hop_of = {h["ord"]: 0 for h in hits}
+    seen = set(W)
+    expanded = 0
+    capped = 0
+    pools = []
+    stop = "frontier_exhausted"
+
+    while C:
+        c = max(C, key=lambda o: C[o][0])
+        c_score, c_hop = C.pop(c)
+
+        worst = min(W.values()) if W else 0.0
+        if len(W) >= ef and c_score <= worst:               # S9: HNSW stop
+            stop = "converged"
+            break
+        if c_hop >= max_hops:
+            capped += 1                                     # do NOT overwrite stop
+            continue
+
+        nbrs = gt.neighbors(conn, run, c, limit=max(m * 3, 20))
+        expanded += 1
+        if not nbrs:
+            continue
+
+        cand = {n["ord"]: c_score * n["strength"] for n in nbrs
+                if n["ord"] not in seen}
+        pools.append(len(cand))
+        if not cand:
+            continue
+        chosen, _ = boltzmann_sample(cand, n=min(m, len(cand)), T=T, seed=seed)
+
+        for o in chosen:
+            seen.add(o)
+            sc = cand[o]
+            worst = min(W.values()) if W else 0.0
+            if len(W) < ef or sc > worst:
+                W[o] = sc
+                C[o] = (sc, c_hop + 1)
+                hop_of[o] = c_hop + 1
+                if len(W) > ef:
+                    W.pop(min(W, key=lambda x: W[x]))
+
+    # Depth is the deepest hop that SURVIVED into the result set, not the
+    # deepest one popped -- a candidate expanded and then evicted did not
+    # contribute to the answer and should not inflate the reported depth.
+    depth = max((hop_of[o] for o in W), default=0)
+    n_sampled = sum(1 for p in pools if p > m)              # where T could act
+    return W, {"stop": stop, "depth": depth, "expanded": expanded,
+               "seen": len(seen), "hop_capped": capped,
+               "pool_median": (sorted(pools)[len(pools) // 2] if pools else 0),
+               "pools_over_m": n_sampled, "pools": len(pools),
+               "ef": ef, "T": T, "m": m}
 
 
 def community_histogram(conn, run: gt.RunHandle, sampled: list,

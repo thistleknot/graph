@@ -339,3 +339,28 @@ def test_term_stats_separates_lexical_from_graph_reached(conn, run):
     graph_only = set(b.sampled) - lex
     assert lex, "some evidence should be lexically anchored"
     assert graph_only, "graph contributed nothing beyond lexical hits"
+
+
+# ------------------------------------------- persisted strength is bounded (R15)
+
+
+@pytest.mark.parametrize("label", ["brown-50", "brown-50-dual"])
+def test_persisted_strength_is_a_bounded_decay_weight(conn, label):
+    """R15: every consumer multiplies path score by strength, so it must sit in
+    [0, 1] or path scores amplify with depth and the walk never converges.
+
+    Measured before the fix on the fused run: strength in [-6.53, 3.55], 58% of
+    edges over 1.0, ef_search depth == max_hops at every cap.
+    """
+    try:
+        run = gt.get_run(conn, label)
+    except Exception as e:                                # pragma: no cover
+        pytest.skip(f"no run {label}: {e}")
+    with conn.cursor() as cur:
+        cur.execute("""SELECT min(strength), max(strength),
+                              count(*) FILTER (WHERE strength > 1.0 OR strength < 0.0)
+                         FROM edge WHERE run_id = %s AND valid_to IS NULL""",
+                    (run.run_id,))
+        lo, hi, out_of_range = cur.fetchone().values()
+    assert out_of_range == 0, f"{label}: {out_of_range} edges outside [0,1] ({lo:.3f}..{hi:.3f})"
+    assert 0.0 <= lo and hi <= 1.0

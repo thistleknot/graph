@@ -65,6 +65,13 @@ R14 WHERE model_dir holds a model2vec artifact, default_embed_fn SHALL use the
    epsilon -- systematic, magnitude-biased, and silent: `<#>` still returns
    plausibly ranked rows while no longer being cosine, so short chunks quietly
    stop retrieving. INV-1: every stored embedding satisfies |norm-1| <= 1e-6.
+R15 WHEN edges are exported, `strength` SHALL be the bounded traversal weight
+   `1 - D` in [0, 1], NOT the raw blend. The in-memory walk already uses D;
+   persisting the raw BC-z blend gave the fused run strengths in [-6.5, 3.5]
+   (58% over 1.0), so every persisted consumer that multiplies path score by
+   strength -- sampler.candidate_scores, cookbook #1 -- AMPLIFIED with depth
+   instead of decaying and never converged. Sparse-only runs are unaffected:
+   there 1 - D == sim_sparse exactly, so brown-50 is byte-identical.
 R6 WHEN both estimators (median/1.4826*MAD vs mean/std) diverge > DIV_WARN in
    BC space, fit() SHALL record a warning in self.diagnostics.
 
@@ -452,7 +459,7 @@ class ChunkGraph:
                 src=a, dst=b,
                 src_doc=self.doc_id[a], dst_doc=self.doc_id[b],
                 provenance=PROV.get(int(self.provenance[a, b]), "sparse"),
-                strength=float(self.strength[a, b]),
+                strength=float(1 - self.D[a, b]),                     # R15
                 sim_sparse=float(self.sim_sparse[a, b]),
                 sim_dense=float(self.sim_dense[a, b]) if self.sim_dense is not None else None,
                 valid_from=valid_from or self.ingested_at,
