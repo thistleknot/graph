@@ -552,3 +552,36 @@ substitute.
 
 Re-partitioning (never at query time), model-authored labels (draft only,
 italic, never a key), and the term-node layer itself.
+
+### 6.1 Query-conditioned terms (amendment, 2026-08-29)
+
+The unsupervised top-3 names the community; it does not name the community
+*as the prompt sees it*. For "what feelings are associated with betrayal" the
+walk's largest community reads `taliesin / olgivanna / wright` -- the Wright
+divorce scandal -- which is right and useless at once.
+
+**Rule.** Communities stay unsupervised. The three words shown for each are
+chosen from that community's OWN vocabulary (its BM25 top-40), re-ranked by
+relevance to the prompt. Query conditioning re-ranks; it never imports a term
+the community does not carry (W10).
+
+**Two signals, in priority order.**
+1. Lexical: a candidate that is a query term (or a phrase part of one) is
+   forced to the top. Exact, cheap, always available.
+2. Dense: cosine between the model2vec embedding of the prompt and of each
+   candidate term. Static token table, so single-term embeddings are exact and
+   deterministic. Requires the run's model directory (`CHUNKGRAPH_MODEL_DIR`);
+   absent, the ranking falls back to lexical-then-unsupervised (R5 posture).
+
+Measured on c4 for the betrayal prompt, top-40 re-ranked by cosine:
+`charm .32, fortunately .25, joy .24, attachments .23, horrible .21, angel .16`
+against `wright -.04, constable -.05, reporters -.06, mrs_wright -.09`.
+
+**What is shown.** The query-conditioned three label the graph node and the
+list row. The unsupervised three stay inside the expander as "community
+concept", so a reader can see both what the community IS and which part of it
+the prompt touched.
+
+**Deferred.** `model_dir` is not stamped into `graph_run.params`; steering says
+a run should be reproducible from stored params and the embedder is a param.
+Playbook TODO.

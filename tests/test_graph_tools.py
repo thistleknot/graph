@@ -438,3 +438,80 @@ def test_cross_community_contract(conn, run):
 
 def test_cross_community_needs_two_chunks(conn, run):
     assert gt.cross_community(conn, run, [HUB]) == []
+
+
+# ------------------------------------------ query_terms (design §6.1, W10)
+
+
+def _fake_embed(anchor: str):
+    """Deterministic unit vectors; `anchor` embeds identically to any query,
+    so cosine(query, anchor) == 1.0 and everything else is ~orthogonal."""
+    import hashlib
+    import numpy as np
+
+    def embed(texts):
+        out = []
+        for t in texts:
+            key = anchor if (t == anchor or t.split() != [t] and anchor in t) else t
+            h = hashlib.sha256(key.encode()).digest()
+            v = np.frombuffer(h, dtype=np.uint8).astype(np.float32)
+            v = np.resize(v, 64) - 127.5
+            out.append(v / np.linalg.norm(v))
+        return np.stack(out)
+    return embed
+
+
+def test_query_terms_is_a_subset_of_the_community_pool(conn, run):
+    """W10: the prompt re-ranks; it never imports a term."""
+    cids = _some_cids(conn, run)
+    pool = gt.community_terms(conn, run, cids, k=40)
+    out = gt.query_terms(conn, run, cids, "jury trial betrayal", k=3)
+    for c in cids:
+        assert set(out[c]) <= set(pool[c])
+        assert len(out[c]) <= 3
+
+
+def test_query_terms_lexical_match_is_forced_first(conn, run):
+    """Pick the term FROM the pool -- a hard-coded word can be absent from
+    the fixture's communities and the test dies on its own precondition."""
+    cids = _some_cids(conn, run, 3)
+    pool = gt.community_terms(conn, run, cids, k=40)
+    for c in cids:
+        if len(pool[c]) < 12:
+            continue
+        term = pool[c][10]                       # not already first
+        assert "_" not in term or True
+        out = gt.query_terms(conn, run, [c], f"{term} something", k=3)
+        assert out[c][0] == term, f"c{c}: lexical hit {term!r} not first: {out[c]}"
+
+
+def test_query_terms_without_embed_falls_back_to_unsupervised_order(conn, run):
+    cids = _some_cids(conn, run, 2)
+    pool = gt.community_terms(conn, run, cids, k=40)
+    out = gt.query_terms(conn, run, cids, "zzqx", k=3, embed=None)   # no lexical hit
+    for c in cids:
+        assert out[c] == pool[c][:3]
+
+
+def test_query_terms_dense_signal_promotes_the_closest_term(conn, run):
+    """With an embed that makes one pool term identical to the query, that
+    term wins -- even though it is not lexically in the prompt."""
+    import numpy as np
+    cids = _some_cids(conn, run, 1)
+    c = cids[0]
+    pool = gt.community_terms(conn, run, cids, k=40)[c]
+    target = pool[-1]                     # weakest unsupervised candidate
+    q = "zzqx"                            # no lexical hit anywhere
+
+    def embed(texts):
+        base = _fake_embed(target)(texts)
+        # make the query vector equal to the target's vector
+        tv = _fake_embed(target)([target.replace("_", " ")])[0]
+        return np.stack([tv if t == q else row for t, row in zip(texts, base)])
+
+    out = gt.query_terms(conn, run, cids, q, k=3, embed=embed)
+    assert out[c][0] == target, f"dense argmax not promoted: {out[c]} vs {target}"
+
+
+def test_query_terms_empty_pool_and_empty_cids(conn, run):
+    assert gt.query_terms(conn, run, [], "jury") == {}

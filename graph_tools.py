@@ -29,6 +29,7 @@ TOOL SURFACE
 | walk                | reach + WHY: prov_path/doc_path per result   | cap    |
 | term_stats          | which query terms exist, and who carries them| terms  |
 | community_terms     | top-k BM25 terms, community as the document  | k/cid  |
+| query_terms         | those terms re-ranked by the prompt          | k/cid  |
 | local_medoid        | most central retrieved chunk in a community  | 1/cid  |
 | cross_community     | retrieved chunks bridging retrieved cids     | set    |
 
@@ -53,6 +54,10 @@ W9  community_terms() SHALL score over EVERY member of the community, never
     only the retrieved ones. The ranked terms are the implied evidence -- the
     concept the community holds -- and scoring them on the retrieved subset
     collapses that back into a search result.
+W10 query_terms() SHALL choose only from the community's OWN vocabulary
+    (community_terms pool). The prompt re-ranks; it never imports a term the
+    community does not carry. Communities stay unsupervised -- only the
+    three words shown for each are conditioned on the prompt.
 W7  walk() SHALL return, per reached node, the EDGE PROVENANCE and SOURCE DOC of
     every hop that reached it -- not merely the node ids traversed. A route that
     cannot name its own justification is a browser, not an evidence instrument.
@@ -490,6 +495,42 @@ def cross_community(conn, run: RunHandle, ords: list[int]) -> list[dict]:
             "n_foreign_edges": sum(f.values())} for o, f in foreign.items()]
     return sorted(out, key=lambda r: (-len(r["foreign_cids"]),
                                       -r["n_foreign_edges"], r["ord"]))
+
+
+def query_terms(conn, run: RunHandle, cids: list[int], query: str,
+                k: int = 3, embed=None, pool: int = 40) -> dict:
+    """Top-k terms per community AS THE PROMPT SEES IT (W10, design 6.1).
+
+    Candidates are the community's own BM25 top-`pool`. Ranking, in order:
+      1. lexical  -- a candidate that is a query term, or a phrase part of
+                     one, is forced to the top
+      2. dense    -- cosine(embed(query), embed(term)) when `embed` is given
+      3. fallback -- the unsupervised BM25 order
+
+    `embed`: callable list[str] -> unit-norm ndarray (n, d). None means no
+    dense signal; ranking is lexical-then-unsupervised (R5 posture).
+
+    Guarantee: out[cid] is a subset of community_terms(pool)[cid]; len <= k.
+    """
+    cand = community_terms(conn, run, cids, k=pool)
+    qtok = set(tokenize(query))
+    qv = None
+    if embed is not None and qtok:
+        qv = embed([query])[0]
+    out: dict = {}
+    for cid, terms in cand.items():
+        if not terms:
+            out[cid] = []
+            continue
+        if qv is not None:
+            T = embed([t.replace("_", " ") for t in terms])
+            score = {t: float(T[i] @ qv) for i, t in enumerate(terms)}
+        else:
+            score = {t: -i for i, t in enumerate(terms)}      # unsupervised order
+        lex = {t for t in terms
+               if t in qtok or any(part in qtok for part in t.split("_"))}
+        out[cid] = sorted(terms, key=lambda t: (t not in lex, -score[t], t))[:k]
+    return out
 
 
 def _decorate(conn, run: RunHandle, rows: list[dict]) -> list[dict]:

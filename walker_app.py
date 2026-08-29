@@ -46,6 +46,26 @@ def get_conn():
     return gt.connect()
 
 
+@st.cache_resource
+def get_embed(model_dir: str | None):
+    """model2vec static embedder for query-conditioned terms (design 6.1).
+    None when no model dir: ranking degrades to lexical-then-unsupervised."""
+    if not model_dir:
+        return None
+    try:
+        import numpy as np
+        from model2vec import StaticModel
+        sm = StaticModel.from_pretrained(model_dir)
+    except Exception:
+        return None
+
+    def embed(texts):
+        E = np.asarray(sm.encode(list(texts), show_progress_bar=False),
+                       dtype=np.float32)
+        return E / (np.linalg.norm(E, axis=1, keepdims=True) + 1e-12)
+    return embed
+
+
 @st.cache_data(ttl=30)
 def load_labels() -> dict:
     """Draft labels, if label_communities.py has been run. Absent is normal."""
@@ -91,6 +111,11 @@ else:
     st.sidebar.warning(
         "Retrieval mode: **sparse-only** — no dense space on this run, so "
         "anchors are lexical only.")
+
+embed = get_embed(os.environ.get("CHUNKGRAPH_MODEL_DIR"))
+if embed is None:
+    st.sidebar.warning("Query-conditioned terms: **lexical only** — set "
+                       "CHUNKGRAPH_MODEL_DIR for the dense signal.")
 
 sp = run.single_provenance
 if sp:
@@ -214,7 +239,8 @@ with tab_walk:
         else:
             touched = gt.communities_touched(conn, run, bnd.sampled)
             cids = [t["cid"] for t in touched]
-            terms = gt.community_terms(conn, run, cids, k=3)
+            concept = gt.community_terms(conn, run, cids, k=3)      # unsupervised
+            terms = gt.query_terms(conn, run, cids, q, k=3, embed=embed)  # prompt-conditioned
             cid_of = {o: gt.node(conn, run, o)["cid"] for o in bnd.sampled}
             in_cid = {c: [o for o in bnd.sampled if cid_of[o] == c] for c in cids}
             xedges: dict = {}
@@ -230,9 +256,10 @@ with tab_walk:
                        f"depth {tele['depth']} · {tele['stop']}")
 
             st.markdown("#### Communities, most present first")
-            st.caption("Terms are BM25 over the WHOLE community — the implied "
-                       "evidence. Expand for the explicit evidence: the chunks "
-                       "this walk retrieved there.")
+            st.caption("The three words are the community's OWN vocabulary, "
+                       "re-ranked by your prompt — the face of the community "
+                       "the prompt lights up. Expand for the unsupervised "
+                       "concept and the explicit evidence.")
             for t in touched:
                 c = t["cid"]; mine = in_cid[c]
                 lab = labels.get(c)
@@ -240,6 +267,8 @@ with tab_walk:
                         f"**{' / '.join(terms.get(c, []))}**"
                         + (f" · *{lab['label']}*" if lab else ""))
                 with st.expander(head, expanded=(t is touched[0])):
+                    st.caption(f"Community concept (unsupervised BM25): "
+                               f"**{' / '.join(concept.get(c, []))}**")
                     lm = gt.local_medoid(conn, run, mine)
                     gm = gt.community(conn, run, c)["medoid"]
                     m1, m2 = st.columns(2)
