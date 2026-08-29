@@ -195,6 +195,8 @@ tab_walk, tab_find, tab_map = st.tabs(["Walk", "Find", "Map"])
 
 # ================================================================ WALK
 with tab_walk:
+    st.caption("**Manual.** One click, one hop — you drive. For the tuned "
+               "search that expands and stops on its own, use the **Find** tab.")
     c_search, c_reset = st.columns([4, 1])
     with c_search:
         query = st.text_input("Find an anchor", "", key="q_walk")
