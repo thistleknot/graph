@@ -163,20 +163,117 @@ def community_panel(ords):
     return touched
 
 
+def draw_communities(touched, terms, xedges, height=520):
+    """Community-level view of a walk: nodes are the communities present,
+    sized by presence, LABELLED BY THEIR TOP TERMS. Chunks are never drawn
+    here -- the graph is read by its terms (design §6)."""
+    if not touched:
+        return None
+    G = nx.Graph()
+    for t in touched:
+        G.add_node(t["cid"], hits=t["hits"], size=t["size"])
+    for (a, b), w in xedges.items():
+        G.add_edge(a, b, weight=w)
+    pos = nx.spring_layout(G, weight="weight", seed=7, k=1.6)
+    ex, ey = [], []
+    for a, b in G.edges():
+        ex += [pos[a][0], pos[b][0], None]; ey += [pos[a][1], pos[b][1], None]
+    fig = go.Figure()
+    if ex:
+        fig.add_trace(go.Scatter(x=ex, y=ey, mode="lines",
+                                 line=dict(color="#bbb", width=1.2),
+                                 hoverinfo="none", showlegend=False))
+    mx = max(t["hits"] for t in touched)
+    fig.add_trace(go.Scatter(
+        x=[pos[t["cid"]][0] for t in touched],
+        y=[pos[t["cid"]][1] for t in touched],
+        mode="markers+text",
+        text=[" / ".join(terms.get(t["cid"], [])[:3]) for t in touched],
+        textposition="top center",
+        textfont=dict(size=12),
+        marker=dict(size=[14 + 40 * t["hits"] / mx for t in touched],
+                    color=[cid_color(t["cid"]) for t in touched],
+                    line=dict(color="#333", width=1)),
+        hovertext=[f"c{t['cid']} · {t['hits']} of {t['size']}" for t in touched],
+        hoverinfo="text", showlegend=False))
+    fig.update_layout(height=height, margin=dict(l=10, r=10, t=10, b=10),
+                      xaxis=dict(visible=False), yaxis=dict(visible=False),
+                      plot_bgcolor="white")
+    return fig
+
+
 tab_walk, tab_map = st.tabs(["Walk", "Map"])
 
 # ================================================================ WALK
 with tab_walk:
     q = st.text_input("Prompt", "", key="q", placeholder="ask the corpus")
     if q.strip():
-        b, tele = sampler.ef_evidence(conn, run, q)
-        if not b.sampled:
+        bnd, tele = sampler.ef_evidence(conn, run, q)
+        if not bnd.sampled:
             st.warning("No lexical anchor matched. Nothing to walk from.")
         else:
-            fig = draw_subgraph(b.sampled, [], b.anchors[0], height=680)
+            touched = gt.communities_touched(conn, run, bnd.sampled)
+            cids = [t["cid"] for t in touched]
+            terms = gt.community_terms(conn, run, cids, k=3)
+            cid_of = {o: gt.node(conn, run, o)["cid"] for o in bnd.sampled}
+            in_cid = {c: [o for o in bnd.sampled if cid_of[o] == c] for c in cids}
+            xedges: dict = {}
+            for e in gt.subgraph_edges(conn, run, bnd.sampled):
+                ca, cb = cid_of.get(e["src"]), cid_of.get(e["dst"])
+                if ca is not None and cb is not None and ca != cb:
+                    key = (min(ca, cb), max(ca, cb))
+                    xedges[key] = xedges.get(key, 0) + 1
+
+            fig = draw_communities(touched, terms, xedges)
             st.plotly_chart(fig, use_container_width=True)
-            st.caption(f"{len(b.sampled)} chunks · depth {tele['depth']} · "
-                       f"{tele['stop']}")
+            st.caption(f"{len(bnd.sampled)} chunks · {len(cids)} communities · "
+                       f"depth {tele['depth']} · {tele['stop']}")
+
+            st.markdown("#### Communities, most present first")
+            st.caption("Terms are BM25 over the WHOLE community — the implied "
+                       "evidence. Expand for the explicit evidence: the chunks "
+                       "this walk retrieved there.")
+            for t in touched:
+                c = t["cid"]; mine = in_cid[c]
+                lab = labels.get(c)
+                head = (f"c{c} · **{t['hits']}** of {t['size']} · "
+                        f"**{' / '.join(terms.get(c, []))}**"
+                        + (f" · *{lab['label']}*" if lab else ""))
+                with st.expander(head, expanded=(t is touched[0])):
+                    lm = gt.local_medoid(conn, run, mine)
+                    gm = gt.community(conn, run, c)["medoid"]
+                    m1, m2 = st.columns(2)
+                    with m1:
+                        st.markdown(f"**Local medoid** · #{lm} — central to "
+                                    f"what this walk found here")
+                        st.caption(gt.node(conn, run, lm)["body"][:400])
+                    with m2:
+                        st.markdown(f"**Global medoid** · #{gm} — central to "
+                                    f"the whole community")
+                        st.caption(gt.node(conn, run, gm)["body"][:400])
+                    st.markdown("**Retrieved chunks**")
+                    for o in mine:
+                        nd = gt.node(conn, run, o)
+                        st.markdown(
+                            f"`#{o}` · {nd['doc_id']}<br>"
+                            f"<span style='opacity:.75;font-size:.88em'>"
+                            f"{nd['body'][:300]}…</span>",
+                            unsafe_allow_html=True)
+
+            xc = gt.cross_community(conn, run, bnd.sampled)
+            if xc:
+                st.markdown("#### In between")
+                st.caption("Retrieved chunks whose walked edges reach a "
+                           "different retrieved community — exemplars of "
+                           "where the concepts meet.")
+                for x in xc[:8]:
+                    nd = gt.node(conn, run, x["ord"])
+                    reach = ", ".join(f"c{k}" for k in x["foreign_cids"])
+                    st.markdown(
+                        f"`#{x['ord']}` c{x['cid']} → {reach} · "
+                        f"{x['n_foreign_edges']} edges<br>"
+                        f"<span style='opacity:.75;font-size:.88em'>"
+                        f"{nd['body'][:220]}…</span>", unsafe_allow_html=True)
 
 # ================================================================ MAP
 with tab_map:

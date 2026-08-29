@@ -317,12 +317,17 @@ def test_term_stats_hits_are_confined_to_the_supplied_ords(conn, run):
 
 
 def test_term_stats_hits_agree_with_the_stored_tf_map(conn, run):
-    scope = [n["ord"] for n in gt.neighbors(conn, run, HUB, limit=25)]
+    # scope = the query's own lexical hits, which carry its terms by construction
+    scope = [h["ord"] for h in gt.search(conn, run, "jury trial investigation report", k=12)]
     rows = gt.term_stats(conn, run, "jury trial investigation report", scope)
+    checked = 0
     for r in rows:
         for o in r["hits"]:
             assert r["term"] in gt.node(conn, run, o)["tf"], (
                 f"{r['term']} claimed in #{o} but absent from its tf map")
+            checked += 1
+    assert checked > 0, ("no hits in scope -- this test passed vacuously "
+                         "before node() returned tf; widen the scope")
 
 
 def test_term_stats_separates_lexical_from_graph_reached(conn, run):
@@ -364,3 +369,72 @@ def test_persisted_strength_is_a_bounded_decay_weight(conn, label):
         lo, hi, out_of_range = cur.fetchone().values()
     assert out_of_range == 0, f"{label}: {out_of_range} edges outside [0,1] ({lo:.3f}..{hi:.3f})"
     assert 0.0 <= lo and hi <= 1.0
+
+
+# ------------------------------------ community primitives (design §6, W9)
+
+
+def _some_cids(conn, run, n=4):
+    rows = gt.communities_touched(conn, run,
+                                  [x["ord"] for x in gt.neighbors(conn, run, HUB, limit=40)])
+    return [r["cid"] for r in rows[:n]]
+
+
+def test_community_terms_returns_at_most_k_per_requested_cid(conn, run):
+    cids = _some_cids(conn, run)
+    out = gt.community_terms(conn, run, cids, k=3)
+    assert set(out) == set(cids)
+    for c in cids:
+        assert 1 <= len(out[c]) <= 3
+        assert all(isinstance(t, str) and t for t in out[c])
+
+
+def test_community_terms_scores_the_whole_community_not_a_slice(conn, run):
+    """W9: the signature takes cids only. A term that lives in members the
+    walk never touched must still be eligible. Pinned by checking that every
+    returned term has tf mass in at least one member."""
+    cid = _some_cids(conn, run, 1)[0]
+    members = gt.community(conn, run, cid)
+    with conn.cursor() as cur:
+        cur.execute("SELECT members FROM community WHERE run_id=%s AND cid=%s",
+                    (run.run_id, cid))
+        ords = cur.fetchone()["members"]
+    terms = gt.community_terms(conn, run, [cid], k=3)[cid]
+    for t in terms:
+        assert any(t in gt.node(conn, run, o)["tf"] for o in ords), (
+            f"{t!r} ranked for c{cid} but no member carries it")
+
+
+def test_community_terms_empty_input(conn, run):
+    assert gt.community_terms(conn, run, []) == {}
+
+
+def test_local_medoid_edge_cases(conn, run):
+    assert gt.local_medoid(conn, run, []) is None
+    assert gt.local_medoid(conn, run, [HUB]) == HUB
+
+
+def test_local_medoid_is_the_argmax_of_summed_strength(conn, run):
+    ords = [HUB] + [x["ord"] for x in gt.neighbors(conn, run, HUB, limit=12)]
+    tot = {o: 0.0 for o in ords}
+    for e in gt.subgraph_edges(conn, run, ords):
+        tot[e["src"]] += e["strength"]; tot[e["dst"]] += e["strength"]
+    want = min(ords, key=lambda o: (-tot[o], o))
+    assert gt.local_medoid(conn, run, ords) == want
+    assert want in ords
+
+
+def test_cross_community_contract(conn, run):
+    ords = [HUB] + [x["ord"] for x in gt.neighbors(conn, run, HUB, limit=30)]
+    out = gt.cross_community(conn, run, ords)
+    seen = set(ords)
+    for r in out:
+        assert r["ord"] in seen
+        assert r["cid"] not in r["foreign_cids"], "own cid counted as foreign"
+        assert r["n_foreign_edges"] >= len(r["foreign_cids"]) >= 1
+    keys = [(-len(r["foreign_cids"]), -r["n_foreign_edges"], r["ord"]) for r in out]
+    assert keys == sorted(keys), "not ranked by reach then edge count"
+
+
+def test_cross_community_needs_two_chunks(conn, run):
+    assert gt.cross_community(conn, run, [HUB]) == []

@@ -119,16 +119,34 @@ def test_missing_label_file_is_not_an_error(app):
 # ------------------------------------------- the Walk tab renders end to end
 
 
-def test_walk_tab_renders_a_graph_from_a_prompt():
-    """ast.parse proves syntax; only a real run proves the tab renders."""
+def test_walk_tab_renders_communities_from_a_prompt():
+    """Design §6: a prompt yields a community graph labelled by terms, a
+    ranked community list with expanders, and no exception. ast.parse proves
+    syntax; only a real run proves this renders."""
     from streamlit.testing.v1 import AppTest
     try:
-        at = AppTest.from_file("walker_app.py", default_timeout=120)
+        at = AppTest.from_file("walker_app.py", default_timeout=180)
         at.run()
         at.text_input("q").set_value("jury trial grand jury investigation").run()
     except Exception as e:                                # pragma: no cover
         pytest.skip(f"app could not start (no db?): {e}")
     errs = [e.value for e in at.exception]
     assert not errs, f"Walk tab raised: {errs}"
-    assert at.get("plotly_chart"), "prompt produced no graph"
-    assert any("depth" in c.value for c in at.caption), "no depth caption"
+    assert at.get("plotly_chart"), "prompt produced no community graph"
+    assert len(at.expander) >= 1, "no community expanders rendered"
+    heads = " ".join(x.label for x in at.expander)
+    assert " of " in heads and " / " in heads, (
+        f"expander headers lack presence/terms: {heads[:200]}")
+    caps = " ".join(c.value for c in at.caption)
+    assert "depth" in caps and "communities" in caps
+
+
+def test_draw_communities_labels_nodes_with_terms(app):
+    """The community graph is read by its TERMS, never by chunk ids."""
+    touched = [{"cid": 1, "hits": 5, "size": 20}, {"cid": 2, "hits": 2, "size": 9}]
+    terms = {1: ["jury", "trial", "verdict"], 2: ["congo", "belgian"]}
+    fig = app.draw_communities(touched, terms, {(1, 2): 3})
+    assert fig is not None
+    labels = [tr for tr in fig.data if tr.mode and "text" in tr.mode][0].text
+    assert list(labels) == ["jury / trial / verdict", "congo / belgian"]
+    assert app.draw_communities([], {}, {}) is None

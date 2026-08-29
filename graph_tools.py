@@ -28,6 +28,9 @@ TOOL SURFACE
 | subgraph_edges      | induced edges among a visited set (drawing)  | set    |
 | walk                | reach + WHY: prov_path/doc_path per result   | cap    |
 | term_stats          | which query terms exist, and who carries them| terms  |
+| community_terms     | top-k BM25 terms, community as the document  | k/cid  |
+| local_medoid        | most central retrieved chunk in a community  | 1/cid  |
+| cross_community     | retrieved chunks bridging retrieved cids     | set    |
 
 GUARDS (EARS)
 W1  Every statement SHALL be run-scoped: run_id is the first predicate, so the
@@ -46,6 +49,10 @@ W8  term_stats() SHALL report a query term the corpus does NOT contain, with
     df 0, rather than dropping it. A term absent from the run's vocabulary is
     the single most common reason a retrieval looks wrong, and silently
     omitting it makes the query look like it asked for less than it did.
+W9  community_terms() SHALL score over EVERY member of the community, never
+    only the retrieved ones. The ranked terms are the implied evidence -- the
+    concept the community holds -- and scoring them on the retrieved subset
+    collapses that back into a search result.
 W7  walk() SHALL return, per reached node, the EDGE PROVENANCE and SOURCE DOC of
     every hop that reached it -- not merely the node ids traversed. A route that
     cannot name its own justification is a browser, not an evidence instrument.
@@ -181,7 +188,7 @@ def node(conn, run: RunHandle, ord_: int):
     with conn.cursor() as cur:
         cur.execute("""
             SELECT n.ord, n.doc_id, n.body, (n.attrs->>'n_tok')::int AS n_tok,
-                   c.cid, c.keywords
+                   n.attrs -> 'tf' AS tf, c.cid, c.keywords
               FROM node n
               LEFT JOIN community c
                      ON c.run_id = n.run_id AND c.members @> ARRAY[n.ord]
@@ -382,6 +389,107 @@ def term_stats(conn, run: RunHandle, query: str,
              GROUP BY q.term ORDER BY df, q.term""",
             (terms, ords or [], run.run_id))
         return cur.fetchall()
+
+
+def community_terms(conn, run: RunHandle, cids: list[int], k: int = 3,
+                    K1: float = 1.5, B: float = 0.75) -> dict:
+    """Top-k terms per community, BM25 with the COMMUNITY as the document (W9).
+
+    tf  = term frequency summed over every member chunk's stored tf map
+    len = summed n_tok of members; avg over all communities in the run
+    idf = log(1 + (N_c - df + .5)/(df + .5)), df = communities containing t
+
+    Scored over the whole community, not the retrieved slice. The stored
+    `keywords` column is tf*idf over the same scope; BM25 adds the length
+    term, which matters because community sizes run 8..189 here.
+
+    Require:  cids are live cids in run. Guarantee: {cid: [term, ...]} of
+              length <= k each; empty list for a cid with no tf mass.
+    """
+    if not cids:
+        return {}
+    with conn.cursor() as cur:
+        cur.execute("""
+            WITH m AS (SELECT c.cid, unnest(c.members) AS ord
+                         FROM community c WHERE c.run_id = %s),
+            agg AS (SELECT m.cid, kv.key AS term, sum((kv.value)::int) AS tf
+                      FROM m JOIN node n ON n.run_id = %s AND n.ord = m.ord,
+                           jsonb_each_text(n.attrs -> 'tf') AS kv
+                     GROUP BY m.cid, kv.key),
+            len AS (SELECT m.cid, sum((n.attrs ->> 'n_tok')::int) AS len
+                      FROM m JOIN node n ON n.run_id = %s AND n.ord = m.ord
+                     GROUP BY m.cid),
+            df AS (SELECT term, count(DISTINCT cid) AS df FROM agg GROUP BY term),
+            nc AS (SELECT count(*) AS n, avg(len) AS avglen FROM len)
+            SELECT a.cid, a.term,
+                   ln(1 + (nc.n - df.df + 0.5)/(df.df + 0.5))
+                   * a.tf * (%s + 1)
+                   / (a.tf + %s * (1 - %s + %s * len.len / nc.avglen)) AS bm25
+              FROM agg a JOIN df USING (term) JOIN len USING (cid), nc
+             WHERE a.cid = ANY(%s::int[])""",
+            (run.run_id, run.run_id, run.run_id, K1, K1, B, B, cids))
+        rows = cur.fetchall()
+    out: dict = {c: [] for c in cids}
+    for r in sorted(rows, key=lambda r: (r["cid"], -r["bm25"], r["term"])):
+        if len(out[r["cid"]]) < k:
+            out[r["cid"]].append(r["term"])
+    return out
+
+
+def local_medoid(conn, run: RunHandle, ords: list[int]) -> int | None:
+    """The retrieved chunk most central to the OTHER retrieved chunks.
+
+    argmax over ords of summed live-edge strength to the rest of ords. Ties
+    break on the lowest ord. One chunk alone is its own medoid. The stored
+    community.medoid is the GLOBAL counterpart; this is the local one.
+    """
+    if not ords:
+        return None
+    if len(ords) == 1:
+        return ords[0]
+    tot = {o: 0.0 for o in ords}
+    for e in subgraph_edges(conn, run, ords):
+        tot[e["src"]] += e["strength"]
+        tot[e["dst"]] += e["strength"]
+    return min(ords, key=lambda o: (-tot[o], o))
+
+
+def cross_community(conn, run: RunHandle, ords: list[int]) -> list[dict]:
+    """Retrieved chunks whose walked edges reach a DIFFERENT retrieved
+    community -- the in-between exemplars.
+
+    Defined by edges, not membership: in this schema a chunk belongs to
+    exactly one community, so 'in several communities' is not expressible
+    until the term-node layer lands. Ranked by the number of foreign
+    communities reached, then by foreign edge count.
+
+    Guarantee: [{ord, cid, foreign_cids, n_foreign_edges}] sorted desc;
+               chunks with no foreign edge are omitted.
+    """
+    if len(ords) < 2:
+        return []
+    cid_of = {}
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT v.ord, c.cid FROM unnest(%s::int[]) AS v(ord)
+              JOIN community c ON c.run_id = %s AND c.members @> ARRAY[v.ord]""",
+            (ords, run.run_id))
+        for r in cur.fetchall():
+            cid_of[r["ord"]] = r["cid"]
+    foreign: dict = {}
+    for e in subgraph_edges(conn, run, ords):
+        a, b = e["src"], e["dst"]
+        ca, cb = cid_of.get(a), cid_of.get(b)
+        if ca is None or cb is None or ca == cb:
+            continue
+        foreign.setdefault(a, {}).setdefault(cb, 0)
+        foreign[a][cb] += 1
+        foreign.setdefault(b, {}).setdefault(ca, 0)
+        foreign[b][ca] += 1
+    out = [{"ord": o, "cid": cid_of[o], "foreign_cids": sorted(f),
+            "n_foreign_edges": sum(f.values())} for o, f in foreign.items()]
+    return sorted(out, key=lambda r: (-len(r["foreign_cids"]),
+                                      -r["n_foreign_edges"], r["ord"]))
 
 
 def _decorate(conn, run: RunHandle, rows: list[dict]) -> list[dict]:

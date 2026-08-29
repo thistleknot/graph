@@ -491,3 +491,64 @@ Both run against persisted data and neither requires the UI to exist.
 Non-goals hold: no labelling (R1 read-only), no LLM in retrieval, no model
 selection from the UI — §2's re-ingest is an offline operator action with pinned
 parameters, not a UI affordance.
+
+## 6. Walk tab: prompt in, communities out (2026-08-29)
+
+**Requirements layer, stated plainly.** A human types a prompt and gets back
+the Louvain communities the walk landed in, ranked by how much of the walk
+each one holds. They do NOT get a hairball of chunk ids. A chunk graph is the
+evidence layer; the community layer is what a person can read.
+
+### What is shown, top to bottom
+
+1. **Community graph.** Nodes are the communities present in the walk, sized
+   by presence, labelled with their top-3 terms, spring-laid-out. Edges are the
+   walked edges that cross communities, width = count. Chunks are never drawn
+   here. The graph is read by its terms.
+2. **Community list, most present first.** Per community: presence
+   (retrieved chunks / community size), top-3 terms, two medoids.
+3. **Expand a community** to see the explicit evidence: the retrieved chunks
+   that fall in it, with provenance and doc id.
+4. **In-between exemplars.** Retrieved chunks with walked edges into a
+   different retrieved community, ranked by how many.
+
+### The two term layers, and why the top-3 is scored globally
+
+The top-3 terms are scored over **every chunk in the community**, not the
+retrieved ones. That is the implied evidence: the concept the community holds
+as a whole, which the walk has touched. The retrieved chunks under the expander
+are the explicit evidence. Showing both is the point; showing only the second
+is a search result, not an explanation.
+
+Scoring is BM25 with the community as the document -- term frequency summed
+over members, community token length as the document length, idf over the set
+of communities. The stored `keywords` column is tf*idf over the same scope and
+stays as the fallback; BM25 corrects for the size skew (communities run 8 to
+189 members) that tf*idf does not.
+
+### Two medoids
+
+- **Local**: among the retrieved chunks in this community, the one with the
+  largest summed walked-edge strength to the others. Central to what THIS walk
+  found here.
+- **Global**: the stored `community.medoid` -- central to the whole community.
+  Already computed at ingest.
+
+Both are argmax-of-centrality picks. If more than one exemplar per community is
+wanted later, the extension is MMR over the same similarity, not a different
+centre.
+
+### A constraint stated so it is not rediscovered
+
+In this schema every chunk belongs to exactly one community (`community.members`
+partitions the node set). "Chunks are not mutually exclusive across communities"
+becomes true only when the term-node layer lands (graph-term-selection spec,
+approved, unbuilt) and communities are read through terms. Until then,
+"in-between" is defined by EDGES: a retrieved chunk whose walked edges reach a
+different retrieved community. That is measurable today and is the honest
+substitute.
+
+### Out of scope here
+
+Re-partitioning (never at query time), model-authored labels (draft only,
+italic, never a key), and the term-node layer itself.
