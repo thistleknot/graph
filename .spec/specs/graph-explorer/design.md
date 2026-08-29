@@ -585,3 +585,30 @@ the prompt touched.
 **Deferred.** `model_dir` is not stamped into `graph_run.params`; steering says
 a run should be reproducible from stored params and the embedder is a param.
 Playbook TODO.
+
+### 6.2 The local medoid is query-weighted (amendment, 2026-08-29)
+
+On the betrayal prompt the local and global medoid of the top community were
+the same chunk (#797). Not a bug in the arithmetic: 32 of 38 members were
+retrieved, so structural centrality over the retrieved set IS the global
+centrality. But it defeats the purpose -- the local medoid is supposed to be
+central to what the prompt activated, and a prompt does not activate a
+community uniformly.
+
+**Rule (W11).** Local centrality weights each retrieved neighbour by its walk
+score: `centrality(o) = sum_j score(j) * strength(o, j)`. The walk score is
+already query-conditioned (BM25 anchor times decayed path), so the medoid it
+produces is the supervised one. The global medoid stays the stored
+`community.medoid`. They may still coincide when the prompt genuinely lands on
+the community's centre; they no longer coincide by construction.
+
+### 6.3 Chunks never split inside a word (R16, chunkgraph.py)
+
+Two sources, both fixed. The chunker jumped from blank-line paragraphs
+straight to a word window over the whole paragraph, so chunks began on stray
+punctuation tokens and ignored the sentence lines `ingest_brown` already
+writes; it is now recursive (blank lines, then lines packed to `target`, then
+a word window only for a single overlong line). And the UI truncated previews
+at a character count; it now clips at the last word boundary and marks the cut.
+The chunker change re-cuts the corpus, so both live runs are re-ingested and
+the tests pinned to `brown-50`'s shape are re-pinned from the new run.

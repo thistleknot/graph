@@ -58,6 +58,10 @@ W10 query_terms() SHALL choose only from the community's OWN vocabulary
     (community_terms pool). The prompt re-ranks; it never imports a term the
     community does not carry. Communities stay unsupervised -- only the
     three words shown for each are conditioned on the prompt.
+W11 local_medoid() SHALL accept the walk scores as neighbour weights, so the
+    local medoid is central to what the prompt activated, not merely to the
+    retrieved set. Unweighted, it degenerates to the global medoid whenever
+    the walk retrieved most of a community.
 W7  walk() SHALL return, per reached node, the EDGE PROVENANCE and SOURCE DOC of
     every hop that reached it -- not merely the node ids traversed. A route that
     cannot name its own justification is a browser, not an evidence instrument.
@@ -441,21 +445,28 @@ def community_terms(conn, run: RunHandle, cids: list[int], k: int = 3,
     return out
 
 
-def local_medoid(conn, run: RunHandle, ords: list[int]) -> int | None:
-    """The retrieved chunk most central to the OTHER retrieved chunks.
+def local_medoid(conn, run: RunHandle, ords: list[int],
+                 weights: dict | None = None) -> int | None:
+    """The retrieved chunk most central to what the WALK found (W11).
 
-    argmax over ords of summed live-edge strength to the rest of ords. Ties
-    break on the lowest ord. One chunk alone is its own medoid. The stored
-    community.medoid is the GLOBAL counterpart; this is the local one.
+    centrality(o) = sum over retrieved neighbours j of weight(j) * strength(o,j)
+
+    With `weights` = the walk scores, a chunk is central in proportion to how
+    strongly the walk ranked the chunks it connects to -- the query-conditioned
+    medoid. Without weights this is plain structural centrality, which
+    collapses to the stored GLOBAL medoid whenever most of the community was
+    retrieved (32 of 38 on the betrayal prompt). Ties break on the lowest ord.
     """
     if not ords:
         return None
     if len(ords) == 1:
         return ords[0]
+    w = weights or {}
     tot = {o: 0.0 for o in ords}
     for e in subgraph_edges(conn, run, ords):
-        tot[e["src"]] += e["strength"]
-        tot[e["dst"]] += e["strength"]
+        a, b, st = e["src"], e["dst"], e["strength"]
+        tot[a] += w.get(b, 1.0) * st
+        tot[b] += w.get(a, 1.0) * st
     return min(ords, key=lambda o: (-tot[o], o))
 
 

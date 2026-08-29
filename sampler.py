@@ -127,6 +127,7 @@ class Bundle:
     communities: list                   # [{cid, hits, keywords, medoid_text, size}]
     params: dict = field(default_factory=dict)
     enumerated: bool = False            # S4
+    scores: dict = field(default_factory=dict)   # ord -> walk score (ef_evidence)
 
     @property
     def top_cids(self) -> list:
@@ -325,7 +326,7 @@ def ef_evidence(conn, run: gt.RunHandle, query: str, ef: int = DEFAULT_EF,
     comms = community_histogram(conn, run, sampled, k_comm=k_comm)
     b = Bundle(query=query, run_id=str(run.run_id), anchors=anchors,
                candidates=tele["seen"], sampled=sampled, communities=comms,
-               enumerated=False,
+               enumerated=False, scores=dict(W),
                params={"ef": ef, "T": T, "m": m, "seed": seed,
                        "k_anchor": k_anchor, "k_comm": k_comm, **tele})
     return b, tele

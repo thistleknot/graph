@@ -37,6 +37,17 @@ PROV_COLOR = {"both": "#E45756", "dense": "#4C78A8", "sparse": "#9E9E9E"}
 LABEL_FILE = Path(os.environ.get("LABEL_OUT", "community_labels.json"))
 
 
+def _clip(text: str, n: int) -> str:
+    """Never cut inside a word (design 6.3). Clip at the last whitespace
+    before n and mark the cut; short text is returned untouched."""
+    text = text or ""
+    if len(text) <= n:
+        return text
+    head = text[:n]
+    cut = head.rsplit(None, 1)[0] if " " in head else head
+    return cut + " …"
+
+
 def cid_color(cid):
     return "#DDDDDD" if cid is None else PALETTE[int(cid) % len(PALETTE)]
 
@@ -269,24 +280,25 @@ with tab_walk:
                 with st.expander(head, expanded=(t is touched[0])):
                     st.caption(f"Community concept (unsupervised BM25): "
                                f"**{' / '.join(concept.get(c, []))}**")
-                    lm = gt.local_medoid(conn, run, mine)
+                    lm = gt.local_medoid(conn, run, mine, weights=bnd.scores)
                     gm = gt.community(conn, run, c)["medoid"]
                     m1, m2 = st.columns(2)
                     with m1:
                         st.markdown(f"**Local medoid** · #{lm} — central to "
-                                    f"what this walk found here")
-                        st.caption(gt.node(conn, run, lm)["body"][:400])
+                                    f"what this walk found here, weighted "
+                                    f"by walk score")
+                        st.caption(_clip(gt.node(conn, run, lm)["body"], 400))
                     with m2:
                         st.markdown(f"**Global medoid** · #{gm} — central to "
                                     f"the whole community")
-                        st.caption(gt.node(conn, run, gm)["body"][:400])
+                        st.caption(_clip(gt.node(conn, run, gm)["body"], 400))
                     st.markdown("**Retrieved chunks**")
                     for o in mine:
                         nd = gt.node(conn, run, o)
                         st.markdown(
                             f"`#{o}` · {nd['doc_id']}<br>"
                             f"<span style='opacity:.75;font-size:.88em'>"
-                            f"{nd['body'][:300]}…</span>",
+                            f"{_clip(nd['body'], 300)}</span>",
                             unsafe_allow_html=True)
 
             xc = gt.cross_community(conn, run, bnd.sampled)
@@ -302,7 +314,7 @@ with tab_walk:
                         f"`#{x['ord']}` c{x['cid']} → {reach} · "
                         f"{x['n_foreign_edges']} edges<br>"
                         f"<span style='opacity:.75;font-size:.88em'>"
-                        f"{nd['body'][:220]}…</span>", unsafe_allow_html=True)
+                        f"{_clip(nd['body'], 220)}</span>", unsafe_allow_html=True)
 
 # ================================================================ MAP
 with tab_map:

@@ -4,7 +4,7 @@ chunkgraph.py — dual-space retrieval graph over arbitrary text.
 STAGED PIPELINE
 | stage    | mechanism                                                            | tag        |
 |----------|----------------------------------------------------------------------|------------|
-| CHUNK    | paragraph split; sliding-window fallback; doc_id retained (R8)       | [mandatory]|
+| CHUNK    | recursive \n\n -> \n -> word window; never intra-word (R16); doc_id(R8)| [mandatory]|
 | PHRASE   | Dunning-LLR report + NPMI Phrases merged into tokens pre-BM25 (R9)   | [opt: R9]  |
 | SPARSE   | BM25-weighted CSR, L2 rows, blockwise X@X.T, in-loop threshold (R10) | [mandatory]|
 | DENSE    | pluggable embed_fn (default: local MiniLM mean-pool); cosine sim     | [opt: R5]  |
@@ -72,6 +72,12 @@ R15 WHEN edges are exported, `strength` SHALL be the bounded traversal weight
    strength -- sampler.candidate_scores, cookbook #1 -- AMPLIFIED with depth
    instead of decaying and never converged. Sparse-only runs are unaffected:
    there 1 - D == sim_sparse exactly, so brown-50 is byte-identical.
+R16 Chunking SHALL be recursive -- paragraphs on blank lines, then lines
+   packed up to `target` words, then a word window only for a single line
+   longer than max_len -- and SHALL NOT split inside a word. The prior code
+   jumped from paragraphs straight to a word window over the whole paragraph,
+   so chunks began on stray punctuation tokens (", as the projects failed")
+   and ignored the sentence lines the loader already writes.
 R6 WHEN both estimators (median/1.4826*MAD vs mean/std) diverge > DIV_WARN in
    BC space, fit() SHALL record a warning in self.diagnostics.
 
@@ -112,16 +118,36 @@ def _tok(text):
     return [w for w in re.findall(r"[a-z]+", text.lower()) if w not in _STOP and len(w) > 2]
 
 def _chunk(doc, target=120, max_len=200):
-    """Require: doc str. Guarantee: list of chunk strings, paragraph-first."""
-    paras = [p.strip() for p in re.split(r"\n\s*\n", doc) if p.strip()]
+    """Recursive splitter (R16): blank-line paragraphs -> newline-separated
+    lines packed up to `target` words -> word window ONLY for a single line
+    longer than max_len. A chunk therefore starts and ends on a paragraph or
+    line boundary except in that last case, where it still lands on a word
+    boundary. Never inside a word.
+    Require: doc str. Guarantee: non-empty chunks, source order."""
     out = []
-    for p in paras:
-        words = p.split()
-        if len(words) <= max_len:
+    for p in (p.strip() for p in re.split(r"\n\s*\n", doc)):
+        if not p:
+            continue
+        if len(p.split()) <= max_len:
             out.append(p)
-        else:  # sliding window, 50% overlap
-            step = target // 2
-            out += [" ".join(words[i:i+target]) for i in range(0, len(words)-step, step)]
+            continue
+        buf, n = [], 0
+        for line in (l.strip() for l in p.split("\n")):
+            if not line:
+                continue
+            w = len(line.split())
+            if w > max_len:                              # one overlong line
+                if buf:
+                    out.append("\n".join(buf)); buf, n = [], 0
+                words, step = line.split(), target // 2
+                out += [" ".join(words[i:i + target])
+                        for i in range(0, max(len(words) - step, 1), step)]
+                continue
+            if n + w > target and buf:
+                out.append("\n".join(buf)); buf, n = [], 0
+            buf.append(line); n += w
+        if buf:
+            out.append("\n".join(buf))
     return out
 
 def default_embed_fn(model_dir):

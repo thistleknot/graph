@@ -29,7 +29,7 @@ Staged pipeline, per `chunkgraph.py`:
 
 | Stage | Mechanism |
 |---|---|
-| CHUNK | paragraph split, sliding-window fallback, `doc_id` retained (R8) |
+| CHUNK | recursive: blank lines, then lines, then word window; never intra-word (R16); `doc_id` retained (R8) |
 | PHRASE | Dunning-LLR + NPMI merged into tokens pre-BM25 (R9, optional) |
 | SPARSE | BM25-weighted CSR, L2 rows, blockwise `X@X.T`, in-loop threshold (R10) |
 | DENSE | pluggable `embed_fn`, default local MiniLM mean-pool (R5, optional) |

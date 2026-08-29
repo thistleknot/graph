@@ -515,3 +515,26 @@ def test_query_terms_dense_signal_promotes_the_closest_term(conn, run):
 
 def test_query_terms_empty_pool_and_empty_cids(conn, run):
     assert gt.query_terms(conn, run, [], "jury") == {}
+
+
+# ---------------------------------------- query-weighted local medoid (W11)
+
+
+def test_local_medoid_matches_its_weighted_definition(conn, run):
+    """W11: centrality(o) = sum_j w[j] * strength(o, j). Recomputed here from
+    subgraph_edges under deterministic non-uniform weights; if the function
+    ignored `weights` it would return the unweighted argmax instead."""
+    ords = [HUB] + [x["ord"] for x in gt.neighbors(conn, run, HUB, limit=14)]
+    w = {o: (o % 7 + 1) / 7.0 for o in ords}
+    tot = {o: 0.0 for o in ords}
+    for e in gt.subgraph_edges(conn, run, ords):
+        tot[e["src"]] += w[e["dst"]] * e["strength"]
+        tot[e["dst"]] += w[e["src"]] * e["strength"]
+    want = min(ords, key=lambda o: (-tot[o], o))
+    assert gt.local_medoid(conn, run, ords, weights=w) == want
+
+
+def test_local_medoid_unit_weights_equal_unweighted(conn, run):
+    ords = [HUB] + [x["ord"] for x in gt.neighbors(conn, run, HUB, limit=12)]
+    assert gt.local_medoid(conn, run, ords, weights={o: 1.0 for o in ords}) \
+        == gt.local_medoid(conn, run, ords)
