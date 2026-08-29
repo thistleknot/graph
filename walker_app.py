@@ -78,15 +78,22 @@ def get_embed(model_dir: str | None):
 
 
 @st.cache_data(ttl=30)
-def load_labels() -> dict:
-    """Draft labels, if label_communities.py has been run. Absent is normal."""
+def load_labels(run_id: str) -> dict:
+    """Draft labels, if label_communities.py has been run. Absent is normal.
+
+    cid is RUN-LOCAL (steering): a re-ingest mints new communities under the
+    same numbers. A labels file drafted against another run is not merely
+    stale, it is wrong -- it put "early electrical science history" on the
+    Moroccan elections. Labels apply only when the file names THIS run."""
     if not LABEL_FILE.exists():
         return {}
     try:
         data = json.loads(LABEL_FILE.read_text(encoding="utf-8"))
-        return {c["cid"]: c for c in data.get("communities", []) if c.get("label")}
-    except (json.JSONDecodeError, KeyError, OSError):
+    except (json.JSONDecodeError, OSError):
         return {}
+    if str(data.get("run_id")) != str(run_id):
+        return {"__stale_run__": data.get("run_id")}
+    return {c["cid"]: c for c in data.get("communities", []) if c.get("label")}
 
 
 def cid_badge(cid, labels) -> str:
@@ -98,7 +105,7 @@ def cid_badge(cid, labels) -> str:
 
 
 conn = get_conn()
-labels = load_labels()
+labels = load_labels(str(run.run_id))
 
 # ---------------------------------------------------------------- sidebar
 st.sidebar.title("ChunkGraph Walker")
@@ -134,7 +141,12 @@ if sp:
         f"Every edge carries a single provenance value: **{sp}** "
         f"({run.provenance[sp]}). Nothing here is a fused result.")
 
-if labels:
+if "__stale_run__" in labels:
+    st.sidebar.warning(f"Draft labels ignored: they were written for run "
+                       f"`{str(labels['__stale_run__'])[:8]}`, not this one. "
+                       f"cid is run-local; re-run label_communities.py.")
+    labels = {}
+elif labels:
     st.sidebar.caption(f"{len(labels)} draft community labels loaded "
                        f"(italic = model-authored)")
 

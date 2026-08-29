@@ -31,3 +31,14 @@ One line each. Status is the only thing that changes in this file.
 - [DONE] commit
 - [TODO] re-ingest brown-50 and brown-50-dual under R16
 - [TODO] re-pin brown-50 shape constants in tests; commit
+
+## after the colonial-power walk (2026-08-29)
+- [DONE] local_medoid multiplies the chunk's OWN walk score in (W11 amended)
+- [DONE] draft labels apply only when community_labels.json names THIS run_id
+- [DONE] walker restarted with CHUNKGRAPH_MODEL_DIR so the dense signal is on
+- [TODO] dense anchoring: anchors are BM25-only, so `power` anchored a physics
+         lecture (c1 hydrogen/peas/planets, 17 of 24) and the fused edges could
+         not repair a bad anchor. Anchor set := BM25 top-k UNION dense ANN top-k
+         over node_embedding (cookbook #4), each anchor tagged with which space
+         found it; the walk's provenance then starts at the anchor, not one hop in.
+- [TODO] stamp model_dir into graph_run.params; app reads it from the run, not env
