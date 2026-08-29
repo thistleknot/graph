@@ -50,7 +50,7 @@ OPENROUTER_MODEL = os.environ.get("INTERPRET_MODEL", "qwen/qwen3.5-9b")
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 OLLAMA_MODEL = os.environ.get("LABEL_MODEL", "qwen3.5-oc:4b")
 NUM_CTX = int(os.environ.get("INTERPRET_NUM_CTX", "16384"))          # I2
-MAX_TOKENS = 1800
+MAX_TOKENS = 4096        # 64 verdicts x ~30 tokens + answer; 1800 truncated (measured)
 MAX_CHUNK_CHARS = 420
 RERANK_MODEL = os.environ.get("RERANK_MODEL")                          # I7
 RERANK_TOP = int(os.environ.get("RERANK_TOP", "24"))
@@ -60,7 +60,7 @@ _CITE = re.compile(r"#(\d+)")
 _THINK = re.compile(r"<think>.*?</think>\s*", re.S)
 _FENCE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.S)
 
-SYSTEM = 'You are an evidence classifier. You will be shown a PROMPT, a list of VALID IDS, and chunks of text each tagged [id=<n>]. For EVERY valid id, decide whether that chunk ENTAILS an answer to the prompt, CONTRADICTS one, or is NEUTRAL (retrieved but not evidence). Most are neutral; do not inflate. Then write a short answer using ONLY entailing chunks, citing #<id> after each claim. If nothing entails, leave the answer empty.\n\nRules: return exactly one verdict per VALID ID, no more, no fewer. Copy each id exactly from the list; ids you invent or renumber are discarded. Reply with ONE JSON object and nothing else:\n{"verdicts": [{"id": <valid id>, "verdict": "entails"|"contradicts"|"neutral", "why": "<=15 words"}, ...], "answer": "<text with #id citations>"}'
+SYSTEM = 'You are an evidence classifier. You will be shown a PROMPT, a list of VALID IDS, and chunks of text each tagged [id=<n>]. For EVERY valid id, decide whether that chunk ENTAILS an answer to the prompt, CONTRADICTS one, or is NEUTRAL (retrieved but not evidence). Most are neutral; do not inflate. Then write a short answer using ONLY entailing chunks, citing #<id> after each claim. If nothing entails, leave the answer empty.\n\nRules: return exactly one verdict per VALID ID, no more, no fewer. Copy each id exactly from the list; ids you invent or renumber are discarded. Reply with ONE JSON object and nothing else:\n{"verdicts": [{"id": <valid id>, "verdict": "entails"|"contradicts"|"neutral", "why": "<=8 words"}, ...], "answer": "<text with #id citations>"}'
 
 
 def _clip(text: str, n: int) -> str:
