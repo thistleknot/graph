@@ -113,7 +113,7 @@ def test_cid_badge_never_hides_the_cid(app):
 
 def test_missing_label_file_is_not_an_error(app):
     """Labels are optional; their absence is the normal state."""
-    assert isinstance(app.load_labels(), dict)
+    assert isinstance(app.load_labels("no-such-run"), dict)
 
 
 # ------------------------------------------- the Walk tab renders end to end
@@ -150,3 +150,29 @@ def test_draw_communities_labels_nodes_with_terms(app):
     labels = [tr for tr in fig.data if tr.mode and "text" in tr.mode][0].text
     assert list(labels) == ["jury / trial / verdict", "congo / belgian"]
     assert app.draw_communities([], {}, {}) is None
+
+
+# ------------------------------------------------ labels are run-scoped
+
+
+def test_labels_from_another_run_are_rejected_not_applied(app, tmp_path):
+    """cid is run-local. A labels file for a different run_id must not be
+    applied by cid -- it put 'early electrical science history' on the
+    Moroccan elections community."""
+    import json
+    f = tmp_path / "labels.json"
+    f.write_text(json.dumps({"run_id": "aaaa-1111",
+                             "communities": [{"cid": 7, "label": "Elections"}]}),
+                 encoding="utf-8")
+    old = app.LABEL_FILE
+    app.LABEL_FILE = f
+    try:
+        app.load_labels.clear()
+        stale = app.load_labels("bbbb-2222")
+        assert stale == {"__stale_run__": "aaaa-1111"}
+        assert 7 not in stale
+        good = app.load_labels("aaaa-1111")
+        assert good[7]["label"] == "Elections"
+    finally:
+        app.LABEL_FILE = old
+        app.load_labels.clear()

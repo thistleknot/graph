@@ -23,11 +23,11 @@ import graph_tools as gt
 LABEL = "brown-50"
 
 # Measured off the live run. Regenerate deliberately if brown-50 is re-ingested.
-N_CHUNKS = 1789
-N_EDGES = 4568
-N_COMMUNITIES = 40
-HUB = 1476          # joint-maximum degree node
-HUB_DEGREE = 28
+N_CHUNKS = 1668
+N_EDGES = 4371
+N_COMMUNITIES = 32
+HUB = 1429          # joint-maximum degree node
+HUB_DEGREE = 36
 
 
 @pytest.fixture(scope="module")

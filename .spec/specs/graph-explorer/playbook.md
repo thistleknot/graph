@@ -29,8 +29,8 @@ One line each. Status is the only thing that changes in this file.
 - [DONE] walker_app: word-boundary clip for previews; medoid uses weights
 - [DONE] tests: chunk battery (3 shapes); weighted medoid differs from unweighted
 - [DONE] commit
-- [TODO] re-ingest brown-50 and brown-50-dual under R16
-- [TODO] re-pin brown-50 shape constants in tests; commit
+- [DONE] re-ingest brown-50 and brown-50-dual under R16
+- [DONE] re-pin brown-50 shape constants in tests; commit
 
 ## after the colonial-power walk (2026-08-29)
 - [DONE] local_medoid multiplies the chunk's OWN walk score in (W11 amended)

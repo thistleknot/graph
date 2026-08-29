@@ -105,7 +105,6 @@ def cid_badge(cid, labels) -> str:
 
 
 conn = get_conn()
-labels = load_labels(str(run.run_id))
 
 # ---------------------------------------------------------------- sidebar
 st.sidebar.title("ChunkGraph Walker")
@@ -118,6 +117,7 @@ if not live:
 
 label = st.sidebar.selectbox("Run", [r["label"] for r in live])
 run = gt.get_run(conn, label)
+labels = load_labels(str(run.run_id))
 
 st.sidebar.caption(
     f"`{run.run_id}`\n\n"
