@@ -25,6 +25,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 import graph_tools as gt
+import interpret
 import sampler
 
 st.set_page_config(page_title="ChunkGraph Walker", layout="wide")
@@ -312,6 +313,53 @@ with tab_walk:
                             f"<span style='opacity:.75;font-size:.88em'>"
                             f"{_clip(nd['body'], 300)}</span>",
                             unsafe_allow_html=True)
+
+            st.markdown("#### Entailment")
+            st.caption(f"`{interpret.OPENROUTER_MODEL}` (OpenRouter; local Ollama "
+                       "as fallback) judges every shown chunk — entails / "
+                       "contradicts / neutral — then answers from the entailed "
+                       "ones only. **Draft**: model-authored, checkable chunk by "
+                       "chunk, never an input to the graph.")
+            if st.button("Judge this walk", key="btn_interpret"):
+                with st.spinner("classifying the evidence…"):
+                    res = interpret.answer(conn, run, bnd, terms, concept)
+                st.session_state["interp"] = (q, res)
+            got = st.session_state.get("interp")
+            if got and got[0] == q:
+                res = got[1]
+                if not res["ok"]:
+                    st.warning(f"No verdict: {res['error']}. The walk above is "
+                               "unaffected.")
+                else:
+                    n_shown = len(res["shown"])
+                    st.caption(f"{res['backend']} · {res['rerank_note']} · judged "
+                               f"{res['coverage']:.0%} of {n_shown} shown · "
+                               f"{len(res['entailed'])} entail · "
+                               f"{len(res['contradicts'])} contradict")
+                    if res["foreign"]:
+                        st.error("Foreign ids not in this walk (unsupported): "
+                                 + ", ".join(f"#{o}" for o in res["foreign"]))
+                    if res["self_contradicting"]:
+                        st.error("Cited in the answer but NOT judged entailing: "
+                                 + ", ".join(f"#{o}" for o in res["self_contradicting"]))
+                    st.markdown("**Answer**")
+                    st.markdown(res["answer"] or "_the model found nothing that entails an answer_")
+                    why = {v["ord"]: v["why"] for v in res["verdicts"]}
+                    for label, ords_, colour in (("Entails", res["entailed"], "#2a7"),
+                                                 ("Contradicts", res["contradicts"], "#c33")):
+                        if ords_:
+                            st.markdown(f"**{label}**")
+                            for o in ords_:
+                                nd = gt.node(conn, run, o)
+                                st.markdown(
+                                    f"<span style='color:{colour}'>●</span> `#{o}` · "
+                                    f"{nd['doc_id']} · c{nd['cid']} — "
+                                    f"<i>{why.get(o, '')}</i><br>"
+                                    f"<span style='opacity:.75;font-size:.88em'>"
+                                    f"{_clip(nd['body'], 300)}</span>",
+                                    unsafe_allow_html=True)
+                    with st.expander("Exactly what the model was shown"):
+                        st.code(res["evidence"], language="text")
 
             xc = gt.cross_community(conn, run, bnd.sampled)
             if xc:

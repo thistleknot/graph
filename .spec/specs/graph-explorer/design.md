@@ -612,3 +612,66 @@ a word window only for a single overlong line). And the UI truncated previews
 at a character count; it now clips at the last word boundary and marks the cut.
 The chunker change re-cuts the corpus, so both live runs are re-ingested and
 the tests pinned to `brown-50`'s shape are re-pinned from the new run.
+
+### 6.4 Interpretation layer: a local model reads the walk (2026-08-29)
+
+**Where it sits.** SERVE side, after the walk. Nothing in the construction
+path changes: chunking, edges, communities, terms, medoids and the walk itself
+are computed before any model is called (sampler S6: the bundle is frozen
+first). The model reads a rendered bundle and writes prose. It is the third
+model-authored layer after draft labels and it carries the same status --
+a draft, marked as such, never a key, never an input to anything upstream.
+
+**What the model sees**, rendered deterministically by `interpret.render_bundle`:
+the prompt; each retrieved community ranked by presence with its
+query-conditioned terms, its unsupervised concept, and both medoids; the
+retrieved chunks under each, as `#ord · doc` plus text; the in-between
+exemplars. Same bundle, same text, every time.
+
+**What it is asked to do.** Answer the prompt from the evidence and nothing
+else, citing `#ord` for every claim, naming which communities carry the
+answer and which are noise, and saying so when the evidence does not answer.
+
+**Citation contract (I1).** Every `#ord` in the output is checked against the
+bundle. A citation outside the bundle is reported as foreign and shown to the
+reader; the answer is not silently trusted. This is the same falsifiability
+the labels layer has -- a human can check every claim against a chunk they
+can open.
+
+**Context (I2).** The request sets `num_ctx` explicitly. Ollama's default
+(2048-4096) truncates a 64-chunk bundle before the model sees the end of it and
+answers from the fragment with finish_reason "stop", which looks like a bad
+answer rather than a truncated one. Measured elsewhere on this machine; not
+re-measured here because it is the known failure mode.
+
+**Model.** `qwen3.5-oc:4b` via the local Ollama, reusing `label_communities`'s
+host resolution. `<think>` blocks are stripped from the reply. Absent Ollama,
+the pane says so and the walk is unchanged (R5 posture).
+
+### 6.4a Interpretation: OpenRouter, entailment, optional rerank (amendment)
+
+**Backend (I5).** `qwen/qwen3.5-9b` via OpenRouter (OpenAI-compatible chat
+completions, `OPENROUTER_API_KEY`). Local Ollama is the fallback when the key
+is absent, with thinking disabled: measured on `qwen3.5-oc:4b`, the model spent
+the whole generation budget in `<think>` and returned empty content with no
+error -- a success that answers nothing. Which backend answered is recorded on
+the result.
+
+**Job (I6).** Not free prose. The model classifies each retrieved chunk against
+the prompt -- ENTAILS / CONTRADICTS / NEUTRAL -- and then answers using only
+the entailed set, citing `#ord`. Output is JSON. This is the falsifiable
+version of "interpret": every verdict is a claim about one chunk a reader can
+open. Neutral is the expected majority; a walk that retrieves 64 chunks does
+not have 64 answers.
+
+**Citation contract (I1, strengthened).** Verdict ords and answer citations
+are both checked against the bundle. Foreign ords are surfaced; a citation in
+the answer that is not among the ENTAILED set is surfaced too, because that is
+the model contradicting itself.
+
+**Rerank stage (I7, optional, OFF).** ColBERTv2 MaxSim over the retrieved
+chunks against the prompt, keeping the top-N in rank order, BEFORE the model
+sees them. Cuts the bundle to what late interaction says is relevant and cuts
+context cost with it. `pylate` is installed; no ColBERT checkpoint is cached,
+so the stage is a hook that engages only when one is (`RERANK_MODEL`).
+Downloading a checkpoint is a deliberate act, not a side effect of a query.

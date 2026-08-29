@@ -66,8 +66,17 @@ _print_lock = threading.Lock()
 
 
 def _host() -> str:
+    """Connect address for the local Ollama.
+
+    OLLAMA_HOST is commonly set to a BIND address (0.0.0.0:11434 so the daemon
+    listens on every interface). A client cannot connect to 0.0.0.0 -- Windows
+    raises WinError 10049 -- so the unspecified address is translated to
+    loopback here, once, for every caller."""
     h = os.environ.get("OLLAMA_HOST") or "127.0.0.1:11434"
-    h = h.replace("0.0.0.0", "127.0.0.1")
+    for bind in ("0.0.0.0", "[::]", "::"):
+        if h.startswith(bind) or h.startswith(f"http://{bind}") or h.startswith(f"https://{bind}"):
+            h = h.replace(bind, "127.0.0.1", 1)
+            break
     return h if "://" in h else f"http://{h}"
 
 

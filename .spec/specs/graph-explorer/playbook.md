@@ -42,3 +42,12 @@ One line each. Status is the only thing that changes in this file.
          over node_embedding (cookbook #4), each anchor tagged with which space
          found it; the walk's provenance then starts at the anchor, not one hop in.
 - [TODO] stamp model_dir into graph_run.params; app reads it from the run, not env
+
+## §6.4 interpretation layer
+- [DONE] interpret.render_bundle: deterministic evidence text with #ord ids
+- [DONE] interpret.answer: OpenRouter qwen/qwen3.5-9b default, Ollama fallback think=False (I5)
+- [DONE] interpret: entailment JSON per chunk; answer from ENTAILED only (I6); I1 on both
+- [DONE] interpret: rerank hook (pylate ColBERT) engaged only when RERANK_MODEL is cached (I7)
+- [DONE] walker_app: Interpret pane, draft-marked, foreign citations surfaced
+- [DONE] tests: render is deterministic and complete; citation check; live call skips without Ollama
+- [DONE] commit
