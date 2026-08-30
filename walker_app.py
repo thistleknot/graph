@@ -390,7 +390,7 @@ with tab_walk:
                                 st.markdown(
                                     f"<span style='color:{colour}'>●</span> `#{o}` · {nd['doc_id']} · "
                                     f"c{nd['cid']} — <i>{why.get(o, '')}</i><br>"
-                                    f"<span style='opacity:.75;font-size:.88em'>{_clip(nd['body'], 300)}</span>",
+                                    f"<span style='opacity:.75;font-size:.88em'>{_clip(interpret.excerpt(nd['body'], q, 300, embed), 300)}</span>",
                                     unsafe_allow_html=True)
                     neutral = [v for v in res["verdicts"]
                                if v["verdict"] == "neutral" and v["ord"] in set(res["shown"])]
