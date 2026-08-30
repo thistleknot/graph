@@ -19,6 +19,10 @@ I4  WHERE no backend answers, answer() SHALL return ok=False with the error
     and SHALL NOT raise; the walk is unchanged (R5 posture).
 I5  OpenRouter (OPENROUTER_API_KEY, model qwen/qwen3.5-9b) SHALL be the default
     backend; local Ollama the fallback. BOTH requests disable reasoning.
+    Interactive bound: two attempts, 90 s each, and NO local fallback when
+    the prompt exceeds OLLAMA_MAX_CHARS -- three 240 s attempts plus a 240 s
+    local run on a prompt that cannot fit num_ctx was measured as minutes of
+    spinner with a clean log. Judge input is capped at EVIDENCE_TOTAL_CHARS.
     Measured on both: qwen3.5-oc:4b spent the whole num_predict in <think>
     and returned empty content; qwen/qwen3.5-9b via OpenRouter spent 1699 of
     1800 completion tokens reasoning, finish_reason=length, content empty --
@@ -80,6 +84,9 @@ NUM_CTX = int(os.environ.get("INTERPRET_NUM_CTX", "16384"))          # I2
 MAX_TOKENS = 4096        # 64 verdicts x ~30 tokens + answer; 1800 truncated (measured)
 MAX_CHUNK_CHARS = 1500      # per-chunk evidence budget; excerpted by the prompt (I8)
 ANCHOR_MULT = 4             # anchors (BM25 top-k) get 4x: they are where the answer most likely is
+EVIDENCE_TOTAL_CHARS = 60000  # judge input cap; 64 docs x 1,500 + anchors x4 reached ~100k chars
+OLLAMA_MAX_CHARS = 40000      # beyond this the local 4b cannot hold the prompt in num_ctx: skip it
+ATTEMPTS = 2                  # interactive: two tries, not three, and a short per-attempt timeout
 RERANK_MODEL = os.environ.get("RERANK_MODEL")                          # I7
 RERANK_TOP = int(os.environ.get("RERANK_TOP", "24"))
 VERDICTS = ("entails", "contradicts", "neutral")
@@ -220,6 +227,10 @@ def render_bundle(conn, run, bundle, terms: dict, concept: dict,
     ords = list(ords) if ords is not None else list(bundle.sampled)
     keep = set(ords)
     anchors = set(getattr(bundle, "anchors", []) or [])
+    # scale the per-document budget so the whole bundle stays under the cap
+    n_a = len(anchors & keep); n_o = max(len(keep) - n_a, 0)
+    unit = EVIDENCE_TOTAL_CHARS / max(n_o + ANCHOR_MULT * n_a, 1)
+    per_doc = int(max(300, min(MAX_CHUNK_CHARS, unit)))
     touched = [t for t in gt.communities_touched(conn, run, ords)]
     cid_of = {o: gt.node(conn, run, o)["cid"] for o in ords}
     lines = [f"PROMPT: {bundle.query}", "",
@@ -238,7 +249,7 @@ def render_bundle(conn, run, bundle, terms: dict, concept: dict,
                   f"   local medoid #{lm} · global medoid #{gm}"]
         for o in mine[:max_chunks_per_community]:
             nd = gt.node(conn, run, o)
-            budget = MAX_CHUNK_CHARS * (ANCHOR_MULT if o in anchors else 1)
+            budget = per_doc * (ANCHOR_MULT if o in anchors else 1)
             lines.append(f"   [id={o}] ({nd['doc_id']}) {excerpt(nd['body'], bundle.query, budget, embed)}")
         if len(mine) > max_chunks_per_community:
             lines.append(f"   (+{len(mine) - max_chunks_per_community} more retrieved in c{c})")
@@ -318,7 +329,7 @@ def check(parsed: dict, shown: list[int]) -> dict:
 # --------------------------------------------------------------- I5 backends
 
 def _via_openrouter(system: str, user: str, timeout: float,
-                    retries: int = 3) -> tuple[str, str]:
+                    retries: int = ATTEMPTS) -> tuple[str, str]:
     """Same shape as rl_V2/src/build_pools_r3.py::_openrouter_chat, which runs
     against this endpoint without incident: stdlib urllib, reasoning disabled,
     three attempts with exponential backoff on ANY failure except 400/401/403,
@@ -420,7 +431,7 @@ def _followup_answer(conn, run, bundle, entailed, embed, timeout, backend) -> di
 
 
 def answer(conn, run, bundle, terms: dict, concept: dict,
-           timeout: float = 240.0, use_rerank: bool = True, embed=None) -> dict:
+           timeout: float = 90.0, use_rerank: bool = True, embed=None) -> dict:
     """Classify then answer. Never raises on transport failure (I4).
 
     Returns {ok, backend, text, answer, verdicts, entailed, contradicts, cited,
@@ -435,9 +446,14 @@ def answer(conn, run, bundle, terms: dict, concept: dict,
            "self_contradicting": [], "coverage": 0.0, "shown": ords,
            "rerank_note": note, "evidence": evidence,
            "drafted_at": datetime.now(timezone.utc).isoformat(),
-           "error": None, "fallback_reason": None}
+           "error": None, "fallback_reason": None, "note": None}
     errors = []
-    for backend in (_via_openrouter, _via_ollama):                       # I5 order
+    backends = [_via_openrouter, _via_ollama]
+    if len(evidence) > OLLAMA_MAX_CHARS:
+        backends = [_via_openrouter]
+        out["note"] = (f"ollama fallback skipped: {len(evidence)} chars exceeds "
+                       f"{OLLAMA_MAX_CHARS} (would truncate in num_ctx and run for minutes)")
+    for backend in backends:                                             # I5 order
         try:
             text, name = backend(SYSTEM, evidence, timeout)
         except Exception as e:                                           # I4
@@ -466,7 +482,7 @@ def answer(conn, run, bundle, terms: dict, concept: dict,
             out.update(_followup_answer(conn, run, bundle, verdict["entailed"],
                                         embed, timeout, backend))
         return out
-    out["error"] = " | ".join(errors) or "no backend available"
+    out["error"] = " | ".join(errors + ([out["note"]] if out.get("note") else [])) or "no backend available"
     return out
 
 
@@ -480,7 +496,11 @@ def _call(system: str, user: str, timeout: float) -> tuple[str, str]:
     """OpenRouter then Ollama (I5 order). Raises when both fail (I4 is handled
     by the caller, which never lets that raise out of reason())."""
     errors = []
-    for backend in (_via_openrouter, _via_ollama):
+    backends = [_via_openrouter, _via_ollama]
+    if len(user) > OLLAMA_MAX_CHARS:
+        backends = [_via_openrouter]
+        errors.append(f"ollama skipped: {len(user)} chars exceeds {OLLAMA_MAX_CHARS}")
+    for backend in backends:
         try:
             return backend(system, user, timeout)
         except Exception as e:                                          # noqa: BLE001
@@ -576,7 +596,7 @@ ONE_SHOT_SYSTEM = 'You are reasoning over COMMUNITY BRIEFS: groups of related do
 
 
 def reason(conn, run, bundle, terms: dict, concept: dict, embed=None,
-           timeout: float = 240.0, one_shot: bool = True) -> dict:
+           timeout: float = 90.0, one_shot: bool = True) -> dict:
     """Hypothesis -> premises -> evaluate -> answer, over community briefs.
     Never raises on transport or parse failure; every stage is kept (I11).
 

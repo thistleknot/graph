@@ -130,7 +130,7 @@ def test_no_backend_returns_ok_false_not_raise(live, walk, monkeypatch):
     res = interpret.answer(conn, run, b, terms, concept, timeout=2.0, use_rerank=False)
     assert res["ok"] is False and res["backend"] is None
     assert "OPENROUTER_API_KEY unset" in res["error"]
-    assert "_via_ollama" in res["error"]
+    assert "ollama" in res["error"]            # ran and timed out, or skipped as oversized
     assert res["evidence"].startswith("PROMPT:")
     assert res["rerank_note"] == "rerank: skipped"
 
@@ -156,6 +156,7 @@ def test_zero_coverage_reply_is_not_an_answer_and_falls_through(live, walk, monk
     """I6: a reply whose every ord is foreign judged nothing. Measured on the
     4b model: verdicts for ords 0..12, none in the bundle, ok=True before."""
     conn, run = live
+    monkeypatch.setattr(interpret, "OLLAMA_MAX_CHARS", 10**9)   # exercise the fallback path
     b, terms, concept = walk
     monkeypatch.setattr(interpret, "_via_openrouter", lambda s, u, t: (json.dumps(
         {"verdicts": [{"ord": 10**6 + i, "verdict": "neutral", "why": ""} for i in range(13)],   # never real ords
@@ -170,6 +171,7 @@ def test_zero_coverage_reply_is_not_an_answer_and_falls_through(live, walk, monk
 
 def test_unparseable_first_backend_falls_through(live, walk, monkeypatch):
     conn, run = live
+    monkeypatch.setattr(interpret, "OLLAMA_MAX_CHARS", 10**9)   # exercise the fallback path
     b, terms, concept = walk
     monkeypatch.setattr(interpret, "_via_openrouter", lambda s, u, t: ("prose, no json", "openrouter:fake"))
     monkeypatch.setattr(interpret, "_via_ollama", lambda s, u, t: (
@@ -233,31 +235,31 @@ def test_openrouter_retries_transient_failures_then_succeeds(monkeypatch):
     import urllib.request
     good = {"choices": [{"finish_reason": "stop",
                          "message": {"content": '{"verdicts": [], "answer": "ok"}'}}]}
-    urlopen, calls = _fake_urlopen([TimeoutError("handshake"), OSError("reset"), good])
+    urlopen, calls = _fake_urlopen([TimeoutError("handshake"), good])
     monkeypatch.setattr(urllib.request, "urlopen", urlopen)
     monkeypatch.setattr("time.sleep", lambda s: None)
     monkeypatch.setenv("OPENROUTER_API_KEY", "k")
     text, name = interpret._via_openrouter("s", "u", 30.0)
     assert text == '{"verdicts": [], "answer": "ok"}' and name.startswith("openrouter:")
-    assert len(calls) == 3 and all(t == 30.0 for t in calls)
+    assert len(calls) == 2 and all(t == 30.0 for t in calls)
 
 
-def test_openrouter_retries_empty_content_and_gives_up_after_three(monkeypatch):
+def test_openrouter_retries_empty_content_and_gives_up_after_attempts(monkeypatch):
     import urllib.request
     empty = {"choices": [{"finish_reason": "stop", "message": {"content": ""}}]}
-    urlopen, calls = _fake_urlopen([empty, empty, empty])
+    urlopen, calls = _fake_urlopen([empty, empty])
     monkeypatch.setattr(urllib.request, "urlopen", urlopen)
     monkeypatch.setattr("time.sleep", lambda s: None)
     monkeypatch.setenv("OPENROUTER_API_KEY", "k")
-    with pytest.raises(RuntimeError, match="exhausted 3 attempts"):
+    with pytest.raises(RuntimeError, match="exhausted 2 attempts"):
         interpret._via_openrouter("s", "u", 30.0)
-    assert len(calls) == 3
+    assert len(calls) == 2
 
 
 def test_openrouter_auth_errors_do_not_retry(monkeypatch):
     import urllib.error, urllib.request
     err = urllib.error.HTTPError("u", 401, "unauthorized", {}, None)
-    urlopen, calls = _fake_urlopen([err, err, err])
+    urlopen, calls = _fake_urlopen([err, err])
     monkeypatch.setattr(urllib.request, "urlopen", urlopen)
     monkeypatch.setenv("OPENROUTER_API_KEY", "k")
     with pytest.raises(urllib.error.HTTPError):
