@@ -314,7 +314,35 @@ def test_ef_evidence_bundle_carries_telemetry_and_no_second_sampling(live):
     """S7 + S12: the Bundle re-derives exactly, and W IS the evidence."""
     conn, run = _dual(live)
     b, tele = sp.ef_evidence(conn, run, Q, ef=24, T=0.0)
-    assert len(b.sampled) == 24 and not b.enumerated
+    assert len(b.sampled) == 24 + tele["ring"] and not b.enumerated
     assert b.params["ef"] == 24 and b.params["stop"] == tele["stop"]
     assert b.params["depth"] == tele["depth"]
     assert b.communities, "histogram over W should be non-empty"
+
+
+def test_s13_ring_is_one_edge_out_from_the_top_of_w_and_never_outranks_its_parent(live):
+    """Design 6.10: every ring member is a direct edge_sym neighbour of a
+    top-`ring_top` member of W, was not in W, and scores <= its parent."""
+    conn, run = _dual(live)
+    W, _ = sp.ef_search(conn, run, Q, ef=24, T=0.0)
+    extra = sp.ring(conn, run, W, top=3, per=5)
+    assert extra, "the top chunks of a 24-wide walk must have unseen neighbours"
+    assert not set(extra) & set(W)
+    parents = sorted(W, key=lambda o: (-W[o], o))[:3]
+    nb = {p: {r["ord"]: r["strength"] for r in gt.neighbors(conn, run, p, limit=200)}
+          for p in parents}
+    for o, sc in extra.items():
+        owners = [p for p in parents if o in nb[p]]
+        assert owners, f"#{o} is not a direct neighbour of any top-3 chunk"
+        assert sc <= max(W[p] for p in owners) + 1e-12
+    assert len(extra) <= 3 * 5
+
+
+def test_s13_ef_evidence_grows_by_the_ring_and_records_it(live):
+    conn, run = _dual(live)
+    b0, t0 = sp.ef_evidence(conn, run, Q, ef=24, T=0.0, ring_top=0)
+    b1, t1 = sp.ef_evidence(conn, run, Q, ef=24, T=0.0)
+    assert t0["ring"] == 0 and len(b0.sampled) == 24
+    assert t1["ring"] > 0 and len(b1.sampled) == 24 + t1["ring"]
+    assert b1.params["ring"] == t1["ring"] and set(b0.sampled) <= set(b1.sampled)
+    assert b1.sampled == sorted(b1.sampled, key=lambda o: (-b1.scores[o], o))

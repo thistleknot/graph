@@ -429,7 +429,9 @@ with tab_walk:
             # ---- 2. the evidence: one expander, collapsed once an answer exists
             with st.expander(
                     f"Evidence — {len(bnd.sampled)} chunks · {len(cids)} communities · "
-                    f"depth {tele['depth']} · {tele['stop']}", expanded=not has_answer):
+                    f"depth {tele['depth']} · {tele['stop']}"
+                    f"{' · +' + str(tele['ring']) + ' one degree out' if tele.get('ring') else ''}",
+                    expanded=not has_answer):
                 fig = draw_communities(touched, terms, xedges)
                 st.plotly_chart(fig, use_container_width=True)
 

@@ -906,3 +906,25 @@ per-run index and pool are pickled under ~/.cache/chunkgraph keyed by run_id;
 a fresh process reloads in 0.4 s instead of rebuilding in 26 s. The staged
 four-call path remains reachable (`one_shot=False`) for strict stage isolation
 and is still pinned by tests.
+
+### 6.10 One degree out from the top chunks; no trailing disclaimer (2026-08-30)
+
+Two operator observations on the same run. The answer ended "the evidence does
+not settle the specific demographic breakdown ...", which reads as if a kind
+of evidence had been wanted and missed. It had not: the walk stops by the
+tuned HNSW rule (6.9, S10), which is the sufficiency decision, so the model has
+no standing to add one. The clause "say what the evidence does not settle" is
+removed from both answer prompts; what a chunk does and does not say remains
+visible per premise and per verdict.
+
+The second: extend the evidence one degree out without re-walking. The walk
+already ranks W by score; the cheapest extension is the strongest edges of the
+top-`ring_top` chunks, added at `score = parent score x edge strength`, capped
+at `ring_per` per parent, only if not already in W. Deterministic, edge-table
+only (W2), no model. The Bundle grows; `params["ring"]` records how many were
+added and the Evidence expander shows it. Defaults `ring_top=3, ring_per=8`
+(<= 24 extra chunks, well inside the Judge's evidence cap). The ring is
+evidence, not anchors: it never seeds a further expansion.
+
+Guards: S13 -- every ring member is a direct edge_sym neighbour of a top-`ring_top`
+member of W and was not in W; ring score never exceeds its parent's.

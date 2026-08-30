@@ -113,6 +113,8 @@ DEFAULT_M   = 3            # neighbours expanded per pop. MEASURED: candidate
                            # so m=8 enumerates and T never applies (S11 inert).
                            # m must sit BELOW the pool for sampling to exist.
 MAX_HOPS    = 8            # runaway guard, NOT a depth policy (S9)
+DEFAULT_RING_TOP = 3       # S13: one degree out from the top-3 of W (design 6.10)
+DEFAULT_RING_PER = 8       # S13: strongest 8 new neighbours per parent
 DEFAULT_CAP = 150          # R4.4 neighbourhood bound, 2-hop p99 is 111
 
 
@@ -309,9 +311,32 @@ def ef_search(conn, run: gt.RunHandle, query: str, ef: int = DEFAULT_EF,
                "ef": ef, "T": T, "m": m, "anchors": [h["ord"] for h in hits]}
 
 
+def ring(conn, run: gt.RunHandle, W: dict, top: int = DEFAULT_RING_TOP,
+         per: int = DEFAULT_RING_PER) -> dict:
+    """S13: one degree out from the strongest `top` members of W, without a
+    walk. Each parent's strongest `per` edges not already in W enter at
+    score = parent score x edge strength (never above the parent). Edge table
+    only (W2), deterministic. Returns {ord: score} for the new members."""
+    out = {}
+    parents = sorted(W, key=lambda o: (-W[o], o))[:max(top, 0)]
+    for p in parents:
+        added = 0
+        for nb in gt.neighbors(conn, run, p, limit=per * 3):
+            o = nb["ord"]
+            if o in W or o in out:
+                continue
+            out[o] = W[p] * max(min(nb["strength"], 1.0), 0.0)
+            added += 1
+            if added >= per:
+                break
+    return out
+
+
 def ef_evidence(conn, run: gt.RunHandle, query: str, ef: int = DEFAULT_EF,
                 T: float = DEFAULT_T, m: int = DEFAULT_M, k_anchor: int = 3,
-                seed: int = 0, k_comm: int = None) -> tuple["Bundle", dict]:
+                seed: int = 0, k_comm: int = None,
+                ring_top: int = DEFAULT_RING_TOP,
+                ring_per: int = DEFAULT_RING_PER) -> tuple["Bundle", dict]:
     """evidence() with ef_search in place of fixed-hop expansion.
 
     Same Bundle shape so community_histogram, term_stats and the walker's
@@ -322,13 +347,17 @@ def ef_evidence(conn, run: gt.RunHandle, query: str, ef: int = DEFAULT_EF,
     W, tele = ef_search(conn, run, query, ef=ef, T=T, m=m,
                         k_anchor=k_anchor, seed=seed)
     anchors = list(tele.get("anchors", []))
+    extra = ring(conn, run, W, top=ring_top, per=ring_per) if W and ring_top else {}
+    tele["ring"] = len(extra)                                   # S13
+    W = {**W, **extra}
     sampled = sorted(W, key=lambda o: (-W[o], o))
     comms = community_histogram(conn, run, sampled, k_comm=k_comm)
     b = Bundle(query=query, run_id=str(run.run_id), anchors=anchors,
                candidates=tele["seen"], sampled=sampled, communities=comms,
                enumerated=False, scores=dict(W),
                params={"ef": ef, "T": T, "m": m, "seed": seed,
-                       "k_anchor": k_anchor, "k_comm": k_comm, **tele})
+                       "k_anchor": k_anchor, "k_comm": k_comm,
+                       "ring_top": ring_top, "ring_per": ring_per, **tele})
     return b, tele
 
 
