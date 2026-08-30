@@ -387,7 +387,7 @@ with tab_walk:
                                 nd = gt.node(conn, run, o)
                                 st.markdown(
                                     f"<span style='color:{colour}'>●</span> `#{o}` · {nd['doc_id']} · "
-                                    f"c{nd['cid']} — <i>{why.get(o, '')}</i><br>"
+                                    f"c{nd['cid']} · walk {bnd.scores.get(o, 0):.2f} — <i>{why.get(o, '')}</i><br>"
                                     f"<span style='opacity:.75;font-size:.88em'>{_clip(interpret.excerpt(nd['body'], q, 300, embed), 300)}</span>",
                                     unsafe_allow_html=True)
                     neutral = [v for v in res["verdicts"]
@@ -477,8 +477,8 @@ with tab_walk:
                                         f"{_clip(interpret.excerpt(nd['body'], q, 600, embed), 600)}</span>",
                                         unsafe_allow_html=True)
                     mine = in_cid[c]
-                    st.caption("retrieved here: " + ", ".join(
-                        f"#{o} ({gt.node(conn, run, o)['doc_id']})" for o in mine[:12])
+                    st.caption("retrieved here (walk score): " + ", ".join(
+                        f"#{o} {bnd.scores.get(o, 0):.2f}" for o in mine[:12])
                         + (f" … (+{len(mine) - 12})" if len(mine) > 12 else ""))
 
                 xc = gt.cross_community(conn, run, bnd.sampled)
