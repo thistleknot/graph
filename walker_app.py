@@ -41,6 +41,7 @@ PALETTE = ["#4C78A8", "#F58518", "#54A24B", "#E45756", "#72B7B2", "#EECA3B",
            "#BCBD22", "#17BECF"]
 PROV_COLOR = {"both": "#E45756", "dense": "#4C78A8", "sparse": "#9E9E9E"}
 LABEL_FILE = Path(os.environ.get("LABEL_OUT", "community_labels.json"))
+DEFAULT_MODEL_DIR = os.path.expanduser("~/models/m2v-minilm-l6-256")   # used when CHUNKGRAPH_MODEL_DIR is unset
 
 
 def _clip(text: str, n: int) -> str:
@@ -124,37 +125,29 @@ if not live:
 label = st.sidebar.selectbox("Run", [r["label"] for r in live])
 run = gt.get_run(conn, label)
 labels = load_labels(str(run.run_id))
+st.sidebar.caption(f"{run.n_chunks} chunks · {run.n_edges} edges · "
+                   f"{run.n_communities} communities")
 
-st.sidebar.caption(
-    f"`{run.run_id}`\n\n"
-    f"{run.n_chunks} chunks · {run.n_edges} edges · {run.n_communities} communities")
-
-if run.dense:
-    st.sidebar.success(f"Retrieval mode: **fused** (embed_dim {run.embed_dim})")
-else:
-    st.sidebar.warning(
-        "Retrieval mode: **sparse-only** — no dense space on this run, so "
-        "anchors are lexical only.")
-
-embed = get_embed(os.environ.get("CHUNKGRAPH_MODEL_DIR"))
-if embed is None:
-    st.sidebar.warning("Query-conditioned terms: **lexical only** — set "
-                       "CHUNKGRAPH_MODEL_DIR for the dense signal.")
-
-sp = run.single_provenance
-if sp:
-    st.sidebar.info(
-        f"Every edge carries a single provenance value: **{sp}** "
-        f"({run.provenance[sp]}). Nothing here is a fused result.")
-
+embed = get_embed(os.environ.get("CHUNKGRAPH_MODEL_DIR") or DEFAULT_MODEL_DIR)
 if "__stale_run__" in labels:
-    st.sidebar.warning(f"Draft labels ignored: they were written for run "
-                       f"`{str(labels['__stale_run__'])[:8]}`, not this one. "
-                       f"cid is run-local; re-run label_communities.py.")
-    labels = {}
-elif labels:
-    st.sidebar.caption(f"{len(labels)} draft community labels loaded "
-                       f"(italic = model-authored)")
+    labels = {}                      # written for another run; cid is run-local
+
+# Only a degraded signal is worth a line on its own; the rest is under details.
+if not run.dense:
+    st.sidebar.warning("Sparse-only run: anchors are lexical, no dense edges.")
+if embed is None:
+    st.sidebar.warning("No embedding model found: query-conditioned terms are "
+                       "lexical only. Set CHUNKGRAPH_MODEL_DIR.")
+
+with st.sidebar.expander("details"):
+    st.caption(f"run `{run.run_id}`")
+    st.caption("retrieval: " + (f"fused, embed_dim {run.embed_dim}" if run.dense else "sparse-only"))
+    st.caption("query terms: " + ("lexical + dense" if embed else "lexical only"))
+    if run.single_provenance:
+        st.caption(f"every edge is **{run.single_provenance}** "
+                   f"({run.provenance[run.single_provenance]}); nothing here is fused")
+    st.caption(f"draft labels: {len(labels)} loaded (italic = model-authored)"
+               if labels else "draft labels: none for this run")
 
 def draw_subgraph(ords, trail, current=None, height=340):
     """Shared renderer: nodes coloured by STORED cid, trail dotted."""
