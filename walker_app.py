@@ -377,6 +377,63 @@ with tab_walk:
                     with st.expander("Exactly what the model returned (raw)"):
                         st.code(res["text"], language="json")
 
+            st.markdown("#### Reason over the communities")
+            st.caption("Community briefs — terms both ways, local and global "
+                       "medoid excerpts — go to the model, which proposes a "
+                       "hypothesis, extracts the premises it needs, evaluates each "
+                       "against the medoid evidence it cites, and answers from what "
+                       "survived. **Draft**: every stage kept, every verdict "
+                       "checkable against a chunk.")
+            if st.button("Reason about this walk", key="btn_reason"):
+                with st.spinner("hypothesis → premises → evaluate → answer…"):
+                    rr = interpret.reason(conn, run, bnd, terms, concept, embed=embed)
+                st.session_state["reason"] = (q, rr)
+            got_r = st.session_state.get("reason")
+            if got_r and got_r[0] == q:
+                rr = got_r[1]
+                if not rr["ok"]:
+                    st.warning(f"Reasoning stopped: {rr['error']}. Stages that ran are "
+                               f"below; the walk is unaffected.")
+                else:
+                    st.caption(f"{rr['backend']} · {len(rr['briefs'])} community briefs")
+                if rr["hypotheses"]:
+                    st.markdown("**Hypotheses**")
+                    for i, h in enumerate(rr["hypotheses"]):
+                        mark = "→" if h == rr["hypothesis"] else "·"
+                        st.markdown(f"{mark} {h}")
+                    if rr["why"]:
+                        st.caption(f"chosen because: {rr['why']}")
+                if rr["premises"]:
+                    st.markdown("**Premises**")
+                    col = {"supports": "#2a7", "contradicts": "#c33",
+                           "insufficient": "#999", "unsupported": "#bbb"}
+                    for pr in rr["premises"]:
+                        ids = ", ".join(f"#{o}" for o in pr["ids"]) or "no evidence cited"
+                        st.markdown(
+                            f"<span style='color:{col[pr['verdict']]}'>●</span> "
+                            f"**{pr['verdict']}** — {pr['text']}<br>"
+                            f"<span style='opacity:.7;font-size:.86em'>{ids}"
+                            f"{' — ' + pr['why'] if pr['why'] else ''}</span>",
+                            unsafe_allow_html=True)
+                if rr["foreign"]:
+                    st.error("Foreign ids named by the model (discarded): "
+                             + ", ".join(f"#{o}" for o in rr["foreign"]))
+                if rr["self_contradicting"]:
+                    st.error("Answer cites ids outside the supported premises: "
+                             + ", ".join(f"#{o}" for o in rr["self_contradicting"]))
+                if rr["ok"]:
+                    st.markdown("**Answer**")
+                    st.markdown(rr["answer"] or
+                                "_No premise was judged supported, so there is nothing "
+                                "to answer from. The premises above say why._")
+                if rr["briefs_text"]:
+                    with st.expander("Community briefs the model reasoned over"):
+                        st.code(rr["briefs_text"], language="text")
+                if rr["stages"]:
+                    with st.expander("Raw stage replies"):
+                        for name, txt in rr["stages"].items():
+                            st.markdown(f"**{name}**"); st.code(txt, language="json")
+
             xc = gt.cross_community(conn, run, bnd.sampled)
             if xc:
                 st.markdown("#### In between")

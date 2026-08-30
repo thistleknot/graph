@@ -798,3 +798,57 @@ on the documented window n <= 24; on 51 documents in 5 communities the top-1
 flips even at n=8..24, which is granularity, not a defect. Render fixtures
 derive their hub from the loaded run instead of a constant that broke on the
 next ingest.
+
+### 6.6 Reason over community evidence (2026-08-29)
+
+**Why this and not more chunks.** The judge reads retrieved chunks one by one
+and says which entail. That answers "is there evidence" but not "what is the
+claim, and does the corpus support it". GraphRAG's key piece is a
+representative unit per community -- not a node, EVIDENCE: the medoid chunk.
+This stage reasons over those units.
+
+**The community brief**, one per community the walk landed in, ranked by
+presence, built deterministically before any model call (S6):
+
+    cid, presence (retrieved / size)
+    terms as the prompt sees them      (query_terms)      supervised
+    terms the community holds          (community_terms)  unsupervised
+    local medoid  -- chunk most central to what the WALK found here,
+                     weighted by walk score              supervised
+    global medoid -- chunk most central to the WHOLE community
+                                                          unsupervised
+    each medoid rendered as a prompt-conditioned excerpt (I8) tagged [id=n]
+
+Two medoids because they answer different questions: the global one says what
+the community is about regardless of the prompt; the local one says which face
+of it the prompt activated. When they coincide the prompt landed on the
+community's centre; when they differ, the difference is informative.
+
+**Four stages, each a JSON call, each checked (I9-I11):**
+
+1. HYPOTHESIS -- from the prompt and the briefs, propose up to three candidate
+   answers as falsifiable statements; pick one to pursue and say why.
+2. PREMISES -- the salient premises the chosen hypothesis needs, each naming
+   the brief ids ([id=n]) that would support it. A premise citing no id is
+   kept but marked unsupported-by-construction.
+3. EVALUATE -- for each premise, read the cited excerpts (anchor budget) and
+   return supports / contradicts / insufficient with a one-line reason.
+4. ANSWER -- the final response to the prompt, built only from premises
+   judged supports, citing #id. Contradicted premises are reported, not hidden.
+
+**Guards.**
+- I9  Every id the model names, at every stage, is checked against the brief
+      ids. Foreign ids are surfaced and discarded.
+- I10 The answer cites only ids attached to premises judged supports; any
+      other citation is self-contradiction and is surfaced.
+- I11 Stage outputs are kept verbatim so the whole chain -- hypothesis,
+      premises, verdicts, answer -- is inspectable and falsifiable chunk by
+      chunk. A reader can disagree with a verdict by opening the chunk.
+
+**What the model never does.** Change membership, terms or medoids. Those are
+computed; it reads them. This is the determinism boundary applied to reasoning:
+the substrate is fixed, the model chooses only what to claim about it.
+
+**Cost.** Four calls; briefs are compact (~10 communities x 2 excerpts). Cheaper
+than the per-chunk judge, and complementary: the judge asks "which chunks",
+this asks "what claim, and does the evidence hold it".

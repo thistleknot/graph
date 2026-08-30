@@ -538,3 +538,42 @@ def test_local_medoid_unit_weights_equal_unweighted(conn, run):
     ords = [HUB] + [x["ord"] for x in gt.neighbors(conn, run, HUB, limit=12)]
     assert gt.local_medoid(conn, run, ords, weights={o: 1.0 for o in ords}) \
         == gt.local_medoid(conn, run, ords)
+
+
+# ------------------------------------------------- search is BM25 (W12)
+
+
+def test_search_rare_decisive_term_beats_common_word_density(conn):
+    """W12: on the document-level run a long essay dense in `school` must not
+    outrank a document carrying the rare term. Measured before the fix: plain
+    tf*idf anchored on cj48/cf33/cf04 via how+school+communities."""
+    try:
+        run = gt.get_run(conn, "brown-500-dual")
+    except Exception as e:                                # pragma: no cover
+        pytest.skip(str(e))
+    hits = gt.search(conn, run, "school desegregation", k=5)
+    assert hits
+    top = gt.node(conn, run, hits[0]["ord"])["body"].lower()
+    assert "desegregation" in top, f"top anchor lacks the decisive term: {hits[0]['doc_id']}"
+
+
+def test_search_scores_are_length_normalised(conn):
+    """Two hits on the same terms: the longer document must not win purely on
+    length. Checks the sign of the BM25 length term via a controlled pair."""
+    try:
+        run = gt.get_run(conn, "brown-500-dual")
+    except Exception as e:                                # pragma: no cover
+        pytest.skip(str(e))
+    hits = gt.search(conn, run, "election", k=40)
+    same = [h for h in hits if h["terms_hit"] == 1]
+    assert len(same) >= 5
+    # among single-term hits, score must not be monotone increasing in n_tok
+    pairs = [(gt.node(conn, run, h["ord"])["n_tok"], h["score"]) for h in same[:20]]
+    longer_but_lower = any(a[0] > b[0] and a[1] < b[1] for a in pairs for b in pairs)
+    assert longer_but_lower, "no longer-but-lower pair: length normalisation absent"
+
+
+def test_question_words_are_stopwords():
+    toks = gt.tokenize("how did communities respond to school desegregation")
+    assert "how" not in toks and "did" not in toks
+    assert {"communities", "respond", "school", "desegregation"} <= set(toks)

@@ -68,3 +68,11 @@ One line each. Status is the only thing that changes in this file.
 - [DONE] I8 excerpt by prompt: lexical+dense, paragraph cap at budget/3, anchors x4
 - [DONE] I6 verdict = answers-or-partly-answers; dedupe; two-stage answer over entailed
 - [DONE] dual-run fixtures -> brown-500-dual; sampler stability pinned there, n<=24; render hub derived
+
+## §6.6 reason over community evidence
+- [DONE] interpret.community_briefs: per community terms x2, local + global medoid excerpts (deterministic)
+- [DONE] interpret.reason: hypothesis -> premises -> evaluate -> answer; I9-I11 checks; stage texts kept
+- [DONE] walker_app: 'Reason about this walk' -- hypothesis, premises with verdicts, answer, briefs
+- [DONE] tests: briefs deterministic + both medoids; staged pipeline with fake backends; I9/I10 checks
+- [DONE] live run on 'how did communities respond to school desegregation'; commit
+- [DONE] W12 search() is BM25 (was tf*idf); question words are stopwords; excerpt clips from the hit

@@ -62,6 +62,10 @@ W11 local_medoid() SHALL weight BOTH the chunk and its neighbours by walk
     score: centrality(o) = w(o) * sum_j w(j) * strength(o, j). Neighbour
     weighting alone tracks structural centrality and returned the global
     medoid at 25 of 110 retrieved; the chunk's own relevance must multiply in.
+W12 search() SHALL be BM25 -- tf saturation (k1) and length normalisation (b)
+    on the stored n_tok -- not tf*idf. Measured at document-level nodes: plain
+    tf*idf anchored on long essays dense in common query words and missed 19
+    of 23 documents carrying the rare, decisive term.
 W7  walk() SHALL return, per reached node, the EDGE PROVENANCE and SOURCE DOC of
     every hop that reached it -- not merely the node ids traversed. A route that
     cannot name its own justification is a browser, not an evidence instrument.
@@ -91,6 +95,7 @@ this had not are but from or have an they which one you were her all she there
 would their we him been has when who will more no if out so said what up its
 about into than them can only other new some could time these two may then do
 first any my now such like our over man me even most made after also did many
+how what why when where which who whom whose does do
 before must through back years where much your way well down should because""".split())
 
 
@@ -164,10 +169,16 @@ def get_run(conn, label: str) -> RunHandle:
         n_edges=sum(prov.values()), n_communities=n_comm, provenance=prov)
 
 
-def search(conn, run: RunHandle, query: str, k: int = 8) -> list[dict]:
-    """Lexical entry point. tf*idf over the graph's OWN vocabulary, read off
-    node.attrs->'tf' via node_tf_gin. idf recomputed exactly as fit() defines
-    it: log(1 + (n - df + .5)/(df + .5)).
+def search(conn, run: RunHandle, query: str, k: int = 8,
+           K1: float = 1.5, B: float = 0.75) -> list[dict]:
+    """Lexical entry point: BM25 over the graph's OWN vocabulary, read off
+    node.attrs->'tf' via node_tf_gin, length-normalised on attrs->'n_tok'.
+
+    Was plain tf*idf (W12 fix). At document-level nodes that anchored a
+    2,300-word essay saying `school` ten times over a short document saying
+    `desegregation` (df 5, idf 4.5) once: measured, the walk then reached 4
+    of the 23 desegregation documents. BM25 saturates tf and divides by
+    length, which is the whole point of it.
 
     W2: attrs is used for SCORING here, never for traversal."""
     terms = tokenize(query)
@@ -176,19 +187,24 @@ def search(conn, run: RunHandle, query: str, k: int = 8) -> list[dict]:
     with conn.cursor() as cur:
         cur.execute("""
             WITH q AS (SELECT unnest(%s::text[]) AS term),
+            avg AS (SELECT avg((attrs->>'n_tok')::float) AS dl
+                      FROM node WHERE run_id = %s),
             df AS (SELECT q.term, count(n.ord) AS df
                      FROM q LEFT JOIN node n
                        ON n.run_id = %s AND n.attrs -> 'tf' ? q.term
                     GROUP BY q.term),
-            hit AS (SELECT n.ord, q.term, (n.attrs -> 'tf' ->> q.term)::int AS tf
+            hit AS (SELECT n.ord, q.term, (n.attrs -> 'tf' ->> q.term)::float AS tf,
+                           (n.attrs ->> 'n_tok')::float AS dl
                       FROM node n JOIN q ON n.attrs -> 'tf' ? q.term
                      WHERE n.run_id = %s)
             SELECT h.ord,
-                   sum(h.tf * ln(1 + ((%s::float - d.df + 0.5)/(d.df + 0.5)))) AS score,
+                   sum( ln(1 + ((%s::float - d.df + 0.5)/(d.df + 0.5)))
+                        * h.tf * (%s + 1)
+                        / (h.tf + %s * (1 - %s + %s * h.dl / avg.dl)) ) AS score,
                    count(DISTINCT h.term) AS terms_hit
-              FROM hit h JOIN df d USING (term)
+              FROM hit h JOIN df d USING (term), avg
              GROUP BY h.ord ORDER BY score DESC LIMIT %s""",
-            (terms, run.run_id, run.run_id, run.n_chunks, k))
+            (terms, run.run_id, run.run_id, run.run_id, run.n_chunks, K1, K1, B, B, k))
         rows = cur.fetchall()
     return _decorate(conn, run, rows)
 

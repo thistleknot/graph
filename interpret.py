@@ -51,6 +51,14 @@ I8  Anchors -- the BM25 top-k the walk started from -- SHALL get ANCHOR_MULT
     elections organized' -- a question cj37 answers -- because the judge was
     reading openings. Excerpting by the prompt is what makes a document-level
     node judgeable at all.
+I9  reason(): every id the model names at any stage SHALL be checked against
+    the brief ids (local + global medoids). Foreign ids are surfaced and
+    discarded; a premise citing nothing is kept, marked unsupported.
+I10 The final answer SHALL cite only ids attached to premises judged
+    'supports'. Any other citation is self-contradiction and is surfaced.
+I11 Every stage's raw reply SHALL be kept on the result, so the chain
+    hypothesis -> premises -> verdicts -> answer is inspectable and a reader
+    can refute any verdict by opening the chunk it cites.
 I7  WHERE RERANK_MODEL names a cached ColBERT checkpoint and pylate imports,
     chunks SHALL be reranked by MaxSim against the prompt and clipped to
     RERANK_TOP before rendering. Otherwise the stage is a no-op and says so.
@@ -171,7 +179,30 @@ def excerpt(body: str, query: str, n_chars: int = MAX_CHUNK_CHARS, embed=None) -
         if spent >= n_chars:
             break
     keep.sort()
-    text = " ".join(_clip(paras[k].replace(chr(10), " "), cap) for k in keep)
+    def _window(par):
+        """Clip a kept paragraph to `cap` starting at the first LINE that carries
+        a prompt term -- head-clipping lost the very term that selected the
+        paragraph (measured: 12 of 40 term-bearing documents rendered without
+        it). With no hit in the paragraph (dense-picked), clip from the head."""
+        lines_ = [l for l in par.split(chr(10)) if l.strip()]
+        start = 0
+        for i_, l in enumerate(lines_):
+            if set(gt.tokenize(l)) & qt:
+                start = i_
+                break
+        words = " ".join(lines_[start:]).split()
+        # and within that line: if the hit word sits past the clip point,
+        # begin a few words before it (Brown sentences run to 1,026 chars).
+        pos = 0
+        for w_i, w in enumerate(words):
+            if set(gt.tokenize(w)) & qt:
+                pos = w_i
+                break
+        head_len = len(" ".join(words[:pos]))
+        if head_len > cap // 2:
+            words = words[max(0, pos - 8):]
+        return _clip(" ".join(words), cap)
+    text = " ".join(_window(paras[k]) for k in keep)
     return _clip(text, n_chars)
 
 
@@ -218,7 +249,8 @@ def render_bundle(conn, run, bundle, terms: dict, concept: dict,
         for x in xc[:8]:
             nd = gt.node(conn, run, x["ord"])
             reach = ", ".join(f"c{k}" for k in x["foreign_cids"])
-            lines.append(f"   [id={x['ord']}] c{x['cid']} -> {reach} · {_clip(nd['body'], 200)}")
+            lines.append(f"   [id={x['ord']}] c{x['cid']} -> {reach} · "
+                         f"{excerpt(nd['body'], bundle.query, 300, embed)}")
     return "\n".join(lines)
 
 
@@ -434,4 +466,206 @@ def answer(conn, run, bundle, terms: dict, concept: dict,
                                         embed, timeout, backend))
         return out
     out["error"] = " | ".join(errors) or "no backend available"
+    return out
+
+
+# ------------------------------------------- 6.6 reason over community evidence
+
+BRIEF_CHARS = 700
+EVIDENCE_PER_BRIEF = 3      # top walk-scored retrieved chunks per community, besides the medoids
+
+
+def _call(system: str, user: str, timeout: float) -> tuple[str, str]:
+    """OpenRouter then Ollama (I5 order). Raises when both fail (I4 is handled
+    by the caller, which never lets that raise out of reason())."""
+    errors = []
+    for backend in (_via_openrouter, _via_ollama):
+        try:
+            return backend(system, user, timeout)
+        except Exception as e:                                          # noqa: BLE001
+            errors.append(f"{backend.__name__}: {type(e).__name__}: {str(e)[:160]}")
+    raise RuntimeError(" | ".join(errors))
+
+
+def _json_obj(text: str) -> dict | None:
+    text = _THINK.sub("", text or "").strip()
+    m = _FENCE.search(text)
+    cand = m.group(1) if m else None
+    if cand is None:
+        i, j = text.find("{"), text.rfind("}")
+        cand = text[i:j + 1] if i != -1 and j > i else None
+    if not cand:
+        return None
+    try:
+        obj = json.loads(cand)
+    except json.JSONDecodeError:
+        return None
+    return obj if isinstance(obj, dict) else None
+
+
+def community_briefs(conn, run, bundle, terms: dict, concept: dict,
+                     embed=None, n_chars: int = BRIEF_CHARS) -> list[dict]:
+    """One brief per community the walk landed in, ranked by presence.
+    Deterministic: membership, terms and both medoids are computed, never
+    model-chosen (S6, determinism boundary)."""
+    touched = gt.communities_touched(conn, run, bundle.sampled)
+    cid_of = {o: gt.node(conn, run, o)["cid"] for o in bundle.sampled}
+    out = []
+    for t in touched:
+        c = t["cid"]
+        mine = [o for o in bundle.sampled if cid_of[o] == c]
+        lm = gt.local_medoid(conn, run, mine, weights=bundle.scores)
+        gm = gt.community(conn, run, c)["medoid"]
+        def med(o):
+            nd = gt.node(conn, run, o)
+            return {"ord": o, "doc_id": nd["doc_id"],
+                    "excerpt": excerpt(nd["body"], bundle.query, n_chars, embed)}
+        top = sorted(mine, key=lambda o: (-bundle.scores.get(o, 0.0), o))[:EVIDENCE_PER_BRIEF]
+        out.append({"cid": c, "hits": t["hits"], "size": t["size"],
+                    "terms_cond": list(terms.get(c, [])),
+                    "terms_unsup": list(concept.get(c, [])),
+                    "local": med(lm), "global": med(gm),
+                    "evidence": [med(o) for o in top if o not in (lm, gm)]})
+    return out
+
+
+def render_briefs(bundle, briefs: list[dict]) -> str:
+    """Deterministic text of the briefs (I3/I11)."""
+    ids = sorted({b["local"]["ord"] for b in briefs} | {b["global"]["ord"] for b in briefs}
+                 | {e["ord"] for b in briefs for e in b.get("evidence", [])})
+    L = [f"PROMPT: {bundle.query}", "",
+         "VALID IDS (copy exactly; anything else is discarded): " + ", ".join(map(str, ids)), ""]
+    for b in briefs:
+        L += [f"== COMMUNITY c{b['cid']} · {b['hits']} of {b['size']} members retrieved",
+              f"   terms as the prompt sees it: {' / '.join(b['terms_cond'])}",
+              f"   terms the community holds:   {' / '.join(b['terms_unsup'])}",
+              f"   LOCAL medoid (what the walk found here)  [id={b['local']['ord']}] ({b['local']['doc_id']}) {b['local']['excerpt']}",
+              f"   GLOBAL medoid (what the community is)     [id={b['global']['ord']}] ({b['global']['doc_id']}) {b['global']['excerpt']}"]
+        for e in b.get("evidence", []):
+            L.append(f"   retrieved evidence (walk-ranked)        [id={e['ord']}] ({e['doc_id']}) {e['excerpt']}")
+        L.append("")
+    return "\n".join(L)
+
+
+HYP_SYSTEM = (
+    "You are reasoning over COMMUNITY BRIEFS: groups of related documents from a "
+    "corpus, each with its characteristic terms and two representative excerpts "
+    "tagged [id=<n>]. Propose up to three candidate answers to the PROMPT as "
+    "falsifiable statements the briefs could support or refute, then choose one "
+    "to pursue and say why in one line. Reply with ONE JSON object and nothing "
+    'else: {"hypotheses": ["<statement>", ...], "chosen": <index>, "why": "<one line>"}'
+)
+PREM_SYSTEM = (
+    "Given the PROMPT, the COMMUNITY BRIEFS and a HYPOTHESIS, list the salient "
+    "premises the hypothesis needs to be true. For each premise name the brief "
+    "ids ([id=<n>], copied exactly) whose excerpts would support it; use an empty "
+    "list if none would. Three to six premises. Reply with ONE JSON object and "
+    'nothing else: {"premises": [{"text": "<premise>", "ids": [<id>, ...]}, ...]}'
+)
+EVAL_SYSTEM = 'For each PREMISE, read ONLY the excerpts cited for it and decide: supports = an excerpt states, about the SAME subject as the premise, information that makes it true or partly true; contradicts = an excerpt states information against it; insufficient = the excerpts do not bear on it. An analogy, an implication drawn from a different subject, or a general statement that could apply to anything is INSUFFICIENT, not supports. Reply with ONE JSON object and nothing else: {"evaluations": [{"index": <premise index>, "verdict": "supports"|"contradicts"|"insufficient", "why": "<=12 words"}, ...]}'
+FINAL_SYSTEM = (
+    "Answer the PROMPT using ONLY the SUPPORTED PREMISES and their cited "
+    "excerpts. Cite #<id> after each claim. State plainly what the evidence does "
+    "not settle. Reply with ONE JSON object and nothing else: "
+    '{"answer": "<text with #id citations>"}'
+)
+
+
+def reason(conn, run, bundle, terms: dict, concept: dict, embed=None,
+           timeout: float = 240.0) -> dict:
+    """Hypothesis -> premises -> evaluate -> answer, over community briefs.
+    Never raises on transport or parse failure; every stage is kept (I11)."""
+    briefs = community_briefs(conn, run, bundle, terms, concept, embed)
+    text = render_briefs(bundle, briefs)
+    ex_of = {}
+    for b in briefs:
+        for m in [b["local"], b["global"]] + list(b.get("evidence", [])):
+            ex_of[m["ord"]] = f"[id={m['ord']}] ({m['doc_id']}) {m['excerpt']}"
+    valid = set(ex_of)
+    out = {"ok": False, "backend": None, "briefs": briefs, "briefs_text": text,
+           "hypotheses": [], "hypothesis": "", "why": "", "premises": [],
+           "supported_ids": [], "answer": "", "cited": [], "foreign": [],
+           "self_contradicting": [], "stages": {}, "error": None,
+           "drafted_at": datetime.now(timezone.utc).isoformat()}
+    if not briefs:
+        out["error"] = "no communities in the walk"
+        return out
+
+    def stage(name, system, user):
+        t, backend = _call(system, user, timeout)
+        out["stages"][name] = t
+        out["backend"] = backend
+        obj = _json_obj(t)
+        if obj is None:
+            raise RuntimeError(f"{name}: reply was not the JSON object asked for")
+        return obj
+
+    try:
+        h = stage("hypothesis", HYP_SYSTEM, text)
+        hyps = [str(x).strip() for x in (h.get("hypotheses") or []) if str(x).strip()]
+        if not hyps:
+            raise RuntimeError("hypothesis: none proposed")
+        ci = h.get("chosen", 0)
+        ci = int(ci) if isinstance(ci, (int, float, str)) and str(ci).lstrip("-").isdigit() else 0
+        ci = min(max(ci, 0), len(hyps) - 1)
+        out.update({"hypotheses": hyps, "hypothesis": hyps[ci], "why": str(h.get("why", ""))[:300]})
+
+        p = stage("premises", PREM_SYSTEM, text + "\n\nHYPOTHESIS: " + hyps[ci])
+        prem = []
+        for item in (p.get("premises") or [])[:8]:
+            txt = str((item or {}).get("text", "")).strip()
+            if not txt:
+                continue
+            ids, foreign = [], []
+            for x in (item.get("ids") or []):
+                try:
+                    o = int(x)
+                except (TypeError, ValueError):
+                    continue
+                (ids if o in valid else foreign).append(o)                # I9
+            out["foreign"] += [o for o in foreign if o not in out["foreign"]]
+            prem.append({"text": txt, "ids": ids, "verdict": "insufficient" if ids else "unsupported",
+                         "why": "" if ids else "no evidence cited"})
+        if not prem:
+            raise RuntimeError("premises: none extracted")
+
+        ev_lines = [f"PROMPT: {bundle.query}", f"HYPOTHESIS: {hyps[ci]}", ""]
+        for i, pr in enumerate(prem):
+            if not pr["ids"]:
+                continue
+            ev_lines.append(f"PREMISE {i}: {pr['text']}")
+            for o in pr["ids"]:
+                ev_lines.append("   " + ex_of[o])
+            ev_lines.append("")
+        e = stage("evaluate", EVAL_SYSTEM, "\n".join(ev_lines))
+        for item in (e.get("evaluations") or []):
+            try:
+                i = int(item.get("index"))
+            except (TypeError, ValueError, AttributeError):
+                continue
+            if 0 <= i < len(prem) and prem[i]["ids"]:
+                v = str(item.get("verdict", "")).lower().strip()
+                if v in ("supports", "contradicts", "insufficient"):
+                    prem[i]["verdict"] = v
+                    prem[i]["why"] = str(item.get("why", ""))[:200]
+        out["premises"] = prem
+        supported = [pr for pr in prem if pr["verdict"] == "supports"]
+        sup_ids = sorted({o for pr in supported for o in pr["ids"]})
+        out["supported_ids"] = sup_ids
+
+        if supported:
+            fl = [f"PROMPT: {bundle.query}", "", "SUPPORTED PREMISES:"]
+            for pr in supported:
+                fl.append(f"- {pr['text']}")
+                for o in pr["ids"]:
+                    fl.append("   " + ex_of[o])
+            f = stage("answer", FINAL_SYSTEM, "\n".join(fl))
+            ans = str(f.get("answer", "")).strip()
+            cited = citations(ans)
+            out["answer"] = ans
+            out["cited"] = [o for o in cited if o in sup_ids]
+            out["self_contradicting"] = [o for o in cited if o not in sup_ids]   # I10
+        out["ok"] = True
+    except Exception as ex:                                              # I4
+        out["error"] = f"{type(ex).__name__}: {str(ex)[:300]}"
     return out

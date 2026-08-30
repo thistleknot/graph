@@ -319,17 +319,29 @@ def test_excerpt_handles_empty_and_stopword_only_queries():
 
 
 def test_render_uses_prompt_excerpts_not_openings(live, walk):
-    """I8 end to end: a retrieved document whose opening lacks the prompt's
-    terms must be rendered from a paragraph that has them."""
+    """I8 end to end. The contract is per document: wherever the body carries
+    a prompt term ANYWHERE, the rendered excerpt must carry one too. Documents
+    reached through edges may carry none at all; their opening fallback is
+    correct, not a miss -- so they are excluded, not counted against."""
     conn, run = live
     b, terms, concept = walk
     text = interpret.render_bundle(conn, run, b, terms, concept)
     qt = set(gt.tokenize(Q))
-    shown = [l for l in text.splitlines() if l.strip().startswith("[id=")]
+    shown = {}
+    for l in text.splitlines():
+        s_ = l.strip()
+        if s_.startswith("[id="):
+            shown.setdefault(int(s_[4:s_.index("]")]), s_)   # first rendering per id
     assert shown
-    carrying = sum(1 for l in shown if set(gt.tokenize(l)) & qt)
-    assert carrying / len(shown) >= 0.5, (
-        f"only {carrying} of {len(shown)} rendered excerpts carry a prompt term")
+    eligible, hit = 0, 0
+    for o in b.sampled:
+        body_terms = set(gt.tokenize(gt.node(conn, run, o)["body"]))
+        if body_terms & qt and o in shown:
+            eligible += 1
+            if set(gt.tokenize(shown[o])) & qt:
+                hit += 1
+    assert eligible >= 5, "fixture: too few documents carry a prompt term"
+    assert hit == eligible, f"{eligible - hit} of {eligible} term-bearing documents rendered an opening instead"
 
 
 # ------------------------------------ I8 dense signal, budgets; I6 two-stage
@@ -412,3 +424,128 @@ def test_no_followup_when_answer_already_present(live, walk, monkeypatch):
         {"verdicts": [{"id": target, "verdict": "entails", "why": "y"}], "answer": f"Yes #{target}."}), "openrouter:fake"))[1])
     res = interpret.answer(conn, run, b, terms, concept, use_rerank=False)
     assert len(calls) == 1 and res["answer_stage"] == "single"
+
+
+# ------------------------------------- 6.6 reason over community evidence
+
+
+def test_briefs_are_deterministic_and_carry_both_medoids(live, walk):
+    conn, run = live
+    b, terms, concept = walk
+    a = interpret.community_briefs(conn, run, b, terms, concept)
+    c = interpret.community_briefs(conn, run, b, terms, concept)
+    assert a == c and a
+    assert [x["hits"] for x in a] == sorted([x["hits"] for x in a], reverse=True)
+    for x in a:
+        assert x["local"]["ord"] in set(b.sampled)
+        assert x["global"]["ord"] == gt.community(conn, run, x["cid"])["medoid"]
+        assert x["local"]["excerpt"] and x["global"]["excerpt"]
+    text = interpret.render_briefs(b, a)
+    assert text.startswith(f"PROMPT: {Q}") and "VALID IDS" in text
+    assert "LOCAL medoid" in text and "GLOBAL medoid" in text
+
+
+def _staged_backend(b_local, b_global, calls, *, foreign=False, contradict=False, bad_cite=False):
+    """One fake backend that answers each stage by the system prompt it gets."""
+    def be(system, user, timeout):
+        if system is interpret.HYP_SYSTEM or "Propose up to three" in system:
+            calls.append("hypothesis")
+            return json.dumps({"hypotheses": ["H0", "H1"], "chosen": 1, "why": "because"}), "openrouter:fake"
+        if "premises the hypothesis needs" in system:
+            calls.append("premises")
+            ids0 = [b_local] + ([10**6] if foreign else [])
+            return json.dumps({"premises": [{"text": "P0", "ids": ids0},
+                                            {"text": "P1", "ids": [b_global]},
+                                            {"text": "P2", "ids": []}]}), "openrouter:fake"
+        if "For each PREMISE" in system:
+            calls.append("evaluate")
+            return json.dumps({"evaluations": [
+                {"index": 0, "verdict": "supports", "why": "yes"},
+                {"index": 1, "verdict": "contradicts" if contradict else "insufficient", "why": "no"},
+                {"index": 2, "verdict": "supports", "why": "ignored: no ids"}]}), "openrouter:fake"
+        calls.append("answer")
+        cite = b_global if bad_cite else b_local
+        return json.dumps({"answer": f"Therefore X #{cite}."}), "openrouter:fake"
+    return be
+
+
+def test_reason_runs_four_stages_and_answers_from_supported_only(live, walk, monkeypatch):
+    conn, run = live
+    b, terms, concept = walk
+    briefs = interpret.community_briefs(conn, run, b, terms, concept)
+    bl, bg = briefs[0]["local"]["ord"], briefs[0]["global"]["ord"]
+    calls = []
+    monkeypatch.setattr(interpret, "_via_openrouter", _staged_backend(bl, bg, calls))
+    monkeypatch.setattr(interpret, "_via_ollama", lambda s, u, t: (_ for _ in ()).throw(RuntimeError("down")))
+    res = interpret.reason(conn, run, b, terms, concept)
+    assert res["ok"], res["error"]
+    assert calls == ["hypothesis", "premises", "evaluate", "answer"]
+    assert res["hypothesis"] == "H1" and res["hypotheses"] == ["H0", "H1"]
+    v = {p["text"]: p["verdict"] for p in res["premises"]}
+    assert v == {"P0": "supports", "P1": "insufficient", "P2": "unsupported"}, v
+    assert res["supported_ids"] == [bl]
+    assert res["cited"] == [bl] and res["self_contradicting"] == []
+    assert set(res["stages"]) == {"hypothesis", "premises", "evaluate", "answer"}   # I11
+
+
+def test_reason_discards_foreign_ids_and_flags_bad_citations(live, walk, monkeypatch):
+    conn, run = live
+    b, terms, concept = walk
+    briefs = interpret.community_briefs(conn, run, b, terms, concept)
+    bl, bg = briefs[0]["local"]["ord"], briefs[0]["global"]["ord"]
+    if bl == bg:
+        pytest.skip("local and global medoid coincide on this walk; need two ids")
+    calls = []
+    monkeypatch.setattr(interpret, "_via_openrouter",
+                        _staged_backend(bl, bg, calls, foreign=True, bad_cite=True))
+    res = interpret.reason(conn, run, b, terms, concept)
+    assert res["ok"]
+    assert res["foreign"] == [10**6]                                   # I9
+    assert res["premises"][0]["ids"] == [bl], "foreign id must be dropped from the premise"
+    assert res["self_contradicting"] == [bg] and res["cited"] == []    # I10
+
+
+def test_reason_skips_answer_when_nothing_supports(live, walk, monkeypatch):
+    conn, run = live
+    b, terms, concept = walk
+    briefs = interpret.community_briefs(conn, run, b, terms, concept)
+    bl, bg = briefs[0]["local"]["ord"], briefs[0]["global"]["ord"]
+    calls = []
+    def be(system, user, timeout):
+        base = _staged_backend(bl, bg, calls)
+        if "For each PREMISE" in system:
+            calls.append("evaluate")
+            return json.dumps({"evaluations": [{"index": 0, "verdict": "insufficient", "why": ""},
+                                               {"index": 1, "verdict": "contradicts", "why": ""}]}), "openrouter:fake"
+        return base(system, user, timeout)
+    monkeypatch.setattr(interpret, "_via_openrouter", be)
+    res = interpret.reason(conn, run, b, terms, concept)
+    assert res["ok"] and "answer" not in calls
+    assert res["answer"] == "" and res["supported_ids"] == []
+
+
+def test_reason_transport_failure_is_reported_not_raised(live, walk, monkeypatch):
+    conn, run = live
+    b, terms, concept = walk
+    monkeypatch.setattr(interpret, "_via_openrouter", lambda s, u, t: (_ for _ in ()).throw(RuntimeError("x")))
+    monkeypatch.setattr(interpret, "_via_ollama", lambda s, u, t: (_ for _ in ()).throw(RuntimeError("y")))
+    res = interpret.reason(conn, run, b, terms, concept)
+    assert res["ok"] is False and "RuntimeError" in res["error"]
+    assert res["briefs"] and res["briefs_text"]                       # briefs still built
+
+
+def test_briefs_carry_walk_ranked_evidence_besides_the_medoids(live, walk):
+    conn, run = live
+    b, terms, concept = walk
+    briefs = interpret.community_briefs(conn, run, b, terms, concept)
+    sampled = set(b.sampled)
+    for x in briefs:
+        ev = x["evidence"]
+        assert len(ev) <= interpret.EVIDENCE_PER_BRIEF
+        assert all(e["ord"] in sampled for e in ev)
+        assert all(e["ord"] not in (x["local"]["ord"], x["global"]["ord"]) for e in ev)
+        scores = [b.scores.get(e["ord"], 0.0) for e in ev]
+        assert scores == sorted(scores, reverse=True)
+    text = interpret.render_briefs(b, briefs)
+    if any(x["evidence"] for x in briefs):
+        assert "retrieved evidence (walk-ranked)" in text
