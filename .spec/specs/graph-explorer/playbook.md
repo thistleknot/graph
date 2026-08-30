@@ -65,6 +65,13 @@ One line each. Status is the only thing that changes in this file.
 - [TODO] walker: label the prompt box as the retrieval query; separate 'ask about this walk' box
 - [TODO] interpret: EXPLAIN mode -- prose over the same rendered bundle, same citation check, no verdicts
 - [TODO] re-measure ef on the 500-document graph (sweep was on 1,789 chunks)
+- [TODO] reach test: ten prompts with hand-listed topic docs; score = topic docs reached by the walk. Gates the next two.
+  _Files:_ tests/test_reach.py  _Verify:_ pytest tests/test_reach.py -q
+- [TODO] walk-time DWPC: damp the path score by deg(intermediate)^-0.4 in ef_search and ring; keep only if the reach test does not drop
+  _Files:_ sampler.py, tests/test_sampler.py  _Verify:_ pytest tests/test_sampler.py tests/test_reach.py -q
+- [TODO] anchor expansion: decode the prompt's model2vec vector to its nearest corpus vocabulary rows (CSLS, salient-gated) and add them as BM25 anchors; keep only if the reach test improves on >=7/10
+  _Files:_ sampler.py, graph_tools.py  _Verify:_ pytest tests/test_reach.py -q
+- [LATER] build-time DWPC term-mediated edges X.diag(deg^-0.4).X^T (graph-term-selection spec, approved, unbuilt)
 - [DONE] I8 excerpt by prompt: lexical+dense, paragraph cap at budget/3, anchors x4
 - [DONE] I6 verdict = answers-or-partly-answers; dedupe; two-stage answer over entailed
 - [DONE] dual-run fixtures -> brown-500-dual; sampler stability pinned there, n<=24; render hub derived
