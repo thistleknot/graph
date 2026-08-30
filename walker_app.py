@@ -12,8 +12,8 @@ src/dst columns only.
 
 Nothing here re-partitions anything. Communities are the run's own stored cids.
 
-Run (PowerShell, from the repo root; the database must be up):
-    docker compose up -d
+Run (PowerShell, from the repo root; needs the `chunkgraph-pg` container,
+which normally stays up -- `docker compose up -d` only if it is not):
     $env:CHUNKGRAPH_MODEL_DIR = 'C:/Users/user/models/m2v-minilm-l6-256'   # dense signal
     $env:OPENROUTER_API_KEY   = '...'                                       # Reason / Judge
     streamlit run walker_app.py --server.port 8501
