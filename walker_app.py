@@ -253,33 +253,53 @@ def draw_communities(touched, terms, xedges, height=520):
 
 tab_walk, tab_map = st.tabs(["Walk", "Map"])
 
+@st.cache_data(show_spinner=False, max_entries=32)
+def walk_for(run_id: str, q: str):
+    """The walk itself, once per (run, prompt). Deterministic (S1): same inputs,
+    same bundle, so a rerun on a button click reads it back instead of walking."""
+    return sampler.ef_evidence(conn, run, q)
+
+
+@st.cache_data(show_spinner=False, max_entries=32)
+def walk_state(run_id: str, q: str, _bnd=None, _embed=None):
+    """Everything the tab shows that is computed, not model-authored: keyed by
+    (run, prompt); the underscore args are inputs Streamlit must not hash."""
+    bnd = _bnd
+    touched = gt.communities_touched(conn, run, bnd.sampled)
+    cids = [t["cid"] for t in touched]
+    concept = gt.community_terms(conn, run, cids, k=3)
+    terms = gt.query_terms(conn, run, cids, q, k=3, embed=_embed)
+    cid_of = {o: gt.node(conn, run, o)["cid"] for o in bnd.sampled}
+    in_cid = {c: [o for o in bnd.sampled if cid_of[o] == c] for c in cids}
+    xedges: dict = {}
+    for e in gt.subgraph_edges(conn, run, bnd.sampled):
+        ca, cb = cid_of.get(e["src"]), cid_of.get(e["dst"])
+        if ca is not None and cb is not None and ca != cb:
+            key = (min(ca, cb), max(ca, cb))
+            xedges[key] = xedges.get(key, 0) + 1
+    medoids = {c: (gt.local_medoid(conn, run, in_cid[c], weights=bnd.scores),
+                   gt.community(conn, run, c)["medoid"]) for c in cids}
+    med_ords = sorted({o for pair in medoids.values() for o in pair})
+    return {"touched": touched, "cids": cids, "concept": concept, "terms": terms,
+            "cid_of": cid_of, "in_cid": in_cid, "xedges": xedges, "medoids": medoids,
+            "salient": gt.chunk_salient(conn, run, med_ords, k=3)}
+
+
 # ================================================================ WALK
 with tab_walk:
     q = st.text_input("Prompt", "", key="q", placeholder="ask the corpus")
     if q.strip():
-        bnd, tele = sampler.ef_evidence(conn, run, q)
+        bnd, tele = walk_for(str(run.run_id), q)
         if not bnd.sampled:
             st.warning("No lexical anchor matched. Nothing to walk from.")
         else:
-            # ---- everything below is computed before any model call (S6)
-            touched = gt.communities_touched(conn, run, bnd.sampled)
-            cids = [t["cid"] for t in touched]
-            concept = gt.community_terms(conn, run, cids, k=3)
-            terms = gt.query_terms(conn, run, cids, q, k=3, embed=embed)
-            cid_of = {o: gt.node(conn, run, o)["cid"] for o in bnd.sampled}
-            in_cid = {c: [o for o in bnd.sampled if cid_of[o] == c] for c in cids}
-            xedges: dict = {}
-            for e in gt.subgraph_edges(conn, run, bnd.sampled):
-                ca, cb = cid_of.get(e["src"]), cid_of.get(e["dst"])
-                if ca is not None and cb is not None and ca != cb:
-                    key = (min(ca, cb), max(ca, cb))
-                    xedges[key] = xedges.get(key, 0) + 1
-            medoids = {}
-            for c in cids:
-                medoids[c] = (gt.local_medoid(conn, run, in_cid[c], weights=bnd.scores),
-                              gt.community(conn, run, c)["medoid"])
-            med_ords = sorted({o for pair in medoids.values() for o in pair})
-            salient = gt.chunk_salient(conn, run, med_ords, k=3)
+            # ---- everything below is computed before any model call (S6),
+            # once per (run, prompt): a button click reruns the script and
+            # must not redo the walk.
+            ws = walk_state(str(run.run_id), q, _bnd=bnd, _embed=embed)
+            touched, cids, concept, terms = ws["touched"], ws["cids"], ws["concept"], ws["terms"]
+            cid_of, in_cid, xedges, medoids, salient = (ws["cid_of"], ws["in_cid"], ws["xedges"],
+                                                          ws["medoids"], ws["salient"])
 
             # ---- 1. the model's answer, right under the prompt
             b1, b2 = st.columns(2)
