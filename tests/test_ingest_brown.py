@@ -99,7 +99,7 @@ def stubbed(monkeypatch):
     monkeypatch.setattr(ingest_brown.pg_store, "save", fake_save)
     monkeypatch.setattr(
         ingest_brown, "load_docs",
-        lambda n_docs: (["ca01"] * n_docs, ["text one"] * n_docs))
+        lambda n_docs, *a, **k: (["ca01"] * n_docs, ["text one"] * n_docs))   # stride ignored
     return rec
 
 

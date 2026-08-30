@@ -28,7 +28,8 @@ import psycopg
 
 import graph_tools as gt
 
-HUB = 1476
+# HUB is derived from the run the app loaded -- see the `hub` fixture; a
+# constant pinned to one ingest broke on the next (ord 1476 on a 51-node run).
 
 
 @pytest.fixture(scope="module")
@@ -46,38 +47,47 @@ def app():
 
 
 @pytest.fixture(scope="module")
-def ords(app):
-    nbrs = gt.neighbors(app.conn, app.run, HUB, limit=8)
-    return [HUB] + [n["ord"] for n in nbrs]
+def hub(app):
+    """Highest-degree node of the run the app actually loaded."""
+    with app.conn.cursor() as cur:
+        cur.execute("""SELECT a FROM edge_sym WHERE run_id = %s AND valid_to IS NULL
+                        GROUP BY a ORDER BY count(*) DESC, a LIMIT 1""", (app.run.run_id,))
+        return cur.fetchone()["a"]
 
 
-def test_figure_passes_plotly_validation(app, ords):
+@pytest.fixture(scope="module")
+def ords(app, hub):
+    nbrs = gt.neighbors(app.conn, app.run, hub, limit=8)
+    return [hub] + [n["ord"] for n in nbrs]
+
+
+def test_figure_passes_plotly_validation(app, ords, hub):
     """The regression guard. to_plotly_json() validates every property; an
     invalid colour, size or width raises here rather than in the browser."""
-    fig = app.draw_subgraph(ords, ords[:4], HUB)
+    fig = app.draw_subgraph(ords, ords[:4], hub)
     payload = fig.to_plotly_json()
     assert payload["data"]
     assert len(fig.data) == 3          # edges, trail, nodes
 
 
-def test_edge_colour_is_plotly_legal(app, ords):
+def test_edge_colour_is_plotly_legal(app, ords, hub):
     """8-digit hex (#RRGGBBAA) is valid CSS and invalid plotly. Alpha must be
     expressed as rgba(). This is the exact bug this file was added for."""
-    fig = app.draw_subgraph(ords, ords[:4], HUB)
+    fig = app.draw_subgraph(ords, ords[:4], hub)
     for trace in fig.data:
         colour = getattr(getattr(trace, "line", None), "color", None)
         if isinstance(colour, str) and colour.startswith("#"):
             assert len(colour) in (4, 7), f"{colour!r} is not plotly-legal hex"
 
 
-def test_trail_trace_omitted_when_too_short(app, ords):
+def test_trail_trace_omitted_when_too_short(app, ords, hub):
     """A one-node trail draws no dotted path, so the trace count drops."""
-    fig = app.draw_subgraph(ords, [HUB], HUB)
+    fig = app.draw_subgraph(ords, [hub], hub)
     assert len(fig.data) == 2
 
 
-def test_single_node_subgraph_renders(app):
-    fig = app.draw_subgraph([HUB], [HUB], HUB)
+def test_single_node_subgraph_renders(app, hub):
+    fig = app.draw_subgraph([hub], [hub], hub)
     assert fig is not None
     fig.to_plotly_json()
 
@@ -86,17 +96,17 @@ def test_empty_subgraph_returns_none(app):
     assert app.draw_subgraph([], [], None) is None
 
 
-def test_current_node_is_emphasised(app, ords):
+def test_current_node_is_emphasised(app, ords, hub):
     """The node you are standing on must be visually distinguishable."""
-    fig = app.draw_subgraph(ords, ords[:4], HUB)
+    fig = app.draw_subgraph(ords, ords[:4], hub)
     nodes = fig.data[-1]
     sizes = list(nodes.marker.size)
-    assert sizes[ords.index(HUB)] == max(sizes)
+    assert sizes[ords.index(hub)] == max(sizes)
     assert sizes.count(max(sizes)) == 1
 
 
-def test_every_node_gets_a_colour(app, ords):
-    fig = app.draw_subgraph(ords, ords[:4], HUB)
+def test_every_node_gets_a_colour(app, ords, hub):
+    fig = app.draw_subgraph(ords, ords[:4], hub)
     colours = list(fig.data[-1].marker.color)
     assert len(colours) == len(ords)
     assert all(isinstance(c, str) and c.startswith("#") for c in colours)

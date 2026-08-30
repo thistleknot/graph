@@ -28,7 +28,7 @@ Q = "a colonial power leaves and the country falls apart"
 def live():
     try:
         conn = gt.connect()
-        run = gt.get_run(conn, "brown-50-dual")
+        run = gt.get_run(conn, "brown-500-dual")
     except (psycopg.OperationalError, LookupError) as e:   # pragma: no cover
         pytest.skip(f"no live run: {e}")
     yield conn, run
@@ -158,7 +158,7 @@ def test_zero_coverage_reply_is_not_an_answer_and_falls_through(live, walk, monk
     conn, run = live
     b, terms, concept = walk
     monkeypatch.setattr(interpret, "_via_openrouter", lambda s, u, t: (json.dumps(
-        {"verdicts": [{"ord": i, "verdict": "neutral", "why": ""} for i in range(13)],
+        {"verdicts": [{"ord": 10**6 + i, "verdict": "neutral", "why": ""} for i in range(13)],   # never real ords
          "answer": ""}), "openrouter:fake"))
     monkeypatch.setattr(interpret, "_via_ollama", lambda s, u, t: (json.dumps(
         {"verdicts": [{"ord": b.sampled[0], "verdict": "entails", "why": "y"}],
@@ -206,3 +206,209 @@ def test_live_openrouter_judges_the_shown_chunks(live, walk):
     assert res["foreign"] == [], f"model named ords outside the bundle: {res['foreign']}"
     assert res["coverage"] >= 0.5, f"judged only {res['coverage']:.0%} of shown chunks"
     assert res["verdicts"], "no verdicts"
+
+
+# ----------------------------------------------- I5 transport: retry shape
+
+
+def _fake_urlopen(script):
+    """script: list of callables/exceptions consumed per attempt."""
+    import io, json
+    calls = []
+
+    class _Resp(io.BytesIO):
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    def urlopen(req, timeout=None):
+        calls.append(timeout)
+        step = script[len(calls) - 1]
+        if isinstance(step, Exception):
+            raise step
+        return _Resp(json.dumps(step).encode("utf-8"))
+    return urlopen, calls
+
+
+def test_openrouter_retries_transient_failures_then_succeeds(monkeypatch):
+    import urllib.request
+    good = {"choices": [{"finish_reason": "stop",
+                         "message": {"content": '{"verdicts": [], "answer": "ok"}'}}]}
+    urlopen, calls = _fake_urlopen([TimeoutError("handshake"), OSError("reset"), good])
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "k")
+    text, name = interpret._via_openrouter("s", "u", 30.0)
+    assert text == '{"verdicts": [], "answer": "ok"}' and name.startswith("openrouter:")
+    assert len(calls) == 3 and all(t == 30.0 for t in calls)
+
+
+def test_openrouter_retries_empty_content_and_gives_up_after_three(monkeypatch):
+    import urllib.request
+    empty = {"choices": [{"finish_reason": "stop", "message": {"content": ""}}]}
+    urlopen, calls = _fake_urlopen([empty, empty, empty])
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "k")
+    with pytest.raises(RuntimeError, match="exhausted 3 attempts"):
+        interpret._via_openrouter("s", "u", 30.0)
+    assert len(calls) == 3
+
+
+def test_openrouter_auth_errors_do_not_retry(monkeypatch):
+    import urllib.error, urllib.request
+    err = urllib.error.HTTPError("u", 401, "unauthorized", {}, None)
+    urlopen, calls = _fake_urlopen([err, err, err])
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "k")
+    with pytest.raises(urllib.error.HTTPError):
+        interpret._via_openrouter("s", "u", 30.0)
+    assert len(calls) == 1, "401 must fail fast, not burn retries"
+
+
+def test_openrouter_truncated_json_is_retried_as_a_failure(monkeypatch):
+    import urllib.request
+    cut = {"choices": [{"finish_reason": "length", "message": {"content": '{"verdicts": [{"id": 1'}}]}
+    good = {"choices": [{"finish_reason": "stop", "message": {"content": '{"verdicts": [], "answer": ""}'}}]}
+    urlopen, calls = _fake_urlopen([cut, good])
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "k")
+    text, _ = interpret._via_openrouter("s", "u", 30.0)
+    assert text.endswith("}") and len(calls) == 2
+
+
+# -------------------------------------------------- I8 excerpt by the prompt
+
+NL2 = chr(10) * 2
+
+
+def _body(*paras):
+    return NL2.join(paras)
+
+
+def test_excerpt_prefers_the_paragraph_that_carries_the_prompt_terms():
+    body = _body("Opening line about the weather .",
+                 "The electoral procedure in Morocco set registration and voting rules .",
+                 "A closing paragraph about dinner .")
+    out = interpret.excerpt(body, "how were Morocco's first elections organized", 200)
+    assert out.startswith("The electoral procedure")
+    assert "weather" not in out and "dinner" not in out
+
+
+def test_excerpt_keeps_source_order_and_stays_within_budget():
+    body = _body("Elections were announced in the spring .",
+                 "Filler about crops .",
+                 "Voting districts were fixed by the ministry before the elections .",
+                 "More filler about crops .")
+    out = interpret.excerpt(body, "elections voting districts", 200)
+    assert out.index("Elections were announced") < out.index("Voting districts")
+    assert "crops" not in out
+    assert len(out) <= 200 + 2
+
+
+def test_excerpt_falls_back_to_the_opening_when_nothing_hits():
+    body = _body("Opening line .", "Second paragraph .", "Third paragraph .")
+    out = interpret.excerpt(body, "quokka wombat", 30)
+    assert out.startswith("Opening line")
+
+
+def test_excerpt_handles_empty_and_stopword_only_queries():
+    body = _body("Only paragraph here .")
+    assert interpret.excerpt("", "elections", 100) == ""
+    assert interpret.excerpt(body, "the of and", 100).startswith("Only paragraph")
+
+
+def test_render_uses_prompt_excerpts_not_openings(live, walk):
+    """I8 end to end: a retrieved document whose opening lacks the prompt's
+    terms must be rendered from a paragraph that has them."""
+    conn, run = live
+    b, terms, concept = walk
+    text = interpret.render_bundle(conn, run, b, terms, concept)
+    qt = set(gt.tokenize(Q))
+    shown = [l for l in text.splitlines() if l.strip().startswith("[id=")]
+    assert shown
+    carrying = sum(1 for l in shown if set(gt.tokenize(l)) & qt)
+    assert carrying / len(shown) >= 0.5, (
+        f"only {carrying} of {len(shown)} rendered excerpts carry a prompt term")
+
+
+# ------------------------------------ I8 dense signal, budgets; I6 two-stage
+
+
+def test_excerpt_dense_signal_promotes_a_lexically_weak_paragraph():
+    """The intro carries the prompt words; the mechanics paragraph carries the
+    answer with no lexical overlap. A dense signal that points at the mechanics
+    paragraph must lift it into the excerpt."""
+    import numpy as np
+    intro = "Morocco elections elections Morocco first elections overview ."
+    mech = "Registration of voters and fixing of districts were done by the ministry ."
+    filler = "Crops and weather this season ."
+    body = _body(intro, mech, filler)
+
+    def embed(texts):                       # query and `mech` share a direction
+        out = []
+        for t in texts:
+            if t.startswith("Registration") or "organized" in t:
+                out.append(np.array([1.0, 0.0]))
+            else:
+                out.append(np.array([0.0, 1.0]))
+        return np.stack(out)
+    lexical = interpret.excerpt(body, "how were Morocco's elections organized", 200)
+    dense = interpret.excerpt(body, "how were Morocco's elections organized", 200, embed=embed)
+    assert "Registration" not in lexical
+    assert "Registration" in dense
+
+
+def test_excerpt_fits_three_capped_paragraphs_in_the_budget():
+    paras = [f"elections paragraph number {i} " + "word " * 120 + "." for i in range(3)]
+    out = interpret.excerpt(_body(*paras), "elections", 1500)
+    assert all(f"elections paragraph number {i}" in out for i in range(3)), out[:200]
+    assert len(out) <= 1500 + 3
+
+
+def test_render_gives_anchors_a_larger_budget(live, walk):
+    conn, run = live
+    b, terms, concept = walk
+    text = interpret.render_bundle(conn, run, b, terms, concept)
+    by = {}
+    for l in text.splitlines():
+        s = l.strip()
+        if s.startswith("[id="):
+            o = int(s[4:s.index("]")]); by[o] = len(s)
+    anchors = [o for o in b.anchors if o in by]
+    others = [o for o in by if o not in set(b.anchors)]
+    assert anchors and others
+    assert max(by[o] for o in anchors) > max(by[o] for o in others), "anchor excerpt not larger"
+
+
+def test_followup_answer_runs_when_entailed_but_answer_empty(live, walk, monkeypatch):
+    conn, run = live
+    b, terms, concept = walk
+    target = b.sampled[0]
+    calls = []
+
+    def fake_or(system, user, timeout):
+        calls.append("followup" if "ENTAILED EXCERPTS" in user else "judge")
+        if "ENTAILED EXCERPTS" in user:
+            return json.dumps({"answer": f"It was so #{target}. Also #999999."}), "openrouter:fake"
+        return json.dumps({"verdicts": [{"id": target, "verdict": "entails", "why": "y"}],
+                           "answer": ""}), "openrouter:fake"
+    monkeypatch.setattr(interpret, "_via_openrouter", fake_or)
+    monkeypatch.setattr(interpret, "_via_ollama", lambda s, u, t: ("", "ollama:fake"))
+    res = interpret.answer(conn, run, b, terms, concept, use_rerank=False)
+    assert calls == ["judge", "followup"]
+    assert res["answer_stage"] == "followup"
+    assert res["answer"].startswith("It was so")
+    assert res["cited"] == [target]
+    assert res["self_contradicting"] == [999999], "citation outside the entailed set must be flagged"
+
+
+def test_no_followup_when_answer_already_present(live, walk, monkeypatch):
+    conn, run = live
+    b, terms, concept = walk
+    target = b.sampled[0]
+    calls = []
+    monkeypatch.setattr(interpret, "_via_openrouter", lambda s, u, t: (calls.append(1), (json.dumps(
+        {"verdicts": [{"id": target, "verdict": "entails", "why": "y"}], "answer": f"Yes #{target}."}), "openrouter:fake"))[1])
+    res = interpret.answer(conn, run, b, terms, concept, use_rerank=False)
+    assert len(calls) == 1 and res["answer_stage"] == "single"

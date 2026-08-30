@@ -23,11 +23,11 @@ import graph_tools as gt
 LABEL = "brown-50"
 
 # Measured off the live run. Regenerate deliberately if brown-50 is re-ingested.
-N_CHUNKS = 1668
-N_EDGES = 4371
-N_COMMUNITIES = 32
-HUB = 1429          # joint-maximum degree node
-HUB_DEGREE = 36
+N_CHUNKS = 51
+N_EDGES = 120
+N_COMMUNITIES = 5
+HUB = 43          # joint-maximum degree node
+HUB_DEGREE = 12
 
 
 @pytest.fixture(scope="module")
@@ -349,7 +349,7 @@ def test_term_stats_separates_lexical_from_graph_reached(conn, run):
 # ------------------------------------------- persisted strength is bounded (R15)
 
 
-@pytest.mark.parametrize("label", ["brown-50", "brown-50-dual"])
+@pytest.mark.parametrize("label", ["brown-50", "brown-50-dual", "brown-500-dual"])
 def test_persisted_strength_is_a_bounded_decay_weight(conn, label):
     """R15: every consumer multiplies path score by strength, so it must sit in
     [0, 1] or path scores amplify with depth and the walk never converges.

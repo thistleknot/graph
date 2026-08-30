@@ -322,7 +322,7 @@ with tab_walk:
                        "chunk, never an input to the graph.")
             if st.button("Judge this walk", key="btn_interpret"):
                 with st.spinner("classifying the evidence…"):
-                    res = interpret.answer(conn, run, bnd, terms, concept)
+                    res = interpret.answer(conn, run, bnd, terms, concept, embed=embed)
                 st.session_state["interp"] = (q, res)
             got = st.session_state.get("interp")
             if got and got[0] == q:

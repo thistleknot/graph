@@ -78,6 +78,23 @@ R16 Chunking SHALL be recursive -- paragraphs on blank lines, then lines
    jumped from paragraphs straight to a word window over the whole paragraph,
    so chunks began on stray punctuation tokens (", as the projects failed")
    and ignored the sentence lines the loader already writes.
+R17 The DOCUMENT is the unit of chunking, and its size threshold SHALL be
+   derived from the corpus being ingested, never a constant. Count newlines
+   (non-empty lines) per document; Box-Cox; m = median, d = MAD in transformed
+   space; hi = m + 2d, both inverted to natural scale. A document at or under
+   hi lines is ONE chunk. A document over hi splits into consecutive DISJOINT
+   windows of at most hi lines, cutting at paragraph boundaries (line
+   boundaries only inside a paragraph that is itself longer than hi); a
+   trailing window shorter than m merges back into the previous one. No
+   overlap, never inside a word, and conservation SHALL hold: every source
+   line lands in exactly one chunk. (unit, m, hi, lambda) SHALL be recorded in
+   diagnostics and run params. Measured on all 500 Brown documents: m=107,
+   hi=153 lines (lambda -0.441), 12.6% of documents exceed hi -- but the
+   longest is 240 lines and a split only survives the tail-merge when the
+   document reaches hi + m = 260, so Brown yields exactly one chunk per
+   document (500 -> 500, 50 -> 51). The split rule is for corpora with long
+   documents; on Brown it is inert, and that is the rule working, not failing.
+   Supersedes R16's fixed target/max_len.
 R6 WHEN both estimators (median/1.4826*MAD vs mean/std) diverge > DIV_WARN in
    BC space, fit() SHALL record a warning in self.diagnostics.
 
@@ -117,38 +134,87 @@ before must through back years where much your way well down should because""".s
 def _tok(text):
     return [w for w in re.findall(r"[a-z]+", text.lower()) if w not in _STOP and len(w) > 2]
 
-def _chunk(doc, target=120, max_len=200):
-    """Recursive splitter (R16): blank-line paragraphs -> newline-separated
-    lines packed up to `target` words -> word window ONLY for a single line
-    longer than max_len. A chunk therefore starts and ends on a paragraph or
-    line boundary except in that last case, where it still lands on a word
-    boundary. Never inside a word.
-    Require: doc str. Guarantee: non-empty chunks, source order."""
+def _paras(doc):
+    """Blank-line paragraphs, each a list of non-empty stripped lines."""
     out = []
-    for p in (p.strip() for p in re.split(r"\n\s*\n", doc)):
-        if not p:
-            continue
-        if len(p.split()) <= max_len:
-            out.append(p)
-            continue
-        buf, n = [], 0
-        for line in (l.strip() for l in p.split("\n")):
-            if not line:
-                continue
-            w = len(line.split())
-            if w > max_len:                              # one overlong line
-                if buf:
-                    out.append("\n".join(buf)); buf, n = [], 0
-                words, step = line.split(), target // 2
-                out += [" ".join(words[i:i + target])
-                        for i in range(0, max(len(words) - step, 1), step)]
-                continue
-            if n + w > target and buf:
-                out.append("\n".join(buf)); buf, n = [], 0
-            buf.append(line); n += w
-        if buf:
-            out.append("\n".join(buf))
+    for p in re.split(r"\n\s*\n", doc):
+        lines = [l.strip() for l in p.split("\n") if l.strip()]
+        if lines:
+            out.append(lines)
     return out
+
+
+def _bc_center(counts):
+    """Box-Cox -> (m, hi, lambda) on the natural scale. m = median, hi = m + 2*MAD,
+    both computed in transformed space and inverted (reduce_overlaps method)."""
+    x = np.asarray([c for c in counts if c > 0], float)
+    if len(x) < 8 or np.ptp(x) == 0:                        # too few / constant
+        v = float(np.median(x)) if len(x) else 1.0
+        return max(1, int(round(v))), max(1, int(round(v))), None
+    bc, lam = stats.boxcox(x)
+    m, d = np.median(bc), stats.median_abs_deviation(bc)
+    def inv(y):
+        return float(np.exp(y)) if abs(lam) < 1e-9 else float(max(y * lam + 1, 1e-9) ** (1 / lam))
+    return max(1, int(round(inv(m)))), max(1, int(round(inv(m + 2 * d)))), float(lam)
+
+
+def derive_chunk_params(docs):
+    """R17. The DOCUMENT is the unit of length. Count newlines (non-empty lines)
+    per document; Box-Cox; m = median, hi = m + 2*MAD, inverted. Falls back to
+    characters per document when the corpus has no line structure at all.
+    Guarantee: {unit, m, hi, lam, n, hi_frac} -- every number a measured
+    quantile of `docs`; hi_frac is the share of documents that will split."""
+    n_lines = [sum(len(p) for p in _paras(d)) for d in docs]
+    if sum(1 for n in n_lines if n > 1) >= max(1, len(docs) // 2):
+        counts = n_lines
+        unit = "lines"
+    else:
+        counts = [len(d) for d in docs]
+        unit = "chars"
+    counts = [c for c in counts if c > 0] or [1]
+    m, hi, lam = _bc_center(counts)
+    return {"unit": unit, "m": m, "hi": hi, "lam": lam, "n": len(counts),
+            "hi_frac": sum(c > hi for c in counts) / len(counts)}
+
+
+def _chunk(doc, m=100, hi=170, unit="lines"):
+    """R17 atoms at DOCUMENT level. A document at or under `hi` units is ONE
+    chunk. A document over `hi` splits into consecutive windows of at most `hi`
+    units, cutting at paragraph boundaries (falling back to line boundaries
+    inside a paragraph that is itself longer than `hi`); a trailing window
+    shorter than `m` merges into the previous one. No overlap. Conservation:
+    every source line lands in exactly one chunk. Never inside a word."""
+    paras = _paras(doc)
+    if not paras:
+        return []
+    size = (lambda lines: len(lines)) if unit == "lines" else (lambda lines: sum(len(l) + 1 for l in lines))
+    all_lines = [l for p in paras for l in p]
+    if size(all_lines) <= hi:
+        return ["\n\n".join("\n".join(p) for p in paras)]
+    windows, cur = [], []                                   # each window: list of paragraphs
+    def cur_size():
+        return size([l for p in cur for l in p])
+    for p in paras:
+        if size(p) > hi:                                    # oversize paragraph: cut on lines
+            if cur:
+                windows.append(cur); cur = []
+            piece, n = [], 0
+            for l in p:
+                if piece and n + size([l]) > hi:
+                    windows.append([piece]); piece, n = [], 0
+                piece.append(l); n += size([l])
+            if piece:
+                windows.append([piece])
+            continue
+        if cur and cur_size() + size(p) > hi:
+            windows.append(cur); cur = []
+        cur.append(p)
+    if cur:
+        windows.append(cur)
+    if len(windows) > 1 and size([l for p in windows[-1] for l in p]) < m:
+        tail = windows.pop()
+        windows[-1].extend(tail)                            # merge short tail back
+    return ["\n\n".join("\n".join(p) for p in w) for w in windows]
 
 def default_embed_fn(model_dir):
     """Guarantee: texts -> float32 np.ndarray, one row per text (R14).
@@ -212,9 +278,12 @@ class ChunkGraph:
         """Require: docs list[str]. Guarantee: graph fitted; self.doc_id[i]
         names the source document of chunk i (R8)."""
         doc_ids = doc_ids or [f"doc{i}" for i in range(len(docs))]
+        self.chunk_params = derive_chunk_params(docs)                            # R17
+        self.diagnostics["chunk"] = dict(self.chunk_params)
+        cp = {k: self.chunk_params[k] for k in ("m", "hi", "unit")}
         self.chunks, self.doc_id = [], []
         for did, d in zip(doc_ids, docs):
-            cs = _chunk(d)
+            cs = _chunk(d, **cp)
             self.chunks += cs; self.doc_id += [did]*len(cs)
         raw_tok = [_tok(c) for c in self.chunks]
         self.docs_tok = self._merge_phrases(raw_tok) if self.phrases else raw_tok   # R9

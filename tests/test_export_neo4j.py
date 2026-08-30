@@ -22,7 +22,7 @@ import psycopg
 import export_neo4j
 import graph_tools as gt
 
-LABEL = "brown-50-dual"          # the dual-space run: SIMILAR carries 3 provenances
+LABEL = "brown-500-dual"          # the dual-space run: SIMILAR carries 3 provenances
 
 
 @pytest.fixture(scope="module")

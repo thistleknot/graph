@@ -19,7 +19,7 @@ DSN = os.environ.get("CHUNKGRAPH_DSN",
                      "postgresql://graph:graph@localhost:5433/graph")
 
 # Params worth reproducing a run from; mirrors ChunkGraph.__init__.
-_PARAM_ATTRS = ("k_sigma", "M", "H", "K", "LAM", "EPS", "phrases")
+_PARAM_ATTRS = ("k_sigma", "M", "H", "K", "LAM", "EPS", "phrases", "chunk_params")   # R17
 
 
 def _hash(text: str) -> bytes:

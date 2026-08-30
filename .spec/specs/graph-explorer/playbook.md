@@ -51,3 +51,20 @@ One line each. Status is the only thing that changes in this file.
 - [DONE] walker_app: Interpret pane, draft-marked, foreign citations surfaced
 - [DONE] tests: render is deterministic and complete; citation check; live call skips without Ollama
 - [DONE] commit
+
+## §6.5 corpus-derived chunking (R17)
+- [DONE] chunkgraph.derive_chunk_params: Box-Cox m/hi over lines-per-DOCUMENT, chars fallback (6.5a)
+- [DONE] chunkgraph._chunk: one chunk per document; split above hi at paragraph bounds; tail merge; conservation
+- [DONE] fit() derives params over the corpus, records them in diagnostics and run params
+- [DONE] tests: battery -- params, split at paragraph bounds, tail merge, conservation, chars fallback (29)
+- [DONE] re-ingest brown-50 and brown-50-dual; re-pin constants (51 nodes); commit
+- [DONE] 500 docs -> 500 nodes (8 MB dense, not 7.4 GB); brown-500-dual ingested
+
+## after the timeout screenshot
+- [DONE] interpret: urllib client in rl_V2's shape (Avast TLS proxy stalled httpx); 3 attempts, backoff
+- [TODO] walker: label the prompt box as the retrieval query; separate 'ask about this walk' box
+- [TODO] interpret: EXPLAIN mode -- prose over the same rendered bundle, same citation check, no verdicts
+- [TODO] re-measure ef on the 500-document graph (sweep was on 1,789 chunks)
+- [DONE] I8 excerpt by prompt: lexical+dense, paragraph cap at budget/3, anchors x4
+- [DONE] I6 verdict = answers-or-partly-answers; dedupe; two-stage answer over entailed
+- [DONE] dual-run fixtures -> brown-500-dual; sampler stability pinned there, n<=24; render hub derived

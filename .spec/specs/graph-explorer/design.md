@@ -675,3 +675,126 @@ sees them. Cuts the bundle to what late interaction says is relevant and cuts
 context cost with it. `pylate` is installed; no ColBERT checkpoint is cached,
 so the stage is a hook that engages only when one is (`RERANK_MODEL`).
 Downloading a checkpoint is a deliberate act, not a side effect of a query.
+
+
+### 6.5 Chunks sized by the corpus, not by a constant (R17, 2026-08-29)
+
+R16 fixed the boundary (never inside a word, never mid-line) but kept the size
+as `target=120, max_len=200` -- constants nothing measured. The
+`reduce_overlaps` skill's method replaces them:
+
+    unit   = lines per blank-line paragraph (chars per line if no blank lines)
+    Box-Cox the unit counts; m = median, d = MAD in transformed space
+    hi     = m + 2d, inverted to natural scale
+    merge  paragraphs < m forward until they reach m
+    split  paragraphs > hi into DISJOINT windows of m (stride m)
+    assert every source line lands in exactly one chunk
+
+Measured over all 500 Brown documents, 15,667 paragraphs:
+
+    lines/paragraph   p50 3   p95 9   max 124   lambda -0.115   m 3   hi 7.2
+    words/paragraph   p50 55  p95 202 max 1820  lambda  0.136   m 55  hi 158
+    chars/line        p50 92  p95 242 max 1026  lambda  0.370   m 92  hi 219
+    single-line paragraphs 3,401 (22%) -> merge up;  above hi 1,295 (8%) -> split
+
+Two deliberate departures from the recipe as first stated:
+
+- **No overlap, no de-overlap.** The skill's own catch-22 section shows that
+  windowing at stride m-d and then de-overlapping collapses back to disjoint
+  atoms. For a retrieval graph the intermediate state is worse than useless:
+  an overlapping chunk is a near-duplicate node and its edges are artefacts.
+  Atoms are built disjoint (stride m) and verified by conservation.
+- **Not difflib.** The skill is explicit: overlap a known stride introduces is
+  character-identical, so exact suffix/prefix matching is correct and O(n);
+  fuzzy matching silently trims text that merely resembles its neighbour. With
+  no overlap introduced there is nothing to trim at all.
+
+Stats are computed over the corpus handed to `fit()`, not per document -- a
+20-paragraph document does not have a stable median. The derived parameters
+are stored with the run so a re-ingest is reproducible from params alone.
+
+**Scaling note.** All 500 Brown documents is the stated goal. Under R16, 50
+documents gave 1,668 chunks, so 500 is on the order of 15k -- inside R10's
+18k memory wall for the sparse product but against dense n x n `strength`
+and `D` matrices that R10 does not cover. The chunk count under R17 is
+measured before any 500-document ingest is attempted.
+
+
+### 6.5a Correction: the unit is the document (2026-08-29)
+
+§6.5 applied the recipe at paragraph level (lines per paragraph, m=3, hi=7)
+and produced 15,240 atoms at 500 documents. That was a misreading. The
+operator's rule counts newlines per DOCUMENT: a document is a node unless it
+is an outlier by the corpus's own Box-Cox threshold, in which case it splits
+at paragraph boundaries into windows of hi lines and a short tail merges back.
+
+Measured on all 500 Brown documents: lines/document m=107, hi=153, lambda
+-0.441; 12.6% of documents exceed hi. Every one of them still ends as a single
+chunk, because the longest document is 240 lines and a split survives the
+tail-merge only from hi + m = 260 lines. So 500 documents -> 500 nodes, each
+~2,300 words. Conservation 57,340 / 57,340.
+
+Consequences downstream, stated so they are not rediscovered:
+
+- Memory ceases to be a question: four dense n x n matrices at n=500 are
+  8 MB, not 7.4 GB. The full corpus ingests in seconds.
+- ef=64 now retrieves 64 of 500 documents (13% of the corpus) per walk. The
+  ef sweep was measured on 1,789 chunks; it will be re-measured on this graph.
+- The entailment judge sees the first 420 characters of each retrieved
+  document, not the document. That bound is what keeps 64 x 2,300 words
+  inside a context window; it also means the judge is reading openings. The
+  rerank stage (I7) and per-document evidence selection are the answer, not a
+  bigger MAX_CHUNK_CHARS.
+- Louvain now partitions documents; communities are groups of documents and
+  the query-conditioned terms are scored over whole documents' tf maps.
+
+The paragraph-level chunker is gone, not kept behind a flag: two chunkers is
+sprawl, and R17 names the unit.
+
+
+### 6.4b Interpretation at document level: what it took (2026-08-29)
+
+Four things, each measured, each now a guard in `interpret.py`:
+
+1. **Transport (I5).** The httpx client died on a TLS handshake timeout that
+   the endpoint did not reproduce a minute later. This machine runs Avast's
+   web shield (`SSLKEYLOGFILE=\.swMonFltProxy`, `NODE_EXTRA_CA_CERTS`
+   pointing at its cert); httpx carries its own CA bundle and stalls in that
+   proxy, stdlib `urllib` uses the Windows store and does not. `rl_V2`'s
+   client already had this shape -- urllib, three attempts, exponential
+   backoff, retry on anything but 400/401/403, empty content retried -- and
+   is now the shape here too. Measured from the walker's own environment:
+   4.2 s round trip.
+2. **The judge was reading openings (I8).** With 2,300-word document nodes
+   clipped at 420 chars, 63 of 64 retrieved documents were judged neutral on
+   "how were Morocco's first elections organized" -- a question cj37 is an
+   essay about. Given the whole document the same model answered ENTAILS
+   with the registration / nomination / voting / scrutin uninominal facts.
+   Excerpting by the prompt fixed the wrong half first: the prompt terms
+   (morocco, first, elections) are densest in the introduction, and the
+   paragraphs that answer HOW say registration, districts, voting -- zero
+   lexical overlap with "organized"; the static embedder ranks the
+   introduction first on cosine too. Two levers that did work: cap each
+   paragraph at a third of the budget (uncapped, one 1,100-char paragraph
+   filled the 1,500 budget alone), and give ANCHORS -- the BM25 top-k the
+   walk started from -- four times the budget, since that is where the
+   answer most likely is. cj37 then judged ENTAILS.
+3. **Verdict semantics (I6).** "ENTAILS an answer" plus "most are neutral,
+   do not inflate" produced "discusses elections but not Morocco's first"
+   on a paragraph that says "electoral planning in Morocco ... the first
+   elections". ENTAILS now means contains information that answers or partly
+   answers; the bias line is gone; duplicate verdicts for one id (73 for 64)
+   collapse to the first.
+4. **Two stages.** After 60 verdicts the model returned an empty answer with
+   one chunk judged entailing. A second, smaller call over the entailed
+   excerpts only produces the answer, and its citations are checked against
+   the entailed set. Result on the Morocco question: one entailed document,
+   five cited sentences, all #330, zero foreign, zero self-contradiction.
+
+Also this round: `brown-500-dual` (500 nodes, 5,112 edges, 7 communities) is
+the fixture for every dual-run test -- ef=64 cannot return 64 results on a
+51-node run. The sampler's top-community stability claim is pinned on it and
+on the documented window n <= 24; on 51 documents in 5 communities the top-1
+flips even at n=8..24, which is granularity, not a defect. Render fixtures
+derive their hub from the loaded run instead of a constant that broke on the
+next ingest.
