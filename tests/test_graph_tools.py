@@ -24,7 +24,7 @@ LABEL = "brown-50"
 
 # Measured off the live run. Regenerate deliberately if brown-50 is re-ingested.
 N_CHUNKS = 51
-N_EDGES = 120
+N_EDGES = 115
 N_COMMUNITIES = 5
 HUB = 43          # joint-maximum degree node
 HUB_DEGREE = 12
@@ -577,3 +577,97 @@ def test_question_words_are_stopwords():
     toks = gt.tokenize("how did communities respond to school desegregation")
     assert "how" not in toks and "did" not in toks
     assert {"communities", "respond", "school", "desegregation"} <= set(toks)
+
+
+# ------------------------------------------- salient gate (W14), chunk terms
+
+
+def test_salient_gate_is_a_score_ordered_prefix_that_keeps_at_least_half():
+    import numpy as np
+    rng = np.random.default_rng(1)
+    sc = {f"t{i}": float(v) for i, v in enumerate(rng.lognormal(0.0, 1.0, 300))}
+    g = gt.salient_gate(sc)
+    order = sorted(sc, key=lambda t: (-sc[t], t))
+    assert g["kept"] == order[:g["n_kept"]], "kept set must be the top of the ranking"
+    assert g["n_kept"] >= g["n_in"] // 2
+    assert 1 <= g["threshold_decile"] <= 10 and g["n_in"] == 300
+
+
+def test_salient_gate_small_inputs_keep_everything():
+    assert gt.salient_gate({}) == {"kept": [], "threshold_decile": 0, "n_in": 0, "n_kept": 0}
+    g = gt.salient_gate({"a": 3.0, "b": 1.0, "c": 2.0})
+    assert g["kept"] == ["a", "c", "b"] and g["n_kept"] == 3
+
+
+def test_salient_gate_uses_the_more_permissive_branch():
+    """min(median-1.4826*MAD, mean-sd): with one huge outlier the mean-sd
+    branch drops far below the robust one, so more is kept, not less."""
+    base = {f"t{i}": 1.0 + i * 0.01 for i in range(50)}
+    with_outlier = dict(base, big=1e6)
+    assert gt.salient_gate(with_outlier)["n_kept"] >= gt.salient_gate(base)["n_kept"]
+
+
+def test_chunk_salient_top_is_within_kept_within_the_chunks_own_terms(conn, run):
+    out = gt.chunk_salient(conn, run, [HUB], k=3)
+    v = out[HUB]
+    tf = gt.node(conn, run, HUB)["tf"]
+    assert v["top"] == v["kept"][:3]
+    assert set(v["kept"]) <= set(tf)
+    assert 0 < v["n_kept"] <= v["n_in"] == len(tf)
+    assert gt.chunk_terms(conn, run, [HUB], k=3)[HUB] == v["top"]
+
+
+def test_corpus_df_is_cached_per_run(conn, run):
+    import time
+    gt._DF_CACHE.pop(str(run.run_id), None)
+    t0 = time.time(); a = gt.corpus_df(conn, run); t1 = time.time() - t0
+    t0 = time.time(); b = gt.corpus_df(conn, run); t2 = time.time() - t0
+    assert a == b and t2 < t1
+    assert gt.corpus_index(conn, run) is gt.corpus_index(conn, run)   # the cached object
+    df, avgdl, n = a
+    assert n == run.n_chunks and avgdl > 0 and df
+
+
+
+# -------------------------------- search over the cached index; disk cache
+
+
+def test_search_python_bm25_matches_the_formula(conn, run):
+    """Parity: score for a single-term query equals BM25 computed by hand
+    from the cached postings."""
+    import math
+    ix = gt.corpus_index(conn, run)
+    term = max(ix["df"], key=lambda t: ix["df"][t] if 3 <= ix["df"][t] <= run.n_chunks // 2 else -1)
+    hits = gt.search(conn, run, term, k=3)
+    assert hits and all(h["terms_hit"] == 1 for h in hits)
+    N, avgdl, d = ix["n"], ix["avgdl"], ix["df"][term]
+    for h in hits:
+        f = ix["post"][term][h["ord"]]; dl = ix["dl"][h["ord"]]
+        want = math.log(1 + (N - d + 0.5) / (d + 0.5)) * f * 2.5 / (f + 1.5 * (0.25 + 0.75 * dl / avgdl))
+        assert abs(h["score"] - want) < 1e-9
+
+
+def test_search_is_fast_after_the_index_is_built(conn, run):
+    import time
+    gt.corpus_index(conn, run)
+    t0 = time.time(); gt.search(conn, run, "election county school", k=8); dt = time.time() - t0
+    assert dt < 0.5, f"search took {dt:.2f}s; the SQL path took 7.3 s"
+
+
+def test_disk_cache_round_trips_and_tolerates_a_missing_dir(monkeypatch, tmp_path):
+    monkeypatch.setattr(gt, "CACHE_DIR", str(tmp_path / "nested" / "dir"))
+    assert gt._disk("nope") is None
+    gt._disk_put("k", {"a": [1, 2], "b": {"x": 1.5}})
+    assert gt._disk("k") == {"a": [1, 2], "b": {"x": 1.5}}
+    monkeypatch.setattr(gt, "CACHE_DIR", str(tmp_path / "file-not-dir"))
+    (tmp_path / "file-not-dir").write_text("x")
+    gt._disk_put("k2", {"z": 1})                       # must not raise
+
+
+def test_stoplist_is_cheap_and_knows_contractions():
+    import importlib, sys, time
+    sys.modules.pop("stoplist", None)
+    t0 = time.time(); import stoplist; dt = time.time() - t0
+    assert dt < 1.0, f"stoplist import took {dt:.2f}s"
+    assert {"didn", "wasn", "couldn", "the", "how"} <= stoplist._STOP
+    assert "election" not in stoplist._STOP

@@ -336,6 +336,7 @@ def _via_openrouter(system: str, user: str, timeout: float,
     payload = {"model": OPENROUTER_MODEL, "temperature": 0.1,
                "max_tokens": MAX_TOKENS,
                "reasoning": {"enabled": False},                        # I5
+               "provider": {"sort": "throughput"},        # measured 62 s vs ~20 s across providers
                "response_format": {"type": "json_object"},
                "messages": [{"role": "system", "content": system},
                             {"role": "user", "content": user}]}
@@ -571,10 +572,17 @@ FINAL_SYSTEM = (
 )
 
 
+ONE_SHOT_SYSTEM = 'You are reasoning over COMMUNITY BRIEFS: groups of related documents from a corpus, each with its characteristic terms and representative excerpts tagged [id=<n>]. Do all of the following in ONE reply. (1) Propose up to three candidate answers to the PROMPT as falsifiable statements and choose one, saying why in one line. (2) List three to six premises the chosen statement needs, each naming the excerpt ids (copied exactly) that would support it, or an empty list. (3) Evaluate each premise against ONLY its cited excerpts: supports = an excerpt states, about the SAME subject, information that makes it true or partly true; contradicts = states information against it; insufficient = does not bear on it. Analogy or implication from a different subject is insufficient. (4) Answer the PROMPT using ONLY premises judged supports, citing #<id> after each claim, and say what the evidence does not settle. Reply with ONE JSON object and nothing else: {"hypotheses": ["<statement>", ...], "chosen": <index>, "why": "<one line>", "premises": [{"text": "<premise>", "ids": [<id>, ...]}, ...], "evaluations": [{"index": <premise index>, "verdict": "supports"|"contradicts"|"insufficient", "why": "<=12 words"}, ...], "answer": "<text with #id citations, or empty>"}'
+
+
 def reason(conn, run, bundle, terms: dict, concept: dict, embed=None,
-           timeout: float = 240.0) -> dict:
+           timeout: float = 240.0, one_shot: bool = True) -> dict:
     """Hypothesis -> premises -> evaluate -> answer, over community briefs.
-    Never raises on transport or parse failure; every stage is kept (I11)."""
+    Never raises on transport or parse failure; every stage is kept (I11).
+
+    one_shot=True (default): ONE model call returns all four sections and the
+    same checks apply -- four sequential calls took ~25 s where one takes ~7.
+    one_shot=False: four isolated calls, each seeing only what its stage needs."""
     briefs = community_briefs(conn, run, bundle, terms, concept, embed)
     text = render_briefs(bundle, briefs)
     ex_of = {}
@@ -590,6 +598,8 @@ def reason(conn, run, bundle, terms: dict, concept: dict, embed=None,
     if not briefs:
         out["error"] = "no communities in the walk"
         return out
+    if one_shot:
+        return _reason_one_shot(out, bundle, text, valid, ex_of, timeout)
 
     def stage(name, system, user):
         t, backend = _call(system, user, timeout)
@@ -667,5 +677,60 @@ def reason(conn, run, bundle, terms: dict, concept: dict, embed=None,
             out["self_contradicting"] = [o for o in cited if o not in sup_ids]   # I10
         out["ok"] = True
     except Exception as ex:                                              # I4
+        out["error"] = f"{type(ex).__name__}: {str(ex)[:300]}"
+    return out
+
+
+def _reason_one_shot(out: dict, bundle, text: str, valid: set, ex_of: dict, timeout: float) -> dict:
+    """All four sections from one call; I9/I10/I11 applied exactly as staged."""
+    try:
+        t, backend = _call(ONE_SHOT_SYSTEM, text, timeout)
+        out["stages"]["one_shot"] = t; out["backend"] = backend
+        obj = _json_obj(t)
+        if obj is None:
+            raise RuntimeError("one_shot: reply was not the JSON object asked for")
+        hyps = [str(x).strip() for x in (obj.get("hypotheses") or []) if str(x).strip()]
+        if not hyps:
+            raise RuntimeError("one_shot: no hypotheses proposed")
+        ci = obj.get("chosen", 0)
+        ci = int(ci) if isinstance(ci, (int, float, str)) and str(ci).lstrip("-").isdigit() else 0
+        ci = min(max(ci, 0), len(hyps) - 1)
+        out.update({"hypotheses": hyps, "hypothesis": hyps[ci], "why": str(obj.get("why", ""))[:300]})
+        prem = []
+        for item in (obj.get("premises") or [])[:8]:
+            txt = str((item or {}).get("text", "")).strip()
+            if not txt:
+                continue
+            ids, foreign = [], []
+            for x in (item.get("ids") or []):
+                try:
+                    o = int(x)
+                except (TypeError, ValueError):
+                    continue
+                (ids if o in valid else foreign).append(o)                  # I9
+            out["foreign"] += [o for o in foreign if o not in out["foreign"]]
+            prem.append({"text": txt, "ids": ids, "verdict": "insufficient" if ids else "unsupported",
+                         "why": "" if ids else "no evidence cited"})
+        if not prem:
+            raise RuntimeError("one_shot: no premises extracted")
+        for item in (obj.get("evaluations") or []):
+            try:
+                i = int(item.get("index"))
+            except (TypeError, ValueError, AttributeError):
+                continue
+            if 0 <= i < len(prem) and prem[i]["ids"]:
+                v = str(item.get("verdict", "")).lower().strip()
+                if v in ("supports", "contradicts", "insufficient"):
+                    prem[i]["verdict"] = v; prem[i]["why"] = str(item.get("why", ""))[:200]
+        out["premises"] = prem
+        sup_ids = sorted({o for pr in prem if pr["verdict"] == "supports" for o in pr["ids"]})
+        out["supported_ids"] = sup_ids
+        ans = str(obj.get("answer", "")).strip() if sup_ids else ""
+        cited = citations(ans)
+        out["answer"] = ans
+        out["cited"] = [o for o in cited if o in sup_ids]
+        out["self_contradicting"] = [o for o in cited if o not in sup_ids]    # I10
+        out["ok"] = True
+    except Exception as ex:                                                  # I4
         out["error"] = f"{type(ex).__name__}: {str(ex)[:300]}"
     return out

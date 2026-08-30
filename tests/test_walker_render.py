@@ -130,12 +130,12 @@ def test_missing_label_file_is_not_an_error(app):
 
 
 def test_walk_tab_renders_communities_from_a_prompt():
-    """Design §6: a prompt yields a community graph labelled by terms, a
-    ranked community list with expanders, and no exception. ast.parse proves
-    syntax; only a real run proves this renders."""
+    """Design 6.7: a prompt yields ONE Evidence expander (open, since no answer
+    exists yet) holding the community graph and the ranked communities; the
+    medoid cards are titled by their own salient terms (6.8). No exception."""
     from streamlit.testing.v1 import AppTest
     try:
-        at = AppTest.from_file("walker_app.py", default_timeout=180)
+        at = AppTest.from_file("walker_app.py", default_timeout=240)
         at.run()
         at.text_input("q").set_value("jury trial grand jury investigation").run()
     except Exception as e:                                # pragma: no cover
@@ -143,12 +143,15 @@ def test_walk_tab_renders_communities_from_a_prompt():
     errs = [e.value for e in at.exception]
     assert not errs, f"Walk tab raised: {errs}"
     assert at.get("plotly_chart"), "prompt produced no community graph"
-    assert len(at.expander) >= 1, "no community expanders rendered"
-    heads = " ".join(x.label for x in at.expander)
-    assert " of " in heads and " / " in heads, (
-        f"expander headers lack presence/terms: {heads[:200]}")
+    labels = [x.label for x in at.expander]
+    ev = [l for l in labels if l.startswith("Evidence")]
+    assert len(ev) == 1, f"expected exactly one Evidence expander, got {labels}"
+    assert "depth" in ev[0] and "communities" in ev[0]
+    md = " ".join(m.value for m in at.markdown)
+    assert "Communities, most present first" in md
+    assert "Local medoid" in md and "Global medoid" in md
     caps = " ".join(c.value for c in at.caption)
-    assert "depth" in caps and "communities" in caps
+    assert "salient:" in caps, "medoid cards must list their salient terms"
 
 
 def test_draw_communities_labels_nodes_with_terms(app):

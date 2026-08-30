@@ -95,6 +95,12 @@ R17 The DOCUMENT is the unit of chunking, and its size threshold SHALL be
    document (500 -> 500, 50 -> 51). The split rule is for corpora with long
    documents; on Brown it is inert, and that is the rule working, not failing.
    Supersedes R16's fixed target/max_len.
+R18 There SHALL be ONE stoplist, NLTK's English list plus the local extras,
+   applied at tokenization (ingest) and imported by graph_tools for queries.
+   The hand-rolled list did not know contraction fragments: `didn't` tokenises
+   to `didn` + `t`, and `didn` surfaced as a community term. Content words of a
+   register (got, knew, looked, eyes) are NOT stopwords; suppressing those is
+   the keyness prior's job (salient_grams R9), not the tokenizer's.
 R6 WHEN both estimators (median/1.4826*MAD vs mean/std) diverge > DIV_WARN in
    BC space, fit() SHALL record a warning in self.diagnostics.
 
@@ -124,12 +130,7 @@ from scipy import stats
 
 DISC_M, KURT_OK, DIV_WARN, KNN = 25, 0.5, 0.15, 2   # MINK dropped with the R4 gate
 SIM_FLOOR, BLOCK = 0.02, 512   # R10: in-loop threshold, block rows
-_STOP = set("""the of and to a in that is was he for it with as his on be at by i
-this had not are but from or have an they which one you were her all she there
-would their we him been has when who will more no if out so said what up its
-about into than them can only other new some could time these two may then do
-first any my now such like our over man me even most made after also did many
-before must through back years where much your way well down should because""".split())
+from stoplist import _STOP                     # R18: one stoplist, no heavy imports
 
 def _tok(text):
     return [w for w in re.findall(r"[a-z]+", text.lower()) if w not in _STOP and len(w) > 2]

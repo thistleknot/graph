@@ -261,10 +261,11 @@ with tab_walk:
         if not bnd.sampled:
             st.warning("No lexical anchor matched. Nothing to walk from.")
         else:
+            # ---- everything below is computed before any model call (S6)
             touched = gt.communities_touched(conn, run, bnd.sampled)
             cids = [t["cid"] for t in touched]
-            concept = gt.community_terms(conn, run, cids, k=3)      # unsupervised
-            terms = gt.query_terms(conn, run, cids, q, k=3, embed=embed)  # prompt-conditioned
+            concept = gt.community_terms(conn, run, cids, k=3)
+            terms = gt.query_terms(conn, run, cids, q, k=3, embed=embed)
             cid_of = {o: gt.node(conn, run, o)["cid"] for o in bnd.sampled}
             in_cid = {c: [o for o in bnd.sampled if cid_of[o] == c] for c in cids}
             xedges: dict = {}
@@ -273,134 +274,47 @@ with tab_walk:
                 if ca is not None and cb is not None and ca != cb:
                     key = (min(ca, cb), max(ca, cb))
                     xedges[key] = xedges.get(key, 0) + 1
+            medoids = {}
+            for c in cids:
+                medoids[c] = (gt.local_medoid(conn, run, in_cid[c], weights=bnd.scores),
+                              gt.community(conn, run, c)["medoid"])
+            med_ords = sorted({o for pair in medoids.values() for o in pair})
+            salient = gt.chunk_salient(conn, run, med_ords, k=3)
 
-            fig = draw_communities(touched, terms, xedges)
-            st.plotly_chart(fig, use_container_width=True)
-            st.caption(f"{len(bnd.sampled)} chunks · {len(cids)} communities · "
-                       f"depth {tele['depth']} · {tele['stop']}")
+            # ---- 1. the model's answer, right under the prompt
+            b1, b2 = st.columns(2)
+            if b1.button("Reason about this walk", key="btn_reason",
+                         help="hypothesis -> premises -> evaluate -> answer over community briefs"):
+                with st.spinner("hypothesis -> premises -> evaluate -> answer ..."):
+                    st.session_state["reason"] = (q, interpret.reason(
+                        conn, run, bnd, terms, concept, embed=embed))
+            if b2.button("Judge this walk", key="btn_interpret",
+                         help="one verdict per retrieved chunk, then an answer from the entailed ones"):
+                with st.spinner("classifying the evidence ..."):
+                    st.session_state["interp"] = (q, interpret.answer(
+                        conn, run, bnd, terms, concept, embed=embed))
 
-            st.markdown("#### Communities, most present first")
-            st.caption("The three words are the community's OWN vocabulary, "
-                       "re-ranked by your prompt — the face of the community "
-                       "the prompt lights up. Expand for the unsupervised "
-                       "concept and the explicit evidence.")
-            for t in touched:
-                c = t["cid"]; mine = in_cid[c]
-                lab = labels.get(c)
-                head = (f"c{c} · **{t['hits']}** of {t['size']} · "
-                        f"**{' / '.join(terms.get(c, []))}**"
-                        + (f" · *{lab['label']}*" if lab else ""))
-                with st.expander(head, expanded=(t is touched[0])):
-                    st.caption(f"Community concept (unsupervised BM25): "
-                               f"**{' / '.join(concept.get(c, []))}**")
-                    lm = gt.local_medoid(conn, run, mine, weights=bnd.scores)
-                    gm = gt.community(conn, run, c)["medoid"]
-                    m1, m2 = st.columns(2)
-                    with m1:
-                        st.markdown(f"**Local medoid** · #{lm} — central to "
-                                    f"what this walk found here, weighted "
-                                    f"by walk score")
-                        st.caption(_clip(gt.node(conn, run, lm)["body"], 400))
-                    with m2:
-                        st.markdown(f"**Global medoid** · #{gm} — central to "
-                                    f"the whole community")
-                        st.caption(_clip(gt.node(conn, run, gm)["body"], 400))
-                    st.markdown("**Retrieved chunks**")
-                    for o in mine:
-                        nd = gt.node(conn, run, o)
-                        st.markdown(
-                            f"`#{o}` · {nd['doc_id']}<br>"
-                            f"<span style='opacity:.75;font-size:.88em'>"
-                            f"{_clip(nd['body'], 300)}</span>",
-                            unsafe_allow_html=True)
-
-            st.markdown("#### Entailment")
-            st.caption(f"`{interpret.OPENROUTER_MODEL}` (OpenRouter; local Ollama "
-                       "as fallback) judges every shown chunk — entails / "
-                       "contradicts / neutral — then answers from the entailed "
-                       "ones only. **Draft**: model-authored, checkable chunk by "
-                       "chunk, never an input to the graph.")
-            if st.button("Judge this walk", key="btn_interpret"):
-                with st.spinner("classifying the evidence…"):
-                    res = interpret.answer(conn, run, bnd, terms, concept, embed=embed)
-                st.session_state["interp"] = (q, res)
-            got = st.session_state.get("interp")
-            if got and got[0] == q:
-                res = got[1]
-                if not res["ok"]:
-                    st.warning(f"No verdict: {res['error']}. The walk above is "
-                               "unaffected.")
-                else:
-                    n_shown = len(res["shown"])
-                    st.caption(f"{res['backend']} · {res['rerank_note']} · judged "
-                               f"{res['coverage']:.0%} of {n_shown} shown · "
-                               f"{len(res['entailed'])} entail · "
-                               f"{len(res['contradicts'])} contradict")
-                    if res["foreign"]:
-                        st.error("Foreign ids not in this walk (unsupported): "
-                                 + ", ".join(f"#{o}" for o in res["foreign"]))
-                    if res["self_contradicting"]:
-                        st.error("Cited in the answer but NOT judged entailing: "
-                                 + ", ".join(f"#{o}" for o in res["self_contradicting"]))
-                    st.markdown("**Answer**")
-                    st.markdown(res["answer"] or
-                                "_Empty by design: no chunk was judged to entail an "
-                                "answer, so there is nothing to answer from. The "
-                                "model's per-chunk reasons are under **Neutral** below._")
-                    why = {v["ord"]: v["why"] for v in res["verdicts"]}
-                    for label, ords_, colour in (("Entails", res["entailed"], "#2a7"),
-                                                 ("Contradicts", res["contradicts"], "#c33")):
-                        if ords_:
-                            st.markdown(f"**{label}**")
-                            for o in ords_:
-                                nd = gt.node(conn, run, o)
-                                st.markdown(
-                                    f"<span style='color:{colour}'>●</span> `#{o}` · "
-                                    f"{nd['doc_id']} · c{nd['cid']} — "
-                                    f"<i>{why.get(o, '')}</i><br>"
-                                    f"<span style='opacity:.75;font-size:.88em'>"
-                                    f"{_clip(nd['body'], 300)}</span>",
-                                    unsafe_allow_html=True)
-                    neutral = [v for v in res["verdicts"]
-                               if v["verdict"] == "neutral" and v["ord"] in set(res["shown"])]
-                    if neutral:
-                        with st.expander(f"Neutral ({len(neutral)}) — retrieved, judged "
-                                         f"not evidence; the model's reason for each"):
-                            for v in neutral:
-                                nd = gt.node(conn, run, v["ord"])
-                                st.markdown(
-                                    f"<span style='color:#999'>●</span> `#{v['ord']}` · "
-                                    f"{nd['doc_id']} · c{nd['cid']} — <i>{v['why']}</i>",
-                                    unsafe_allow_html=True)
-                    with st.expander("Exactly what the model was shown"):
-                        st.code(res["evidence"], language="text")
-                    with st.expander("Exactly what the model returned (raw)"):
-                        st.code(res["text"], language="json")
-
-            st.markdown("#### Reason over the communities")
-            st.caption("Community briefs — terms both ways, local and global "
-                       "medoid excerpts — go to the model, which proposes a "
-                       "hypothesis, extracts the premises it needs, evaluates each "
-                       "against the medoid evidence it cites, and answers from what "
-                       "survived. **Draft**: every stage kept, every verdict "
-                       "checkable against a chunk.")
-            if st.button("Reason about this walk", key="btn_reason"):
-                with st.spinner("hypothesis → premises → evaluate → answer…"):
-                    rr = interpret.reason(conn, run, bnd, terms, concept, embed=embed)
-                st.session_state["reason"] = (q, rr)
             got_r = st.session_state.get("reason")
+            got_j = st.session_state.get("interp")
+            has_answer = False
+
             if got_r and got_r[0] == q:
                 rr = got_r[1]
+                st.markdown("### Answer")
                 if not rr["ok"]:
-                    st.warning(f"Reasoning stopped: {rr['error']}. Stages that ran are "
-                               f"below; the walk is unaffected.")
-                else:
-                    st.caption(f"{rr['backend']} · {len(rr['briefs'])} community briefs")
+                    st.warning(f"Reasoning stopped: {rr['error']}")
+                if rr["ok"]:
+                    has_answer = True
+                    st.markdown(rr["answer"] or
+                                "_No premise was judged supported, so there is nothing to "
+                                "answer from. The premises below say why._")
+                    st.caption(f"{rr['backend']} · reasoned over {len(rr['briefs'])} "
+                               f"community briefs · draft, checkable chunk by chunk")
                 if rr["hypotheses"]:
-                    st.markdown("**Hypotheses**")
-                    for i, h in enumerate(rr["hypotheses"]):
-                        mark = "→" if h == rr["hypothesis"] else "·"
-                        st.markdown(f"{mark} {h}")
+                    st.markdown("**Hypothesis** " + (rr["hypothesis"] or ""))
+                    others = [h for h in rr["hypotheses"] if h != rr["hypothesis"]]
+                    if others:
+                        st.caption("also considered: " + " | ".join(others))
                     if rr["why"]:
                         st.caption(f"chosen because: {rr['why']}")
                 if rr["premises"]:
@@ -421,11 +335,6 @@ with tab_walk:
                 if rr["self_contradicting"]:
                     st.error("Answer cites ids outside the supported premises: "
                              + ", ".join(f"#{o}" for o in rr["self_contradicting"]))
-                if rr["ok"]:
-                    st.markdown("**Answer**")
-                    st.markdown(rr["answer"] or
-                                "_No premise was judged supported, so there is nothing "
-                                "to answer from. The premises above say why._")
                 if rr["briefs_text"]:
                     with st.expander("Community briefs the model reasoned over"):
                         st.code(rr["briefs_text"], language="text")
@@ -434,20 +343,115 @@ with tab_walk:
                         for name, txt in rr["stages"].items():
                             st.markdown(f"**{name}**"); st.code(txt, language="json")
 
-            xc = gt.cross_community(conn, run, bnd.sampled)
-            if xc:
-                st.markdown("#### In between")
-                st.caption("Retrieved chunks whose walked edges reach a "
-                           "different retrieved community — exemplars of "
-                           "where the concepts meet.")
-                for x in xc[:8]:
-                    nd = gt.node(conn, run, x["ord"])
-                    reach = ", ".join(f"c{k}" for k in x["foreign_cids"])
+            if got_j and got_j[0] == q:
+                res = got_j[1]
+                st.markdown("### Judged evidence")
+                if not res["ok"]:
+                    st.warning(f"No verdict: {res['error']}")
+                else:
+                    has_answer = True
+                    st.markdown(res["answer"] or
+                                "_No chunk was judged to entail an answer. Per-chunk reasons "
+                                "are under **Neutral** below._")
+                    st.caption(f"{res['backend']} · {res['rerank_note']} · judged "
+                               f"{res['coverage']:.0%} of {len(res['shown'])} shown · "
+                               f"{len(res['entailed'])} entail · {len(res['contradicts'])} contradict")
+                    if res["foreign"]:
+                        st.error("Foreign ids not in this walk: " + ", ".join(f"#{o}" for o in res["foreign"]))
+                    if res["self_contradicting"]:
+                        st.error("Cited but NOT judged entailing: " + ", ".join(f"#{o}" for o in res["self_contradicting"]))
+                    why = {v["ord"]: v["why"] for v in res["verdicts"]}
+                    for label, ords_, colour in (("Entails", res["entailed"], "#2a7"),
+                                                 ("Contradicts", res["contradicts"], "#c33")):
+                        if ords_:
+                            st.markdown(f"**{label}**")
+                            for o in ords_:
+                                nd = gt.node(conn, run, o)
+                                st.markdown(
+                                    f"<span style='color:{colour}'>●</span> `#{o}` · {nd['doc_id']} · "
+                                    f"c{nd['cid']} — <i>{why.get(o, '')}</i><br>"
+                                    f"<span style='opacity:.75;font-size:.88em'>{_clip(nd['body'], 300)}</span>",
+                                    unsafe_allow_html=True)
+                    neutral = [v for v in res["verdicts"]
+                               if v["verdict"] == "neutral" and v["ord"] in set(res["shown"])]
+                    if neutral:
+                        with st.expander(f"Neutral ({len(neutral)}) — the model's reason for each"):
+                            for v in neutral:
+                                nd = gt.node(conn, run, v["ord"])
+                                st.markdown(f"<span style='color:#999'>●</span> `#{v['ord']}` · "
+                                            f"{nd['doc_id']} · c{nd['cid']} — <i>{v['why']}</i>",
+                                            unsafe_allow_html=True)
+                    with st.expander("Exactly what the model was shown"):
+                        st.code(res["evidence"], language="text")
+                    with st.expander("Exactly what the model returned (raw)"):
+                        st.code(res["text"], language="json")
+
+            # ---- 2. the evidence: one expander, collapsed once an answer exists
+            with st.expander(
+                    f"Evidence — {len(bnd.sampled)} chunks · {len(cids)} communities · "
+                    f"depth {tele['depth']} · {tele['stop']}", expanded=not has_answer):
+                fig = draw_communities(touched, terms, xedges)
+                st.plotly_chart(fig, use_container_width=True)
+
+                st.markdown("#### Query terms")
+                ts = gt.term_stats(conn, run, q, bnd.sampled)
+                lex = {o for t in ts for o in t["hits"]}
+                for t in ts:
+                    miss = t["df"] == 0
                     st.markdown(
-                        f"`#{x['ord']}` c{x['cid']} → {reach} · "
-                        f"{x['n_foreign_edges']} edges<br>"
-                        f"<span style='opacity:.75;font-size:.88em'>"
-                        f"{_clip(nd['body'], 220)}</span>", unsafe_allow_html=True)
+                        "<span style='font-family:monospace'>%s</span>"
+                        "<span style='opacity:%s'>df %d%s</span>"
+                        % (t["term"].ljust(16).replace(" ", "&nbsp;"), ".45" if miss else ".85",
+                           t["df"], " — not in this corpus" if miss else
+                           " · carried by %d of %d" % (len(t["hits"]), len(bnd.sampled))),
+                        unsafe_allow_html=True)
+                st.caption(f"found lexically {len(lex)} · reached via the graph "
+                           f"{len(bnd.sampled) - len(lex)}")
+
+                st.markdown("#### Communities, most present first")
+                st.caption("Title terms are the community's OWN vocabulary re-ranked by the "
+                           "prompt; the unsupervised concept follows. Each medoid is titled by "
+                           "its own salient terms (BM25 vs the corpus, gated).")
+                for t in touched:
+                    c = t["cid"]; lab = labels.get(c)
+                    st.markdown(
+                        f"**c{c} · {t['hits']} of {t['size']} · {' / '.join(terms.get(c, []))}**"
+                        f"{' · *' + lab['label'] + '*' if lab else ''}  "
+                        f"<span style='opacity:.6;font-size:.86em'>concept: "
+                        f"{' / '.join(concept.get(c, []))}</span>", unsafe_allow_html=True)
+                    lm, gm = medoids[c]
+                    m1, m2 = st.columns(2)
+                    for col_, o, kind in ((m1, lm, "Local medoid — central to what the walk found here"),
+                                          (m2, gm, "Global medoid — central to the whole community")):
+                        sal = salient.get(o, {"top": [], "kept": [], "n_kept": 0, "n_in": 0})
+                        nd = gt.node(conn, run, o)
+                        with col_:
+                            st.markdown(f"**{' / '.join(sal['top']) or '(no terms)'}**  "
+                                        f"<span style='opacity:.55;font-size:.8em'>`#{o}` · "
+                                        f"{nd['doc_id']} · {kind}</span>", unsafe_allow_html=True)
+                            st.caption("salient: " + ", ".join(sal["kept"][:14])
+                                       + (f" … (+{sal['n_kept'] - 14})" if sal["n_kept"] > 14 else ""))
+                            st.markdown(f"<span style='opacity:.75;font-size:.86em'>"
+                                        f"{_clip(interpret.excerpt(nd['body'], q, 600, embed), 600)}</span>",
+                                        unsafe_allow_html=True)
+                    mine = in_cid[c]
+                    st.caption("retrieved here: " + ", ".join(
+                        f"#{o} ({gt.node(conn, run, o)['doc_id']})" for o in mine[:12])
+                        + (f" … (+{len(mine) - 12})" if len(mine) > 12 else ""))
+
+                xc = gt.cross_community(conn, run, bnd.sampled)
+                if xc:
+                    st.markdown("#### In between")
+                    st.caption("Retrieved chunks whose walked edges reach a different retrieved "
+                               "community — exemplars of where the concepts meet.")
+                    for x in xc[:8]:
+                        nd = gt.node(conn, run, x["ord"])
+                        reach = ", ".join(f"c{k}" for k in x["foreign_cids"])
+                        st.markdown(
+                            f"`#{x['ord']}` c{x['cid']} → {reach} · {x['n_foreign_edges']} edges<br>"
+                            f"<span style='opacity:.75;font-size:.88em'>"
+                            f"{_clip(interpret.excerpt(nd['body'], q, 220, embed), 220)}</span>",
+                            unsafe_allow_html=True)
 
 # ================================================================ MAP
 with tab_map:

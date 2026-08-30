@@ -477,7 +477,7 @@ def test_reason_runs_four_stages_and_answers_from_supported_only(live, walk, mon
     calls = []
     monkeypatch.setattr(interpret, "_via_openrouter", _staged_backend(bl, bg, calls))
     monkeypatch.setattr(interpret, "_via_ollama", lambda s, u, t: (_ for _ in ()).throw(RuntimeError("down")))
-    res = interpret.reason(conn, run, b, terms, concept)
+    res = interpret.reason(conn, run, b, terms, concept, one_shot=False)
     assert res["ok"], res["error"]
     assert calls == ["hypothesis", "premises", "evaluate", "answer"]
     assert res["hypothesis"] == "H1" and res["hypotheses"] == ["H0", "H1"]
@@ -498,7 +498,7 @@ def test_reason_discards_foreign_ids_and_flags_bad_citations(live, walk, monkeyp
     calls = []
     monkeypatch.setattr(interpret, "_via_openrouter",
                         _staged_backend(bl, bg, calls, foreign=True, bad_cite=True))
-    res = interpret.reason(conn, run, b, terms, concept)
+    res = interpret.reason(conn, run, b, terms, concept, one_shot=False)
     assert res["ok"]
     assert res["foreign"] == [10**6]                                   # I9
     assert res["premises"][0]["ids"] == [bl], "foreign id must be dropped from the premise"
@@ -519,7 +519,7 @@ def test_reason_skips_answer_when_nothing_supports(live, walk, monkeypatch):
                                                {"index": 1, "verdict": "contradicts", "why": ""}]}), "openrouter:fake"
         return base(system, user, timeout)
     monkeypatch.setattr(interpret, "_via_openrouter", be)
-    res = interpret.reason(conn, run, b, terms, concept)
+    res = interpret.reason(conn, run, b, terms, concept, one_shot=False)
     assert res["ok"] and "answer" not in calls
     assert res["answer"] == "" and res["supported_ids"] == []
 
@@ -529,7 +529,7 @@ def test_reason_transport_failure_is_reported_not_raised(live, walk, monkeypatch
     b, terms, concept = walk
     monkeypatch.setattr(interpret, "_via_openrouter", lambda s, u, t: (_ for _ in ()).throw(RuntimeError("x")))
     monkeypatch.setattr(interpret, "_via_ollama", lambda s, u, t: (_ for _ in ()).throw(RuntimeError("y")))
-    res = interpret.reason(conn, run, b, terms, concept)
+    res = interpret.reason(conn, run, b, terms, concept, one_shot=False)
     assert res["ok"] is False and "RuntimeError" in res["error"]
     assert res["briefs"] and res["briefs_text"]                       # briefs still built
 
@@ -549,3 +549,59 @@ def test_briefs_carry_walk_ranked_evidence_besides_the_medoids(live, walk):
     text = interpret.render_briefs(b, briefs)
     if any(x["evidence"] for x in briefs):
         assert "retrieved evidence (walk-ranked)" in text
+
+
+
+# ------------------------------------------ 6.6 one-shot reason (default)
+
+
+def _one_shot_backend(bl, bg, calls, *, foreign=False, bad_cite=False, none_support=False):
+    def be(system, user, timeout):
+        calls.append("one_shot" if "Do all of the following in ONE reply" in system else "other")
+        prem = [{"text": "P0", "ids": [bl] + ([10**6] if foreign else [])},
+                {"text": "P1", "ids": [bg]}, {"text": "P2", "ids": []}]
+        ev = [{"index": 0, "verdict": "insufficient" if none_support else "supports", "why": "y"},
+              {"index": 1, "verdict": "insufficient", "why": "n"},
+              {"index": 2, "verdict": "supports", "why": "ignored"}]
+        return json.dumps({"hypotheses": ["H0", "H1"], "chosen": 1, "why": "w",
+                           "premises": prem, "evaluations": ev,
+                           "answer": f"So X #{bg if bad_cite else bl}."}), "openrouter:fake"
+    return be
+
+
+def test_one_shot_is_the_default_and_makes_exactly_one_call(live, walk, monkeypatch):
+    conn, run = live
+    b, terms, concept = walk
+    briefs = interpret.community_briefs(conn, run, b, terms, concept)
+    bl, bg = briefs[0]["local"]["ord"], briefs[0]["global"]["ord"]
+    calls = []
+    monkeypatch.setattr(interpret, "_via_openrouter", _one_shot_backend(bl, bg, calls))
+    res = interpret.reason(conn, run, b, terms, concept)
+    assert calls == ["one_shot"], calls
+    assert res["ok"] and res["hypothesis"] == "H1" and list(res["stages"]) == ["one_shot"]
+    v = {p["text"]: p["verdict"] for p in res["premises"]}
+    assert v == {"P0": "supports", "P1": "insufficient", "P2": "unsupported"}
+    assert res["supported_ids"] == [bl] and res["cited"] == [bl] and res["self_contradicting"] == []
+
+
+def test_one_shot_applies_i9_and_i10(live, walk, monkeypatch):
+    conn, run = live
+    b, terms, concept = walk
+    briefs = interpret.community_briefs(conn, run, b, terms, concept)
+    bl, bg = briefs[0]["local"]["ord"], briefs[0]["global"]["ord"]
+    if bl == bg:
+        pytest.skip("need two distinct medoid ids")
+    monkeypatch.setattr(interpret, "_via_openrouter", _one_shot_backend(bl, bg, [], foreign=True, bad_cite=True))
+    res = interpret.reason(conn, run, b, terms, concept)
+    assert res["foreign"] == [10**6] and res["premises"][0]["ids"] == [bl]
+    assert res["self_contradicting"] == [bg] and res["cited"] == []
+
+
+def test_one_shot_empties_the_answer_when_nothing_supports(live, walk, monkeypatch):
+    conn, run = live
+    b, terms, concept = walk
+    briefs = interpret.community_briefs(conn, run, b, terms, concept)
+    bl, bg = briefs[0]["local"]["ord"], briefs[0]["global"]["ord"]
+    monkeypatch.setattr(interpret, "_via_openrouter", _one_shot_backend(bl, bg, [], none_support=True))
+    res = interpret.reason(conn, run, b, terms, concept)
+    assert res["ok"] and res["supported_ids"] == [] and res["answer"] == ""

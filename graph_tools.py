@@ -30,6 +30,8 @@ TOOL SURFACE
 | term_stats          | which query terms exist, and who carries them| terms  |
 | community_terms     | top-k BM25 terms, community as the document  | k/cid  |
 | query_terms         | those terms re-ranked by the prompt          | k/cid  |
+| chunk_salient       | a chunk's own BM25 terms, gated (W14), top-k | ord    |
+| chunk_terms         | the top-k of that, for titles                | k/ord  |
 | local_medoid        | most central retrieved chunk in a community  | 1/cid  |
 | cross_community     | retrieved chunks bridging retrieved cids     | set    |
 
@@ -66,6 +68,12 @@ W12 search() SHALL be BM25 -- tf saturation (k1) and length normalisation (b)
     on the stored n_tok -- not tf*idf. Measured at document-level nodes: plain
     tf*idf anchored on long essays dense in common query words and missed 19
     of 23 documents carrying the rare, decisive term.
+W14 Which of a chunk's terms are SALIENT is a gate, not a top-k: log-normalise
+    the BM25 scores and keep all at or above min(median - 1.4826*MAD, mean -
+    sd). Both branches are one sigma below a centre on the same scale; the
+    disjunction keeps the upper half and a little more (trigram.md's dual
+    measure, measured 24/24 probe recall there vs 20-21/24 for a lone median).
+    Titles show the top-k OF the kept set; the kept set is the vocabulary.
 W7  walk() SHALL return, per reached node, the EDGE PROVENANCE and SOURCE DOC of
     every hop that reached it -- not merely the node ids traversed. A route that
     cannot name its own justification is a browser, not an evidence instrument.
@@ -80,6 +88,7 @@ NOT HERE, DELIBERATELY
 """
 from __future__ import annotations
 
+import math
 import os
 import re
 from dataclasses import dataclass, field
@@ -90,13 +99,7 @@ from psycopg.rows import dict_row
 DSN = os.environ.get("CHUNKGRAPH_DSN",
                      "postgresql://graph:graph@localhost:5433/graph")
 
-_STOP = set("""the of and to a in that is was he for it with as his on be at by i
-this had not are but from or have an they which one you were her all she there
-would their we him been has when who will more no if out so said what up its
-about into than them can only other new some could time these two may then do
-first any my now such like our over man me even most made after also did many
-how what why when where which who whom whose does do
-before must through back years where much your way well down should because""".split())
+from stoplist import _STOP                   # R18: one stoplist, no heavy imports
 
 
 def tokenize(text: str) -> list[str]:
@@ -171,41 +174,29 @@ def get_run(conn, label: str) -> RunHandle:
 
 def search(conn, run: RunHandle, query: str, k: int = 8,
            K1: float = 1.5, B: float = 0.75) -> list[dict]:
-    """Lexical entry point: BM25 over the graph's OWN vocabulary, read off
-    node.attrs->'tf' via node_tf_gin, length-normalised on attrs->'n_tok'.
-
-    Was plain tf*idf (W12 fix). At document-level nodes that anchored a
-    2,300-word essay saying `school` ten times over a short document saying
-    `desegregation` (df 5, idf 4.5) once: measured, the walk then reached 4
-    of the 23 desegregation documents. BM25 saturates tf and divides by
-    length, which is the whole point of it.
+    """Lexical entry point: BM25 over the graph's OWN vocabulary (W12), scored
+    in Python over the cached per-run postings (corpus_index). Was SQL over
+    jsonb -- 7.3 s per query on 500 documents, called twice per walk.
 
     W2: attrs is used for SCORING here, never for traversal."""
     terms = tokenize(query)
     if not terms:
         return []
-    with conn.cursor() as cur:
-        cur.execute("""
-            WITH q AS (SELECT unnest(%s::text[]) AS term),
-            avg AS (SELECT avg((attrs->>'n_tok')::float) AS dl
-                      FROM node WHERE run_id = %s),
-            df AS (SELECT q.term, count(n.ord) AS df
-                     FROM q LEFT JOIN node n
-                       ON n.run_id = %s AND n.attrs -> 'tf' ? q.term
-                    GROUP BY q.term),
-            hit AS (SELECT n.ord, q.term, (n.attrs -> 'tf' ->> q.term)::float AS tf,
-                           (n.attrs ->> 'n_tok')::float AS dl
-                      FROM node n JOIN q ON n.attrs -> 'tf' ? q.term
-                     WHERE n.run_id = %s)
-            SELECT h.ord,
-                   sum( ln(1 + ((%s::float - d.df + 0.5)/(d.df + 0.5)))
-                        * h.tf * (%s + 1)
-                        / (h.tf + %s * (1 - %s + %s * h.dl / avg.dl)) ) AS score,
-                   count(DISTINCT h.term) AS terms_hit
-              FROM hit h JOIN df d USING (term), avg
-             GROUP BY h.ord ORDER BY score DESC LIMIT %s""",
-            (terms, run.run_id, run.run_id, run.run_id, run.n_chunks, K1, K1, B, B, k))
-        rows = cur.fetchall()
+    ix = corpus_index(conn, run)
+    N, avgdl = ix["n"], ix["avgdl"]
+    score: dict = {}; hit: dict = {}
+    for t in set(terms):
+        post = ix["post"].get(t)
+        if not post:
+            continue
+        d = len(post)
+        idf = math.log(1 + (N - d + 0.5) / (d + 0.5))
+        for o, f in post.items():
+            dl = ix["dl"].get(o, 1.0)
+            score[o] = score.get(o, 0.0) + idf * f * (K1 + 1) / (f + K1 * (1 - B + B * dl / avgdl))
+            hit[o] = hit.get(o, 0) + 1
+    top = sorted(score, key=lambda o: (-score[o], o))[:k]
+    rows = [{"ord": o, "score": score[o], "terms_hit": hit[o]} for o in top]
     return _decorate(conn, run, rows)
 
 
@@ -433,6 +424,13 @@ def community_terms(conn, run: RunHandle, cids: list[int], k: int = 3,
     """
     if not cids:
         return {}
+    ck = (str(run.run_id), k, K1, B)
+    if ck not in _CT_CACHE:                   # prompt-independent: compute once per run
+        got = _disk(f"cterms-{ck[0]}-{k}-{K1}-{B}")
+        if got is not None:
+            _CT_CACHE[ck] = got
+    if ck in _CT_CACHE:
+        return {c: list(_CT_CACHE[ck].get(c, [])) for c in cids}
     with conn.cursor() as cur:
         cur.execute("""
             WITH m AS (SELECT c.cid, unnest(c.members) AS ord
@@ -451,14 +449,16 @@ def community_terms(conn, run: RunHandle, cids: list[int], k: int = 3,
                    * a.tf * (%s + 1)
                    / (a.tf + %s * (1 - %s + %s * len.len / nc.avglen)) AS bm25
               FROM agg a JOIN df USING (term) JOIN len USING (cid), nc
-             WHERE a.cid = ANY(%s::int[])""",
-            (run.run_id, run.run_id, run.run_id, K1, K1, B, B, cids))
+            """,
+            (run.run_id, run.run_id, run.run_id, K1, K1, B, B))
         rows = cur.fetchall()
-    out: dict = {c: [] for c in cids}
+    allc: dict = {}
     for r in sorted(rows, key=lambda r: (r["cid"], -r["bm25"], r["term"])):
-        if len(out[r["cid"]]) < k:
-            out[r["cid"]].append(r["term"])
-    return out
+        if len(allc.setdefault(r["cid"], [])) < k:
+            allc[r["cid"]].append(r["term"])
+    _CT_CACHE[ck] = allc
+    _disk_put(f"cterms-{ck[0]}-{k}-{K1}-{B}", allc)
+    return {c: list(allc.get(c, [])) for c in cids}
 
 
 def local_medoid(conn, run: RunHandle, ords: list[int],
@@ -559,6 +559,124 @@ def query_terms(conn, run: RunHandle, cids: list[int], query: str,
                if t in qtok or any(part in qtok for part in t.split("_"))}
         out[cid] = sorted(terms, key=lambda t: (t not in lex, -score[t], t))[:k]
     return out
+
+
+_DF_CACHE: dict = {}
+_CT_CACHE: dict = {}
+CACHE_DIR = os.environ.get("CHUNKGRAPH_CACHE",
+                           os.path.join(os.path.expanduser("~"), ".cache", "chunkgraph"))
+
+
+def _disk(key: str):
+    """Runs are immutable (supersede-never-delete), so anything derived from a
+    run_id can live on disk forever. Measured: the in-process index build is
+    20 s on 500 documents; a pickle reload is well under a second."""
+    import pickle
+    path = os.path.join(CACHE_DIR, key + ".pkl")
+    try:
+        with open(path, "rb") as f:
+            return pickle.load(f)
+    except (OSError, EOFError, pickle.UnpicklingError):
+        return None
+
+
+def _disk_put(key: str, obj) -> None:
+    import pickle, tempfile
+    try:
+        os.makedirs(CACHE_DIR, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=CACHE_DIR, suffix=".tmp")
+        with os.fdopen(fd, "wb") as f:
+            pickle.dump(obj, f, protocol=pickle.HIGHEST_PROTOCOL)
+        os.replace(tmp, os.path.join(CACHE_DIR, key + ".pkl"))
+    except OSError:
+        pass                                         # cache is an optimisation, never a failure
+
+
+def corpus_index(conn, run: RunHandle) -> dict:
+    """Per-run inverted index, built ONCE and cached by run_id:
+    {df: {term: df}, post: {term: {ord: tf}}, dl: {ord: n_tok}, avgdl, n}.
+    One pass over the stored tf maps. Measured: the SQL BM25 over jsonb took
+    7.3 s per query on 500 documents; this makes a query sub-millisecond."""
+    key = str(run.run_id)
+    if key not in _DF_CACHE:
+        cached = _disk("index-" + key)
+        if cached is not None:
+            _DF_CACHE[key] = cached
+            return cached
+        post: dict = {}; dl: dict = {}
+        with conn.cursor() as cur:
+            cur.execute("""SELECT n.ord, (n.attrs->>'n_tok')::float AS dl,
+                                  kv.key AS term, (kv.value)::float AS tf
+                             FROM node n, jsonb_each_text(n.attrs -> 'tf') AS kv
+                            WHERE n.run_id = %s""", (run.run_id,))
+            for r in cur.fetchall():
+                post.setdefault(r["term"], {})[r["ord"]] = r["tf"]
+                dl[r["ord"]] = r["dl"] or 1.0
+        n = len(dl) or 1
+        _DF_CACHE[key] = {"df": {t: len(p) for t, p in post.items()}, "post": post,
+                          "dl": dl, "avgdl": (sum(dl.values()) / n) if dl else 1.0, "n": n}
+        _disk_put("index-" + key, _DF_CACHE[key])
+    return _DF_CACHE[key]
+
+
+def corpus_df(conn, run: RunHandle) -> tuple[dict, float, int]:
+    """(df per term, avgdl, n_chunks) -- a view over corpus_index."""
+    ix = corpus_index(conn, run)
+    return ix["df"], ix["avgdl"], ix["n"]
+
+
+def salient_gate(scores: dict) -> dict:
+    """Which terms count as salient (W14). Log-normalise the BM25 scores, then
+    keep every term at or above  min(median - 1.4826*MAD, mean - sd)  -- the
+    more permissive of the robust and parametric centres, each one sigma down.
+    Both branches are on the same sigma scale (1.4826 makes MAD normal-
+    consistent). Measured: keeps ~84% on real chunks.
+
+    Guarantee: {kept: [terms by score desc], threshold_decile: int in 1..10,
+                n_in: int, n_kept: int}. Fewer than 4 terms: keep all."""
+    import numpy as np
+    if not scores:
+        return {"kept": [], "threshold_decile": 0, "n_in": 0, "n_kept": 0}
+    terms = sorted(scores, key=lambda t: (-scores[t], t))
+    if len(terms) < 4:
+        return {"kept": terms, "threshold_decile": 1, "n_in": len(terms), "n_kept": len(terms)}
+    x = np.log1p(np.array([max(scores[t], 0.0) for t in terms], float))
+    med = float(np.median(x)); mad = float(np.median(np.abs(x - med)))
+    thr = min(med - 1.4826 * mad, float(x.mean() - x.std()))
+    kept = [t for t, v in zip(terms, x) if v >= thr]
+    below = int((x < thr).sum())
+    decile = max(1, min(10, int(round(10 * below / len(x))) + 1))
+    return {"kept": kept, "threshold_decile": decile, "n_in": len(terms), "n_kept": len(kept)}
+
+
+def chunk_salient(conn, run: RunHandle, ords: list[int], k: int = 3,
+                  K1: float = 1.5, B: float = 0.75) -> dict:
+    """Per chunk: BM25 of its OWN terms against the corpus (chunk as document,
+    idf over the run), gated by salient_gate (W14), top-k for the title.
+
+    Guarantee: {ord: {top, kept, threshold_decile, n_in, n_kept}}."""
+    if not ords:
+        return {}
+    df, avgdl, N = corpus_df(conn, run)
+    out: dict = {}
+    for o in ords:
+        nd = node(conn, run, o)
+        tf = (nd or {}).get("tf") or {}
+        dl = float((nd or {}).get("n_tok") or 1)
+        sc = {}
+        for term, f in tf.items():
+            d = df.get(term, 1); f = float(f)
+            idf = math.log(1 + (N - d + 0.5) / (d + 0.5))
+            sc[term] = idf * f * (K1 + 1) / (f + K1 * (1 - B + B * dl / avgdl))
+        gate = salient_gate(sc)
+        gate["top"] = gate["kept"][:k]
+        out[o] = gate
+    return out
+
+
+def chunk_terms(conn, run: RunHandle, ords: list[int], k: int = 3) -> dict:
+    """Top-k salient terms of each chunk -- what a medoid is titled with."""
+    return {o: v["top"] for o, v in chunk_salient(conn, run, ords, k=k).items()}
 
 
 def _decorate(conn, run: RunHandle, rows: list[dict]) -> list[dict]:

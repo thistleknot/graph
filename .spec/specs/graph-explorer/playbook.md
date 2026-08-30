@@ -76,3 +76,18 @@ One line each. Status is the only thing that changes in this file.
 - [DONE] tests: briefs deterministic + both medoids; staged pipeline with fake backends; I9/I10 checks
 - [DONE] live run on 'how did communities respond to school desegregation'; commit
 - [DONE] W12 search() is BM25 (was tf*idf); question words are stopwords; excerpt clips from the hit
+
+## §6.7 / §6.8 answer first; medoid titles; salient gate; one stoplist
+- [DONE] walker: answer under the prompt; ONE Evidence expander, collapsed once an answer exists
+- [DONE] graph_tools.chunk_salient / chunk_terms / corpus_df (cached): medoid titled by its own terms
+- [DONE] graph_tools.salient_gate: min(median-1.4826*MAD, mean-sd) on log BM25 (W14); measured 84% kept
+- [DONE] R18 one stoplist (NLTK + extras) at ingest and query; `didn` gone
+- [TODO] re-ingest brown-50, brown-50-dual, brown-500-dual under R18; re-pin; commit
+- [LATER] tune the salient gate against a probe set (84% kept vs the stated 'upper half and a little more')
+- [LATER] keyness prior for register words (got/knew/looked) -- salient_grams R9
+
+## §6.9 latency
+- [DONE] search() in Python over a cached per-run index (7.3 s -> 4 ms); one search per walk
+- [DONE] community term pool cached per run (9.2 s -> 0.4 s); index + pool pickled by run_id
+- [DONE] stoplist.py: NLTK english file read directly (import 11.6 s -> 0.5 s)
+- [DONE] reason() one-shot by default (4 calls -> 1); provider sort=throughput; 86 s -> 9 s total

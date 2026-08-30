@@ -250,7 +250,7 @@ def ef_search(conn, run: gt.RunHandle, query: str, ef: int = DEFAULT_EF,
     if not hits:
         return {}, {"stop": "no_anchor", "depth": 0, "expanded": 0, "seen": 0,
                     "hop_capped": 0, "pool_median": 0, "pools_over_m": 0,
-                    "pools": 0, "ef": ef, "T": T, "m": m}
+                    "pools": 0, "ef": ef, "T": T, "m": m, "anchors": []}
     top = max(h["score"] for h in hits) or 1.0
 
     W = {h["ord"]: h["score"] / top for h in hits}          # result set
@@ -306,7 +306,7 @@ def ef_search(conn, run: gt.RunHandle, query: str, ef: int = DEFAULT_EF,
                "seen": len(seen), "hop_capped": capped,
                "pool_median": (sorted(pools)[len(pools) // 2] if pools else 0),
                "pools_over_m": n_sampled, "pools": len(pools),
-               "ef": ef, "T": T, "m": m}
+               "ef": ef, "T": T, "m": m, "anchors": [h["ord"] for h in hits]}
 
 
 def ef_evidence(conn, run: gt.RunHandle, query: str, ef: int = DEFAULT_EF,
@@ -321,7 +321,7 @@ def ef_evidence(conn, run: gt.RunHandle, query: str, ef: int = DEFAULT_EF,
     """
     W, tele = ef_search(conn, run, query, ef=ef, T=T, m=m,
                         k_anchor=k_anchor, seed=seed)
-    anchors = [h["ord"] for h in gt.search(conn, run, query, k=k_anchor)]
+    anchors = list(tele.get("anchors", []))
     sampled = sorted(W, key=lambda o: (-W[o], o))
     comms = community_histogram(conn, run, sampled, k_comm=k_comm)
     b = Bundle(query=query, run_id=str(run.run_id), anchors=anchors,

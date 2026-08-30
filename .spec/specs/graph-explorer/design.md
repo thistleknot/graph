@@ -852,3 +852,57 @@ the substrate is fixed, the model chooses only what to claim about it.
 **Cost.** Four calls; briefs are compact (~10 communities x 2 excerpts). Cheaper
 than the per-chunk judge, and complementary: the judge asks "which chunks",
 this asks "what claim, and does the evidence hold it".
+
+### 6.7 Answer first; the evidence is one collapsed expander (2026-08-29)
+
+The page order is: prompt; the model's answer (Reason, and/or the Judge's
+entailed answer) directly beneath it once it arrives; then ONE expander,
+"Evidence", holding the community graph, the query-term panel, the ranked
+communities with both medoids, and the in-between exemplars. The expander is
+open until an answer exists and collapsed after -- the answer pushes the
+evidence down, it does not bury it. Streamlit does not nest expanders, so the
+per-community expanders became sections inside the one; the model-transparency
+expanders (briefs, raw stage replies, what the judge was shown) sit under the
+answer they explain, because that is what they are evidence FOR.
+
+### 6.8 A medoid is titled by its own salient terms (W14)
+
+A medoid card reads as the chunk's top salient terms -- BM25 of the chunk's
+own terms against the corpus, the chunk as document -- with `#ord · doc`
+demoted to small print and the kept salient list plus a prompt-conditioned
+excerpt beneath. Corpus df is computed once per run and cached (one GIN probe
+per term was measured at >120 s for three documents).
+
+Which terms count as salient is a GATE, not a top-k: log-normalise the BM25
+scores and keep all at or above `min(median - 1.4826*MAD, mean - sd)`, the
+more permissive of the robust and parametric one-sigma cuts (trigram.md's dual
+measure). Measured on brown-500-dual: 440/523, 578/688, 489/588 kept -- about
+84% -- and 95% on a synthetic lognormal; threshold lands in decile 3. That is
+more than "the upper half and a little more"; the formula is implemented as
+stated and the number recorded so it can be tuned against a probe set rather
+than by feel.
+
+Stopwords: one list, NLTK English plus the local extras, applied at ingest
+(R18) and imported for queries. `didn't` -> `didn` had surfaced as a community
+term. Register words (got, knew, looked, eyes) are not stopwords; they are the
+keyness prior's job.
+
+### 6.9 Latency: one call's worth (2026-08-29)
+
+"Should only be as long as a single OpenRouter call." Measured before, on the
+desegregation prompt against brown-500-dual: walk 14.4 s, terms 9.2 s, four
+sequential reasoning calls ~25-62 s -- 50-86 s total. Four causes, each fixed
+at its root, none of them the model:
+
+| stage        | before  | after  | what it was                                         |
+|--------------|---------|--------|-----------------------------------------------------|
+| search()     | 7.3 s x2| 4 ms   | BM25 as SQL over jsonb; now Python over cached postings, one search per walk |
+| terms        | 9.2 s   | 0.4 s  | community pool recomputed per prompt; it is prompt-independent -- cached per run |
+| import       | 11.6 s  | 0.5 s  | `from nltk.corpus import stopwords` pulls the whole NLTK tree; stoplist.py reads the file |
+| reason       | 4 calls | 1 call | one JSON with all four sections; I9/I10/I11 apply unchanged; OpenRouter routed by throughput |
+
+Total 9.0 s: walk 1.0, terms 0.4, one call 7.7. Runs are immutable, so the
+per-run index and pool are pickled under ~/.cache/chunkgraph keyed by run_id;
+a fresh process reloads in 0.4 s instead of rebuilding in 26 s. The staged
+four-call path remains reachable (`one_shot=False`) for strict stage isolation
+and is still pinned by tests.
