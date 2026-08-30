@@ -12,7 +12,12 @@ src/dst columns only.
 
 Nothing here re-partitions anything. Communities are the run's own stored cids.
 
-Run:  streamlit run walker_app.py
+Run (PowerShell, from the repo root; the database must be up):
+    docker compose up -d
+    $env:CHUNKGRAPH_MODEL_DIR = 'C:/Users/user/models/m2v-minilm-l6-256'   # dense signal
+    $env:OPENROUTER_API_KEY   = '...'                                       # Reason / Judge
+    streamlit run walker_app.py --server.port 8501
+Then open http://localhost:8501. Ctrl+C in that terminal stops it.
 """
 from __future__ import annotations
 
@@ -405,6 +410,28 @@ with tab_walk:
                         st.code(res["evidence"], language="text")
                     with st.expander("Exactly what the model returned (raw)"):
                         st.code(res["text"], language="json")
+
+            # ---- 1b. where the two readings disagree (design 6.7: Judge is stricter)
+            if (got_r and got_r[0] == q and got_r[1]["ok"]
+                    and got_j and got_j[0] == q and got_j[1]["ok"]):
+                sup = set(got_r[1]["supported_ids"])
+                ent = set(got_j[1]["entailed"])
+                jw = {v["ord"]: v["why"] for v in got_j[1]["verdicts"]}
+                reason_only = sorted(sup - ent)
+                judge_only = sorted(ent - sup)
+                if reason_only or judge_only:
+                    lines = ["**Reason vs Judge.** Reason argues from community briefs and "
+                             "accepts a chunk that supports a premise; Judge asks whether a "
+                             "chunk literally answers the prompt. When they disagree, trust "
+                             "Judge for *what the corpus says* and Reason for *how it hangs "
+                             "together*."]
+                    if reason_only:
+                        lines.append("Reason leaned on, Judge called neutral: " + "; ".join(
+                            f"#{o} — {jw.get(o, 'not judged')}" for o in reason_only))
+                    if judge_only:
+                        lines.append("Judge found entailing, Reason never used: " + ", ".join(
+                            f"#{o}" for o in judge_only))
+                    st.info(("  " + chr(10)).join(lines))
 
             # ---- 2. the evidence: one expander, collapsed once an answer exists
             with st.expander(
