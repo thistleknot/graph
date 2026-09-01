@@ -59,8 +59,19 @@ deterministic, ~1 s.
 3. **Ring** — one degree out from the top-3 chunks: their strongest unseen
    edges enter at `parent score × strength`, ≤8 per parent, never outranking
    the parent, never seeding further expansion. | S13
-4. **Bundle** — the frozen evidence: ordinals, per-chunk walk scores, anchors,
-   telemetry. Everything downstream derives from this one object. | S6/S7
+4. **Bridges (discovery)** — for each pair among the top-3 chunks, the single
+   strongest degree-damped path over the WHOLE run (Dijkstra on −log strength
+   with a deg^-0.4 interior penalty). Chunks that path crosses which the walk
+   never retrieved enter the evidence at ≤ min(endpoint scores). This is the
+   2-hop generalization of the ring: scoring stays on the subgraph, discovery
+   is allowed to search everything. | S14, W16
+5. **Bundle** — the frozen evidence: ordinals, per-chunk walk scores, anchors,
+   **origin** (walk | ring | bridge), telemetry. Everything downstream derives
+   from this one object. | S6/S7
+
+Display key, everywhere evidence is listed: **bold #id** = a bridge chunk
+(discovered, not walked); its *salient terms are italicised*. Unmarked ids came
+from the walk or its one-degree ring.
 
 ## Phase C — ANALYZE (the walked subgraph)
 
@@ -78,6 +89,12 @@ All computed on the Bundle, no model. `graph_tools.py`.
 | pathways | idea-to-idea **DWPC**: enumerate simple paths ≤3 edges between anchor pairs, score each `Π strength × Π deg(node)^-0.4` (global degrees), sum per pair, keep the best chain for display. Hub correction is the point: many specific paths beat one path through a hub | W15, 6.11 |
 
 ## Phase D — INTERPRET (the only model phase)
+
+The structure computed in Phase C is not UI-only: Reason's briefs carry the
+same pathways object as an attached image (walked subgraph + global community
+map) or as a numbers block (`structure="text"`), and Reason+Judge run as ONE
+serialized call (`judge=True`) whose single JSON reply carries both channels
+(I12/I13, design 6.12).
 
 `interpret.py`. OpenRouter (qwen, reasoning off, throughput-routed) with an
 Ollama fallback; urllib transport; bounded at ~90 s and two attempts.
@@ -119,3 +136,65 @@ W = `graph_tools.py` tool-surface guards · I = `interpret.py` model-boundary
 guards · X = `export_neo4j.py` export guards. Each guard is pinned by a test
 in `tests/`; §6.x references are `specs/graph-explorer/design.md`. This file
 describes; the guards govern. If they disagree, fix this file.
+
+
+---
+
+## FAQ — operator questions, answered once
+
+**Does the model see the path/subgraph information?** Yes, since I12: Reason's
+input carries the pathways and shape as an image by default (the same two-panel
+map the UI shows) or as a numbers block; failure of the image path falls back
+to numbers, noted in `structure_note`. The Judge channel deliberately sees
+none of it — its contract is chunk-by-chunk entailment on content alone, and
+structural hints would contaminate that.
+
+**Should paths be derived over the subgraph or the whole graph?** Both, split
+by job. *Scoring* the connectedness of retrieved ideas runs on the walked
+subgraph (W15) — a path through a chunk you never retrieved is not evidence
+you can show. *Discovery* runs on the whole graph (S14/W16): the strongest
+degree-damped path between two retrieved ideas may cross a chunk the walk
+missed, and that chunk is pulled into the evidence, bolded, exactly like the
+ring at one hop.
+
+**How does this scale? Can samples generalize?** Yes, with the standard split.
+Precompute what is query-independent: global degrees, community medoids, and a
+DWPC matrix over medoids can all be built at ingest — Hetionet ships DWPC at
+millions of nodes exactly this way, offline [empirical:cited — Himmelstein's
+Rephetio computes DWPC features in batch]. Sample what is query-dependent:
+DWPC is a sum over paths, so Monte-Carlo random walks converge to the same
+*ranking* of pairs long before the values converge, and ranking is all we use;
+Personalized PageRank is the mature sublinear version of the same "many
+hub-free routes" notion [empirical:cited — PPR push/local methods,
+Andersen–Chung–Lang]. Conductance and density estimate fine from sampled
+neighbourhoods. Caveat: samples generalize for rankings and shapes, not
+exhibits — the displayed chain always comes from an exact bounded search.
+Brown at 500 nodes needs none of this; the split is written down for the
+corpus that does.
+
+**Does DWPC find paths?** No — it scores them. Enumeration is plain traversal
+(DFS on the subgraph in W15, Dijkstra on the whole graph in W16); DWPC turns
+the enumerated set into one connectivity number per pair. Finding and scoring
+are the two halves of `pathways()`.
+
+**Doesn't DWPC need typed metapaths?** Moot here: the serve-time graph is
+homogeneous (chunk↔chunk), so only the degree-damping transfers, and that is
+the part in the code. Metapath machinery becomes relevant only if the
+term↔chunk bipartite layer is built (term-chunk-term paths).
+
+**Where is WCC?** It was always there under another name: the graph is
+undirected, so weakly connected components are just components. `pathways()`
+reports the count and per-component sizes (`wcc_sizes`), and the UI labels
+them WCC.
+
+**NPMI vs BM25 — who does what?** NPMI where the datum is co-occurrence of a
+pair (phrase welding, and term–term edges when that layer lands); BM25 where
+the datum is a term's rate inside something with a length (term–chunk);
+cosine where the datum is two profiles (chunk–chunk). Community salience by
+BM25 mass is `community_terms`; the term → chunk_ids inverted index exists and
+also feeds the Neo4j CONTAINS export. Length-normalized chunk–term PMI is
+log-ratio keyness and has a queued A/B against BM25.
+
+**Louvain or Leiden?** Open, queued: same API, usually better partitions, and
+the real motivation is the too-coarse 7-community document-level partition —
+to be tried at the next re-ingest.

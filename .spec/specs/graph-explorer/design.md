@@ -954,3 +954,44 @@ its best path for display: a chain of chunk ids the operator can read as
 
 Guards: W15 in graph_tools. UI: a "Pathways between ideas" block in the
 Evidence expander, each pair titled by the anchors' salient terms.
+
+
+### 6.12 The model sees the structure; reason+judge is one call (2026-08-31)
+
+Operator: "this information is very informative for the model ... seeing is
+believing" and "reasoning and judging the walk should be a serialized call ...
+a single llm call with a follow on judge key".
+
+Structural evidence (I12). The pathways/shape computed for the operator now
+reaches the model, two renderings of the SAME pathways object: an image
+(default) -- left the walked subgraph, nodes coloured by community, strongest
+DWPC chains in red, lexical anchors ringed; right the global community map
+with walked communities filled, hits/size annotated -- or a numbers block
+(`structure="text"`). Image build or transport failure falls back to the
+numbers block, recorded in `structure_note`. The Evidence expander gained the
+same split as tabs: "This walk" vs "Global map" (the identical PNG the model
+receives). Scale note: the global panel is the community quotient (k nodes,
+not n), so it survives corpus growth; the subgraph panel is bounded by ef.
+
+One call (I13). `reason(judge=True)` extends the one-shot JSON with a
+"verdicts" key: the same reply carries hypotheses/premises/evaluations/answer
+over the briefs AND one entailment verdict per retrieved chunk over the full
+rendered evidence. Each channel is checked exactly as before (I1/I9/I10);
+max_tokens raised to 8192 for the combined reply. The walker's two buttons
+collapsed into one "Reason + judge this walk"; the disagreement note now
+compares the two channels of a single result.
+
+
+### 6.13 Bridge discovery: the whole graph may complete a pathway (2026-08-31)
+
+Scoring stays on the subgraph (6.11); discovery may search everything. For
+each pair among the walk's top-3 chunks, gt.best_path (W16) runs Dijkstra over
+the entire live edge set maximising prod(strength) x prod(deg^-0.4 over
+interior nodes) -- the DWPC weight of a single path. Chunks the winning path
+crosses that the walk never retrieved enter the Bundle as origin="bridge" at
+score = min(endpoint scores) x path weight, capped at 8 per walk (S14).
+
+Presentation contract (operator): **bold #id** marks a bridge chunk wherever
+evidence ids are listed; its *salient terms are italicised* in the Discovered
+bridges block; a key line above the evidence explains the markup. The Bundle
+carries origin (walk | ring | bridge) so any renderer can honour this.

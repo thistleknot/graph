@@ -84,6 +84,10 @@ W15 Evidence pathways are computed on the induced subgraph only, with GLOBAL
     degrees for damping and conductance; a pair's DWPC sums simple paths of
     <= max_len edges, each scored prod(strength) * prod(deg^-damp) over every
     node on the path, so no path outranks the same path through smaller hubs.
+W16 Bridge discovery searches the WHOLE live edge set: best_path maximises
+    prod(strength) x prod(deg^-damp) over interior nodes (Dijkstra on the
+    negative log). It finds evidence the walk missed; pathways (W15) only
+    scores what was already retrieved. Two jobs, two functions.
 
 NOT HERE, DELIBERATELY
 - No LLM. No prompt, no model call, no NL->query translation.
@@ -790,3 +794,60 @@ def pathways(conn, run: RunHandle, ords: list[int], anchors: list[int],
                               "path": best_p})
     pairs.sort(key=lambda p: (-p["dwpc"], p["a"], p["b"]))
     return {**shape, "pairs": pairs[:top_pairs]}
+
+
+_ADJ_CACHE: dict = {}
+
+
+def full_adjacency(conn, run: RunHandle) -> dict:
+    """W16: whole-run adjacency {a: {b: strength}}, cached per run (runs are
+    immutable). ~2x edge count entries; fine to hold for graphs this size."""
+    key = str(run.run_id)
+    if key in _ADJ_CACHE:
+        return _ADJ_CACHE[key]
+    adj: dict = {}
+    with conn.cursor() as cur:
+        cur.execute("""SELECT a, b, strength FROM edge_sym
+                        WHERE run_id = %s AND valid_to IS NULL""", (run.run_id,))
+        for r in cur.fetchall():
+            adj.setdefault(r["a"], {})[r["b"]] = max(min(r["strength"], 1.0), 1e-9)
+    _ADJ_CACHE[key] = adj
+    return adj
+
+
+def best_path(conn, run: RunHandle, a: int, b: int, damp: float = 0.4):
+    """W16 (design 6.13): the single strongest degree-damped path a..b over the
+    WHOLE run -- Dijkstra minimising sum(-log strength) + damp*sum(log deg) over
+    interior nodes, i.e. maximising the DWPC weight of one path. Returns
+    (path list, weight in (0, 1]) or None when disconnected."""
+    import heapq
+    import math
+    adj = full_adjacency(conn, run)
+    if a not in adj or b not in adj:
+        return None
+    def node_cost(v):
+        return damp * math.log(max(len(adj.get(v, {})), 1))
+    dist = {a: 0.0}
+    prev = {}
+    heap = [(0.0, a)]
+    seen = set()
+    while heap:
+        d, u = heapq.heappop(heap)
+        if u in seen:
+            continue
+        seen.add(u)
+        if u == b:
+            break
+        for v, w in adj[u].items():
+            nd = d + -math.log(w) + (node_cost(v) if v != b else 0.0)
+            if nd < dist.get(v, float("inf")):
+                dist[v] = nd
+                prev[v] = u
+                heapq.heappush(heap, (nd, v))
+    if b not in dist:
+        return None
+    path = [b]
+    while path[-1] != a:
+        path.append(prev[path[-1]])
+    path.reverse()
+    return path, math.exp(-dist[b])

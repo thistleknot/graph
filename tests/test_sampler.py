@@ -382,3 +382,43 @@ def test_w15_hub_damping_costs_every_path(live):
           for p in gt.pathways(conn, run, b.sampled, b.sampled[:6], damp=0.0, top_pairs=99)["pairs"]}
     common = set(d1) & set(d0)
     assert common and all(d1[k] < d0[k] for k in common)
+
+
+def test_w16_best_path_is_valid_and_damping_prices_hubs(live):
+    """Every hop of the returned path is a real live edge; the weight is in
+    (0,1]; and raising damp never RAISES a path's weight."""
+    conn, run = _dual(live)
+    b, _ = sp.ef_evidence(conn, run, Q, ef=24, T=0.0, bridge_pairs=0)
+    a_, b_ = b.sampled[0], b.sampled[-1]
+    r = gt.best_path(conn, run, a_, b_, damp=0.4)
+    assert r is not None
+    path, w = r
+    assert path[0] == a_ and path[-1] == b_ and 0.0 < w <= 1.0
+    adj = gt.full_adjacency(conn, run)
+    for u, v in zip(path, path[1:]):
+        assert v in adj[u], f"{u}->{v} is not a live edge"
+    r0 = gt.best_path(conn, run, a_, b_, damp=0.0)
+    assert r0 is not None and r0[1] >= w
+
+
+def test_s14_bridges_are_discovered_off_walk_and_never_outrank_endpoints(live):
+    """S14: every bridge chunk sits on a reported whole-graph path between two
+    top walk chunks, was NOT in the walk+ring, and scores <= both endpoints.
+    bridge_pairs=0 disables the stage entirely."""
+    conn, run = _dual(live)
+    b0, t0 = sp.ef_evidence(conn, run, Q, ef=24, T=0.0, bridge_pairs=0)
+    assert t0["bridge"] == 0 and set(b0.origin.values()) <= {"walk", "ring"}
+    b1, t1 = sp.ef_evidence(conn, run, Q, ef=24, T=0.0)
+    assert set(b1.origin) == set(b1.sampled)
+    br = [o for o in b1.sampled if b1.origin[o] == "bridge"]
+    assert len(br) == t1["bridge"] <= sp.MAX_BRIDGE
+    base = set(b0.sampled)
+    top = sorted({o: b1.scores[o] for o in b1.sampled if b1.origin[o] == "walk"},
+                 key=lambda o: -b1.scores[o])[:sp.DEFAULT_BRIDGE_PAIRS]
+    for o in br:
+        assert o not in base, "a bridge must be NEW evidence"
+        homes = [p for p in t1["bridge_paths"] if o in p]
+        assert homes, f"#{o} is on no reported bridge path"
+        for p in homes:
+            assert p[0] in top and p[-1] in top
+        assert b1.scores[o] <= min(b1.scores[p[0]], b1.scores[p[-1]]) + 1e-12

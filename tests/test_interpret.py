@@ -449,7 +449,7 @@ def test_briefs_are_deterministic_and_carry_both_medoids(live, walk):
 
 def _staged_backend(b_local, b_global, calls, *, foreign=False, contradict=False, bad_cite=False):
     """One fake backend that answers each stage by the system prompt it gets."""
-    def be(system, user, timeout):
+    def be(system, user, timeout, retries=None, images=None, max_tokens=None):
         if system is interpret.HYP_SYSTEM or "Propose up to three" in system:
             calls.append("hypothesis")
             return json.dumps({"hypotheses": ["H0", "H1"], "chosen": 1, "why": "because"}), "openrouter:fake"
@@ -479,7 +479,7 @@ def test_reason_runs_four_stages_and_answers_from_supported_only(live, walk, mon
     calls = []
     monkeypatch.setattr(interpret, "_via_openrouter", _staged_backend(bl, bg, calls))
     monkeypatch.setattr(interpret, "_via_ollama", lambda s, u, t: (_ for _ in ()).throw(RuntimeError("down")))
-    res = interpret.reason(conn, run, b, terms, concept, one_shot=False)
+    res = interpret.reason(conn, run, b, terms, concept, one_shot=False, structure="none")
     assert res["ok"], res["error"]
     assert calls == ["hypothesis", "premises", "evaluate", "answer"]
     assert res["hypothesis"] == "H1" and res["hypotheses"] == ["H0", "H1"]
@@ -500,7 +500,7 @@ def test_reason_discards_foreign_ids_and_flags_bad_citations(live, walk, monkeyp
     calls = []
     monkeypatch.setattr(interpret, "_via_openrouter",
                         _staged_backend(bl, bg, calls, foreign=True, bad_cite=True))
-    res = interpret.reason(conn, run, b, terms, concept, one_shot=False)
+    res = interpret.reason(conn, run, b, terms, concept, one_shot=False, structure="none")
     assert res["ok"]
     assert res["foreign"] == [10**6]                                   # I9
     assert res["premises"][0]["ids"] == [bl], "foreign id must be dropped from the premise"
@@ -513,7 +513,7 @@ def test_reason_skips_answer_when_nothing_supports(live, walk, monkeypatch):
     briefs = interpret.community_briefs(conn, run, b, terms, concept)
     bl, bg = briefs[0]["local"]["ord"], briefs[0]["global"]["ord"]
     calls = []
-    def be(system, user, timeout):
+    def be(system, user, timeout, retries=None, images=None, max_tokens=None):
         base = _staged_backend(bl, bg, calls)
         if "For each PREMISE" in system:
             calls.append("evaluate")
@@ -521,7 +521,7 @@ def test_reason_skips_answer_when_nothing_supports(live, walk, monkeypatch):
                                                {"index": 1, "verdict": "contradicts", "why": ""}]}), "openrouter:fake"
         return base(system, user, timeout)
     monkeypatch.setattr(interpret, "_via_openrouter", be)
-    res = interpret.reason(conn, run, b, terms, concept, one_shot=False)
+    res = interpret.reason(conn, run, b, terms, concept, one_shot=False, structure="none")
     assert res["ok"] and "answer" not in calls
     assert res["answer"] == "" and res["supported_ids"] == []
 
@@ -531,7 +531,7 @@ def test_reason_transport_failure_is_reported_not_raised(live, walk, monkeypatch
     b, terms, concept = walk
     monkeypatch.setattr(interpret, "_via_openrouter", lambda s, u, t: (_ for _ in ()).throw(RuntimeError("x")))
     monkeypatch.setattr(interpret, "_via_ollama", lambda s, u, t: (_ for _ in ()).throw(RuntimeError("y")))
-    res = interpret.reason(conn, run, b, terms, concept, one_shot=False)
+    res = interpret.reason(conn, run, b, terms, concept, one_shot=False, structure="none")
     assert res["ok"] is False and "RuntimeError" in res["error"]
     assert res["briefs"] and res["briefs_text"]                       # briefs still built
 
@@ -558,7 +558,7 @@ def test_briefs_carry_walk_ranked_evidence_besides_the_medoids(live, walk):
 
 
 def _one_shot_backend(bl, bg, calls, *, foreign=False, bad_cite=False, none_support=False):
-    def be(system, user, timeout):
+    def be(system, user, timeout, retries=None, images=None, max_tokens=None):
         calls.append("one_shot" if "Do all of the following in ONE reply" in system else "other")
         prem = [{"text": "P0", "ids": [bl] + ([10**6] if foreign else [])},
                 {"text": "P1", "ids": [bg]}, {"text": "P2", "ids": []}]
@@ -578,7 +578,7 @@ def test_one_shot_is_the_default_and_makes_exactly_one_call(live, walk, monkeypa
     bl, bg = briefs[0]["local"]["ord"], briefs[0]["global"]["ord"]
     calls = []
     monkeypatch.setattr(interpret, "_via_openrouter", _one_shot_backend(bl, bg, calls))
-    res = interpret.reason(conn, run, b, terms, concept)
+    res = interpret.reason(conn, run, b, terms, concept, structure="none")
     assert calls == ["one_shot"], calls
     assert res["ok"] and res["hypothesis"] == "H1" and list(res["stages"]) == ["one_shot"]
     v = {p["text"]: p["verdict"] for p in res["premises"]}
@@ -594,7 +594,7 @@ def test_one_shot_applies_i9_and_i10(live, walk, monkeypatch):
     if bl == bg:
         pytest.skip("need two distinct medoid ids")
     monkeypatch.setattr(interpret, "_via_openrouter", _one_shot_backend(bl, bg, [], foreign=True, bad_cite=True))
-    res = interpret.reason(conn, run, b, terms, concept)
+    res = interpret.reason(conn, run, b, terms, concept, structure="none")
     assert res["foreign"] == [10**6] and res["premises"][0]["ids"] == [bl]
     assert res["self_contradicting"] == [bg] and res["cited"] == []
 
@@ -605,5 +605,84 @@ def test_one_shot_empties_the_answer_when_nothing_supports(live, walk, monkeypat
     briefs = interpret.community_briefs(conn, run, b, terms, concept)
     bl, bg = briefs[0]["local"]["ord"], briefs[0]["global"]["ord"]
     monkeypatch.setattr(interpret, "_via_openrouter", _one_shot_backend(bl, bg, [], none_support=True))
-    res = interpret.reason(conn, run, b, terms, concept)
+    res = interpret.reason(conn, run, b, terms, concept, structure="none")
     assert res["ok"] and res["supported_ids"] == [] and res["answer"] == ""
+
+
+# --------------------------------------------- I12/I13 structure + combined call
+
+def test_i12_render_structure_is_deterministic_and_names_the_pairs(live, walk):
+    conn, run = live
+    b, _, _ = walk
+    pw = gt.pathways(conn, run, b.sampled, b.sampled[:4])
+    s1 = interpret.render_structure(conn, run, b, pw)
+    s2 = interpret.render_structure(conn, run, b, pw)
+    assert s1 == s2 and "dwpc" in s1 and "conductance" in s1
+    for p in pw["pairs"][:8]:
+        assert f"[id={p['a']}]" in s1 and f"[id={p['b']}]" in s1
+
+
+def test_i12_render_walk_image_is_a_png(live, walk):
+    conn, run = live
+    b, _, _ = walk
+    pw = gt.pathways(conn, run, b.sampled, b.sampled[:4])
+    png = interpret.render_walk_image(conn, run, b, pw)
+    assert isinstance(png, bytes) and png[:8] == b"\x89PNG\r\n\x1a\n"
+    assert len(png) > 20_000, "a two-panel figure should not be trivially small"
+
+
+def test_i13_combined_call_is_one_call_with_both_channels(live, walk, monkeypatch):
+    """judge=True: ONE transport call; the reply's reason sections AND verdicts
+    are parsed, foreign verdict ids discarded, coverage computed."""
+    import json as _json
+    conn, run = live
+    b, _, _ = walk
+    calls = []
+
+    def fake_call(system, user, timeout, images=None, max_tokens=None):
+        calls.append({"system": system, "images": images, "max_tokens": max_tokens})
+        lm = sorted(b.sampled)[0]
+        reply = {"hypotheses": ["H"], "chosen": 0, "why": "w",
+                 "premises": [{"text": "P", "ids": [lm]}],
+                 "evaluations": [{"index": 0, "verdict": "supports", "why": "ok"}],
+                 "answer": f"A #{lm}.",
+                 "verdicts": ([{"id": o, "verdict": "neutral", "why": "n"}
+                               for o in b.sampled if o != lm]
+                              + [{"id": lm, "verdict": "entails", "why": "y"},
+                                 {"id": 10**6, "verdict": "entails", "why": "foreign"}])}
+        return _json.dumps(reply), "test-backend"
+
+    monkeypatch.setattr(interpret, "_call", fake_call)
+    terms, concept = {}, {}
+    rr = interpret.reason(conn, run, b, terms, concept, judge=True, structure="text")
+    assert rr["ok"], rr["error"]
+    assert len(calls) == 1, "reason+judge must be ONE serialized call"
+    assert "verdicts" in calls[0]["system"] and calls[0]["max_tokens"] == interpret.JUDGE_MAX_TOKENS
+    assert "== STRUCTURE" in rr["structure"] and rr["structure"] in rr["briefs_text"] + rr["structure"]
+    assert rr["premises"][0]["verdict"] == "supports" and rr["answer"].startswith("A #")
+    assert set(rr["shown"]) == set(b.sampled)
+    assert rr["coverage"] == 1.0
+    assert rr["entailed"] == [sorted(b.sampled)[0]]
+    assert 10**6 in rr["foreign"], "foreign verdict id must be discarded and reported"
+
+
+def test_i12_image_rejection_falls_back_to_numbers(live, walk, monkeypatch):
+    import json as _json
+    conn, run = live
+    b, _, _ = walk
+    calls = []
+
+    def fake_call(system, user, timeout, images=None, max_tokens=None):
+        calls.append(images)
+        if images:
+            raise RuntimeError("provider rejected image content")
+        reply = {"hypotheses": ["H"], "chosen": 0, "why": "w",
+                 "premises": [{"text": "P", "ids": []}],
+                 "evaluations": [], "answer": ""}
+        return _json.dumps(reply), "test-backend"
+
+    monkeypatch.setattr(interpret, "_call", fake_call)
+    rr = interpret.reason(conn, run, b, {}, {}, judge=False, structure="image")
+    assert rr["ok"], rr["error"]
+    assert calls[0] and calls[1] is None, "must retry text-only after image rejection"
+    assert "numbers" in rr["structure_note"]

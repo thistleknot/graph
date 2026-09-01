@@ -191,26 +191,24 @@ def test_labels_from_another_run_are_rejected_not_applied(app, tmp_path):
         app.load_labels.clear()
 
 
-def test_reason_and_judge_disagreement_is_shown(monkeypatch):
-    """When Reason leans on a chunk the Judge called neutral (or the Judge
-    entails one Reason never used), the Walk tab says so, names the ids and
-    carries the Judge's reason. Both results are injected; no model call."""
+def test_reason_and_judge_disagreement_is_shown():
+    """One combined result (I13): the Walk tab names the chunks Reason leaned
+    on that Judge called neutral (with the Judge's reason) and the ones Judge
+    entailed that Reason never used. Injected; no model call."""
     from streamlit.testing.v1 import AppTest
     q = "jury trial grand jury investigation"
-    rr = {"ok": True, "backend": "test", "answer": "A #11.", "briefs": [], "briefs_text": "",
+    rr = {"ok": True, "backend": "test", "answer": "A #11.", "briefs": [{}], "briefs_text": "b",
           "hypotheses": [], "hypothesis": "", "why": "", "foreign": [], "stages": {},
           "self_contradicting": [], "supported_ids": [11, 12], "cited": [11],
-          "premises": [{"text": "p", "ids": [11, 12], "verdict": "supports", "why": ""}]}
-    res = {"ok": True, "backend": "test", "answer": "B #12 #13.", "rerank_note": "off",
-           "coverage": 1.0, "shown": [11, 12, 13], "entailed": [12, 13], "contradicts": [],
-           "foreign": [], "self_contradicting": [], "evidence": "", "text": "{}",
-           "verdicts": [{"ord": 11, "verdict": "neutral", "why": "about lunch counters"},
-                        {"ord": 12, "verdict": "entails", "why": "yes"},
-                        {"ord": 13, "verdict": "entails", "why": "yes"}]}
+          "premises": [{"text": "p", "ids": [11, 12], "verdict": "supports", "why": ""}],
+          "shown": [11, 12, 13], "entailed": [12, 13], "contradicts": [],
+          "coverage": 1.0, "evidence": "",
+          "verdicts": [{"ord": 11, "verdict": "neutral", "why": "about lunch counters"},
+                       {"ord": 12, "verdict": "entails", "why": "yes"},
+                       {"ord": 13, "verdict": "entails", "why": "yes"}]}
     try:
         at = AppTest.from_file("walker_app.py", default_timeout=240)
-        at.session_state["reason"] = (q, rr)
-        at.session_state["interp"] = (q, res)
+        at.session_state["assess"] = (q, rr)
         at.run()
         at.text_input("q").set_value(q).run()
     except Exception as e:                                # pragma: no cover

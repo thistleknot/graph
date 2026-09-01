@@ -63,12 +63,17 @@ I10 The final answer SHALL cite only ids attached to premises judged
 I11 Every stage's raw reply SHALL be kept on the result, so the chain
     hypothesis -> premises -> verdicts -> answer is inspectable and a reader
     can refute any verdict by opening the chunk it cites.
+I12 Structural evidence is computed, never model-derived: the numbers block
+    and the image render the SAME pathways object; image transport failure
+    falls back to the numbers block, noted in structure_note.
+I13 Reason and Judge are ONE serialized call when judge=True: a single JSON
+    reply carries the four reason sections plus one verdict per shown chunk,
+    each channel checked exactly as it is when it runs alone.
 I7  WHERE RERANK_MODEL names a cached ColBERT checkpoint and pylate imports,
     chunks SHALL be reranked by MaxSim against the prompt and clipped to
     RERANK_TOP before rendering. Otherwise the stage is a no-op and says so.
 """
 from __future__ import annotations
-
 import json
 import os
 import re
@@ -87,6 +92,7 @@ ANCHOR_MULT = 4             # anchors (BM25 top-k) get 4x: they are where the an
 EVIDENCE_TOTAL_CHARS = 60000  # judge input cap; 64 docs x 1,500 + anchors x4 reached ~100k chars
 OLLAMA_MAX_CHARS = 40000      # beyond this the local 4b cannot hold the prompt in num_ctx: skip it
 ATTEMPTS = 2                  # interactive: two tries, not three, and a short per-attempt timeout
+JUDGE_MAX_TOKENS = 8192       # combined reason+judge: ~82 verdicts + four reason sections
 RERANK_MODEL = os.environ.get("RERANK_MODEL")                          # I7
 RERANK_TOP = int(os.environ.get("RERANK_TOP", "24"))
 VERDICTS = ("entails", "contradicts", "neutral")
@@ -329,7 +335,8 @@ def check(parsed: dict, shown: list[int]) -> dict:
 # --------------------------------------------------------------- I5 backends
 
 def _via_openrouter(system: str, user: str, timeout: float,
-                    retries: int = ATTEMPTS) -> tuple[str, str]:
+                    retries: int = ATTEMPTS, images: list[bytes] | None = None,
+                    max_tokens: int | None = None) -> tuple[str, str]:
     """Same shape as rl_V2/src/build_pools_r3.py::_openrouter_chat, which runs
     against this endpoint without incident: stdlib urllib, reasoning disabled,
     three attempts with exponential backoff on ANY failure except 400/401/403,
@@ -344,13 +351,20 @@ def _via_openrouter(system: str, user: str, timeout: float,
     key = os.environ.get("OPENROUTER_API_KEY")
     if not key:
         raise RuntimeError("OPENROUTER_API_KEY unset")
+    content = user
+    if images:                                                          # I12
+        import base64
+        content = [{"type": "text", "text": user}] + [
+            {"type": "image_url", "image_url": {"url":
+                "data:image/png;base64," + base64.b64encode(im).decode()}}
+            for im in images]
     payload = {"model": OPENROUTER_MODEL, "temperature": 0.1,
-               "max_tokens": MAX_TOKENS,
+               "max_tokens": max_tokens or MAX_TOKENS,
                "reasoning": {"enabled": False},                        # I5
                "provider": {"sort": "throughput"},        # measured 62 s vs ~20 s across providers
                "response_format": {"type": "json_object"},
                "messages": [{"role": "system", "content": system},
-                            {"role": "user", "content": user}]}
+                            {"role": "user", "content": content}]}
     last = None
     for attempt in range(retries):
         try:
@@ -365,7 +379,7 @@ def _via_openrouter(system: str, user: str, timeout: float,
             ch = (d.get("choices") or [{}])[0]
             content = (ch.get("message") or {}).get("content") or ""
             if ch.get("finish_reason") == "length" and not content.rstrip().endswith("}"):
-                raise RuntimeError(f"truncated at max_tokens={MAX_TOKENS} "
+                raise RuntimeError(f"truncated at max_tokens={max_tokens or MAX_TOKENS} "
                                    f"(finish_reason=length, {len(content)} chars)")
             if content.strip():
                 return content, f"openrouter:{OPENROUTER_MODEL}"
@@ -492,9 +506,12 @@ BRIEF_CHARS = 700
 EVIDENCE_PER_BRIEF = 3      # top walk-scored retrieved chunks per community, besides the medoids
 
 
-def _call(system: str, user: str, timeout: float) -> tuple[str, str]:
+def _call(system: str, user: str, timeout: float,
+          images: list[bytes] | None = None,
+          max_tokens: int | None = None) -> tuple[str, str]:
     """OpenRouter then Ollama (I5 order). Raises when both fail (I4 is handled
-    by the caller, which never lets that raise out of reason())."""
+    by the caller, which never lets that raise out of reason()). Images reach
+    OpenRouter only; the Ollama fallback is text-only (I12)."""
     errors = []
     backends = [_via_openrouter, _via_ollama]
     if len(user) > OLLAMA_MAX_CHARS:
@@ -502,6 +519,8 @@ def _call(system: str, user: str, timeout: float) -> tuple[str, str]:
         errors.append(f"ollama skipped: {len(user)} chars exceeds {OLLAMA_MAX_CHARS}")
     for backend in backends:
         try:
+            if backend is _via_openrouter:
+                return backend(system, user, timeout, images=images, max_tokens=max_tokens)
             return backend(system, user, timeout)
         except Exception as e:                                          # noqa: BLE001
             errors.append(f"{backend.__name__}: {type(e).__name__}: {str(e)[:160]}")
@@ -594,14 +613,137 @@ FINAL_SYSTEM = (
 ONE_SHOT_SYSTEM = 'You are reasoning over COMMUNITY BRIEFS: groups of related documents from a corpus, each with its characteristic terms and representative excerpts tagged [id=<n>]. Do all of the following in ONE reply. (1) Propose up to three candidate answers to the PROMPT as falsifiable statements and choose one, saying why in one line. (2) List three to six premises the chosen statement needs, each naming the excerpt ids (copied exactly) that would support it, or an empty list. (3) Evaluate each premise against ONLY its cited excerpts: supports = an excerpt states, about the SAME subject, information that makes it true or partly true; contradicts = states information against it; insufficient = does not bear on it. Analogy or implication from a different subject is insufficient. (4) Answer the PROMPT using ONLY premises judged supports, citing #<id> after each claim. Reply with ONE JSON object and nothing else: {"hypotheses": ["<statement>", ...], "chosen": <index>, "why": "<one line>", "premises": [{"text": "<premise>", "ids": [<id>, ...]}, ...], "evaluations": [{"index": <premise index>, "verdict": "supports"|"contradicts"|"insufficient", "why": "<=12 words"}, ...], "answer": "<text with #id citations, or empty>"}'
 
 
+# ------------------------------- 6.12 structural evidence + combined call (I12/I13)
+
+JUDGE_ADDON = (
+    ' (5) Additionally, after the FULL EVIDENCE marker you are shown every '
+    'retrieved chunk with a [id=<n>] tag and a VALID IDS list. For EVERY one of '
+    'those ids decide on that chunk\'s content alone: entails = it answers or '
+    'partly answers the PROMPT; contradicts = it contradicts an answer; neutral '
+    '= it carries no information bearing on the prompt. Exactly one verdict per '
+    'id, copied exactly. Add to the SAME JSON object: "verdicts": [{"id": <id>, '
+    '"verdict": "entails"|"contradicts"|"neutral", "why": "<=8 words"}, ...]'
+)
+
+
+def render_structure(conn, run, bundle, pw: dict) -> str:
+    """I12: deterministic text of the walked subgraph's structure -- shape plus
+    the top DWPC idea pairs with their best chains. Same pw -> same string."""
+    L = ["== STRUCTURE (computed, not model-derived)",
+         f"   subgraph: {pw['n']} chunks, {pw['edges']} edges, "
+         f"{pw['components']} weakly connected component(s), largest holds "
+         f"{pw['largest_component_frac']:.0%}, density {pw['density']:.2f}, "
+         f"conductance vs rest of corpus {pw['conductance']:.2f}",
+         "   strongest idea-to-idea pathways (degree-damped path count, DWPC; "
+         "many hub-free paths beat one hub path):"]
+    sal = gt.chunk_salient(conn, run,
+                           sorted({o for p in pw.get("pairs", []) for o in (p["a"], p["b"])}))
+    def name(o):
+        return " / ".join((sal.get(o, {}).get("top") or [])[:2]) or f"#{o}"
+    for p in pw.get("pairs", [])[:8]:
+        chain = " -> ".join(f"[id={o}]" for o in p["path"])
+        L.append(f"   {name(p['a'])} [id={p['a']}] <-> {name(p['b'])} [id={p['b']}] "
+                 f"dwpc {p['dwpc']:.3f} over {p['n_paths']} paths, best: {chain}")
+    if not pw.get("pairs"):
+        L.append("   (no anchor pair is connected inside this walk)")
+    return "\n".join(L)
+
+
+def render_walk_image(conn, run, bundle, pw: dict, dpi: int = 110) -> bytes:
+    """I12: the same picture the operator sees -- left the walked subgraph
+    (nodes coloured by community, best DWPC chains in red, anchors ringed),
+    right the global community map with the walked communities filled.
+    Deterministic (fixed seeds). Returns PNG bytes."""
+    import io
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import networkx as nx
+    palette = ["#4C78A8", "#F58518", "#54A24B", "#E45756", "#72B7B2", "#EECA3B",
+               "#B279A2", "#FF9DA6", "#9D755D", "#BAB0AC"]
+    ords = list(bundle.sampled)
+    edges = gt.subgraph_edges(conn, run, ords)
+    G = nx.Graph()
+    G.add_nodes_from(ords)
+    for e in edges:
+        G.add_edge(e["src"], e["dst"], weight=max(e["strength"], 0.01))
+    pos = nx.spring_layout(G, seed=7, k=0.9, iterations=120)
+    cid_of = {o: (gt.node(conn, run, o)["cid"] or 0) for o in ords}
+    best = set()
+    for p in pw.get("pairs", [])[:6]:
+        best |= {frozenset(t) for t in zip(p["path"], p["path"][1:])}
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 7))
+    for e in edges:
+        k = frozenset((e["src"], e["dst"]))
+        x = [pos[e["src"]][0], pos[e["dst"]][0]]
+        y = [pos[e["src"]][1], pos[e["dst"]][1]]
+        if k in best:
+            ax1.plot(x, y, color="#E45756", lw=2.2, zorder=2)
+        else:
+            ax1.plot(x, y, color="#999999", lw=0.5, alpha=0.4, zorder=1)
+    anchors = set(getattr(bundle, "anchors", []) or [])
+    for o in ords:
+        ax1.scatter(*pos[o], s=170 if o in anchors else 80,
+                    color=palette[cid_of[o] % len(palette)],
+                    edgecolors="#111111", linewidths=1.6 if o in anchors else 0.4,
+                    zorder=3)
+        ax1.annotate(str(o), pos[o], fontsize=6, ha="center", va="center", zorder=4)
+    ax1.set_title(f"walked subgraph: {pw['n']} chunks · {pw['components']} WCC · "
+                  f"density {pw['density']:.2f} · conductance {pw['conductance']:.2f}\n"
+                  f"red = strongest DWPC pathways · ringed = lexical anchors", fontsize=9)
+    ax1.axis("off")
+    # ---- global map: community quotient, walked communities filled
+    rows = gt.quotient(conn, run)
+    cids = sorted({r["cid_a"] for r in rows} | {r["cid_b"] for r in rows}
+                  | {c for c in cid_of.values()})
+    Q = nx.Graph()
+    Q.add_nodes_from(cids)
+    for r in rows:
+        Q.add_edge(r["cid_a"], r["cid_b"], weight=r["edges"])
+    qpos = nx.spring_layout(Q, seed=7)
+    size = {c: gt.community(conn, run, c)["size"] for c in cids}
+    hit = {}
+    for o in ords:
+        hit[cid_of[o]] = hit.get(cid_of[o], 0) + 1
+    wmax = max((d["weight"] for _, _, d in Q.edges(data=True)), default=1)
+    for u, v, d in Q.edges(data=True):
+        ax2.plot([qpos[u][0], qpos[v][0]], [qpos[u][1], qpos[v][1]],
+                 color="#888888", lw=0.5 + 3.0 * d["weight"] / wmax, alpha=0.5)
+    smax = max(size.values()) if size else 1
+    for c in cids:
+        walked = c in hit
+        ax2.scatter(*qpos[c], s=300 + 2200 * size[c] / smax,
+                    color=palette[c % len(palette)], alpha=1.0 if walked else 0.25,
+                    edgecolors="#111111", linewidths=1.5 if walked else 0.4)
+        ax2.annotate(f"c{c}" + (f"\n{hit[c]}/{size[c]}" if walked else ""),
+                     qpos[c], fontsize=8, ha="center", va="center")
+    ax2.set_title("global community map · filled = communities this walk reached "
+                  "(hits/size) · edge width = inter-community edges", fontsize=9)
+    ax2.axis("off")
+    fig.suptitle(f"PROMPT: {bundle.query}"[:140], fontsize=10)
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=dpi, bbox_inches="tight")
+    plt.close(fig)
+    return buf.getvalue()
+
+
 def reason(conn, run, bundle, terms: dict, concept: dict, embed=None,
-           timeout: float = 90.0, one_shot: bool = True) -> dict:
+           timeout: float = 90.0, one_shot: bool = True, judge: bool = False,
+           structure: str = "image", pw: dict | None = None) -> dict:
     """Hypothesis -> premises -> evaluate -> answer, over community briefs.
     Never raises on transport or parse failure; every stage is kept (I11).
 
     one_shot=True (default): ONE model call returns all four sections and the
     same checks apply -- four sequential calls took ~25 s where one takes ~7.
-    one_shot=False: four isolated calls, each seeing only what its stage needs."""
+    one_shot=False: four isolated calls, each seeing only what its stage needs.
+
+    judge=True (I13): the SAME single call also receives the full rendered
+    evidence and must return a "verdicts" entry per shown chunk -- reason and
+    judge are one serialized call, not two buttons. Implies one_shot.
+    structure (I12): "image" attaches the rendered subgraph+global map (falls
+    back to numbers if the image cannot be built or the model rejects it),
+    "text" appends the numbers block, "none" sends neither. pw: precomputed
+    pathways dict (gt.pathways); computed here when absent."""
     briefs = community_briefs(conn, run, bundle, terms, concept, embed)
     text = render_briefs(bundle, briefs)
     ex_of = {}
@@ -617,8 +759,42 @@ def reason(conn, run, bundle, terms: dict, concept: dict, embed=None,
     if not briefs:
         out["error"] = "no communities in the walk"
         return out
+
+    images = None                                                       # I12
+    if structure != "none":
+        if pw is None:
+            anch = [o for o in list(valid) + list(bundle.sampled)[:3]
+                    if o in set(bundle.sampled)]
+            pw = gt.pathways(conn, run, bundle.sampled, sorted(set(anch)))
+        out["pw"] = pw
+        out["structure"] = render_structure(conn, run, bundle, pw)
+        if structure == "image":
+            try:
+                images = [render_walk_image(conn, run, bundle, pw)]
+                text += ("\n\n(An image is attached: left, the walked subgraph "
+                         "with the strongest DWPC pathways in red and lexical "
+                         "anchors ringed; right, the global community map with "
+                         "walked communities filled. Node numbers are the "
+                         "[id=<n>] tags.)")
+            except Exception as e:                          # noqa: BLE001
+                out["structure_note"] = f"image failed ({type(e).__name__}); numbers sent"
+                text += "\n\n" + out["structure"]
+        else:
+            text += "\n\n" + out["structure"]
+
+    judge_shown = None
+    if judge:                                                           # I13
+        judge_shown = list(bundle.sampled)
+        out["shown"] = judge_shown
+        out["evidence"] = render_bundle(conn, run, bundle, terms, concept,
+                                        ords=judge_shown, embed=embed)
+        out.update({"verdicts": [], "entailed": [], "contradicts": [],
+                    "coverage": 0.0})
+        text += "\n\n== FULL EVIDENCE (judge every id listed here) ==\n" + out["evidence"]
+        one_shot = True
     if one_shot:
-        return _reason_one_shot(out, bundle, text, valid, ex_of, timeout)
+        return _reason_one_shot(out, bundle, text, valid, ex_of, timeout,
+                                images=images, judge_shown=judge_shown)
 
     def stage(name, system, user):
         t, backend = _call(system, user, timeout)
@@ -700,10 +876,23 @@ def reason(conn, run, bundle, terms: dict, concept: dict, embed=None,
     return out
 
 
-def _reason_one_shot(out: dict, bundle, text: str, valid: set, ex_of: dict, timeout: float) -> dict:
-    """All four sections from one call; I9/I10/I11 applied exactly as staged."""
+def _reason_one_shot(out: dict, bundle, text: str, valid: set, ex_of: dict,
+                     timeout: float, images: list[bytes] | None = None,
+                     judge_shown: list[int] | None = None) -> dict:
+    """All four sections from one call; I9/I10/I11 applied exactly as staged.
+    judge_shown adds the verdicts channel (I13); images attach the structural
+    map (I12), retried without the image if the transport rejects it."""
+    system = ONE_SHOT_SYSTEM + (JUDGE_ADDON if judge_shown is not None else "")
+    mt = JUDGE_MAX_TOKENS if judge_shown is not None else None
     try:
-        t, backend = _call(ONE_SHOT_SYSTEM, text, timeout)
+        try:
+            t, backend = _call(system, text, timeout, images=images, max_tokens=mt)
+        except Exception:
+            if not images:
+                raise
+            out["structure_note"] = "image rejected by transport; retried with numbers"
+            t, backend = _call(system, text + "\n\n" + out.get("structure", ""),
+                               timeout, max_tokens=mt)
         out["stages"]["one_shot"] = t; out["backend"] = backend
         obj = _json_obj(t)
         if obj is None:
@@ -749,6 +938,17 @@ def _reason_one_shot(out: dict, bundle, text: str, valid: set, ex_of: dict, time
         out["answer"] = ans
         out["cited"] = [o for o in cited if o in sup_ids]
         out["self_contradicting"] = [o for o in cited if o not in sup_ids]    # I10
+        if judge_shown is not None:                                          # I13
+            pv = parse_reply(json.dumps({"verdicts": obj.get("verdicts") or [],
+                                         "answer": ""}))
+            if pv is None or not pv["verdicts"]:
+                raise RuntimeError("combined call returned no usable verdicts")
+            jc = check(pv, judge_shown)                                      # I1
+            out["verdicts"] = pv["verdicts"]
+            out["entailed"] = jc["entailed"]
+            out["contradicts"] = jc["contradicts"]
+            out["coverage"] = jc["coverage"]
+            out["foreign"] = sorted(set(out["foreign"]) | set(jc["foreign"]))
         out["ok"] = True
     except Exception as ex:                                                  # I4
         out["error"] = f"{type(ex).__name__}: {str(ex)[:300]}"

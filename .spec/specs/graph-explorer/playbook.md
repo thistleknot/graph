@@ -73,6 +73,16 @@ One line each. Status is the only thing that changes in this file.
   _Files:_ sampler.py, tests/test_sampler.py  _Verify:_ pytest tests/test_sampler.py tests/test_reach.py -q
 - [TODO] anchor expansion: decode the prompt's model2vec vector to its nearest corpus vocabulary rows (CSLS, salient-gated) and add them as BM25 anchors; keep only if the reach test improves on >=7/10
   _Files:_ sampler.py, graph_tools.py  _Verify:_ pytest tests/test_reach.py -q
+- [DONE] structural evidence to the model: image (default) or numbers, same pathways object; fallback noted (I12, design 6.12)
+  _Files:_ interpret.py, walker_app.py  _Verify:_ pytest tests/test_interpret.py -q -k i12
+- [DONE] reason+judge as ONE serialized call with a verdicts key; walker single button (I13)
+  _Files:_ interpret.py, walker_app.py, tests/test_interpret.py, tests/test_walker_render.py  _Verify:_ pytest tests/test_interpret.py -q -k i13
+- [DONE] bridge discovery: whole-graph best-path between top chunks pulls unretrieved chunks into evidence, bolded with italic terms + key (S14/W16, design 6.13)
+  _Files:_ sampler.py, graph_tools.py, walker_app.py, tests/test_sampler.py  _Verify:_ pytest tests/test_sampler.py -q -k 's14 or w16'
+- [DONE] PIPELINE.md FAQ: model visibility, subgraph-vs-global, scale/samples, DWPC scope, WCC, NPMI/BM25 roles, Leiden
+  _Files:_ .spec/PIPELINE.md  _Verify:_ read
+- [TODO] synset-style word collapse: word-column correlation + knee/anomaly candidate detection + dual-measure certification (term-selection amendment 2026-08-31)
+  _Files:_ chunkgraph.py, salient_grams.py  _Verify:_ 4-pair battery incl. antonym pair that must not merge
 - [TODO] A/B chunk-term weighting: BM25 vs length-normalized PMI (log-ratio keyness) + Dunning-G2 gate, brown-50, same edge pipeline; compare community coherence and walk reach
   _Files:_ chunkgraph.py, tests/test_chunk.py  _Verify:_ side-by-side ingest report
 - [LATER] Leiden in place of Louvain at ingest (same API, better partitions; try on the next re-ingest against the coarse-7 problem)

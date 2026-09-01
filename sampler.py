@@ -115,6 +115,8 @@ DEFAULT_M   = 3            # neighbours expanded per pop. MEASURED: candidate
 MAX_HOPS    = 8            # runaway guard, NOT a depth policy (S9)
 DEFAULT_RING_TOP = 3       # S13: one degree out from the top-3 of W (design 6.10)
 DEFAULT_RING_PER = 8       # S13: strongest 8 new neighbours per parent
+DEFAULT_BRIDGE_PAIRS = 3   # S14: best whole-graph path between the top-3 chunks, pairwise
+MAX_BRIDGE = 8             # S14: cap on discovered bridge chunks per walk
 DEFAULT_CAP = 150          # R4.4 neighbourhood bound, 2-hop p99 is 111
 
 
@@ -130,6 +132,7 @@ class Bundle:
     params: dict = field(default_factory=dict)
     enumerated: bool = False            # S4
     scores: dict = field(default_factory=dict)   # ord -> walk score (ef_evidence)
+    origin: dict = field(default_factory=dict)   # ord -> walk | ring | bridge (S13/S14)
 
     @property
     def top_cids(self) -> list:
@@ -332,11 +335,41 @@ def ring(conn, run: gt.RunHandle, W: dict, top: int = DEFAULT_RING_TOP,
     return out
 
 
+def bridges(conn, run: gt.RunHandle, W: dict, pairs: int = DEFAULT_BRIDGE_PAIRS,
+            damp: float = 0.4) -> tuple[dict, list]:
+    """S14 (design 6.13): DISCOVERY, not scoring. For each pair among the top
+    `pairs` chunks of W, find the single strongest degree-damped path over the
+    WHOLE run (gt.best_path). Nodes the winning path crosses that the walk never
+    retrieved enter the evidence at score = min(endpoint scores) x path weight
+    -- never above either endpoint. Returns ({ord: score}, [paths])."""
+    top = sorted(W, key=lambda o: (-W[o], o))[:max(pairs, 0)]
+    found, paths = {}, []
+    for i, a_ in enumerate(top):
+        for b_ in top[i + 1:]:
+            r = gt.best_path(conn, run, a_, b_, damp=damp)
+            if r is None:
+                continue
+            path, wgt = r
+            fresh = [o for o in path if o not in W]
+            if not fresh:
+                continue
+            paths.append(path)
+            sc = min(W[a_], W[b_]) * min(wgt, 1.0)
+            for o in fresh:
+                found[o] = max(found.get(o, 0.0), sc)
+    if len(found) > MAX_BRIDGE:
+        keep = sorted(found, key=lambda o: (-found[o], o))[:MAX_BRIDGE]
+        found = {o: found[o] for o in keep}
+        paths = [p for p in paths if all(o in W or o in found for o in p)]
+    return found, paths
+
+
 def ef_evidence(conn, run: gt.RunHandle, query: str, ef: int = DEFAULT_EF,
                 T: float = DEFAULT_T, m: int = DEFAULT_M, k_anchor: int = 3,
                 seed: int = 0, k_comm: int = None,
                 ring_top: int = DEFAULT_RING_TOP,
-                ring_per: int = DEFAULT_RING_PER) -> tuple["Bundle", dict]:
+                ring_per: int = DEFAULT_RING_PER,
+                bridge_pairs: int = DEFAULT_BRIDGE_PAIRS) -> tuple["Bundle", dict]:
     """evidence() with ef_search in place of fixed-hop expansion.
 
     Same Bundle shape so community_histogram, term_stats and the walker's
@@ -349,15 +382,24 @@ def ef_evidence(conn, run: gt.RunHandle, query: str, ef: int = DEFAULT_EF,
     anchors = list(tele.get("anchors", []))
     extra = ring(conn, run, W, top=ring_top, per=ring_per) if W and ring_top else {}
     tele["ring"] = len(extra)                                   # S13
-    W = {**W, **extra}
+    br, br_paths = (bridges(conn, run, W, pairs=bridge_pairs)
+                    if W and bridge_pairs else ({}, []))
+    br = {o: sc for o, sc in br.items() if o not in extra}
+    tele["bridge"] = len(br)                                    # S14
+    tele["bridge_paths"] = br_paths
+    origin = {**{o: "walk" for o in W}, **{o: "ring" for o in extra},
+              **{o: "bridge" for o in br}}
+    W = {**W, **extra, **br}
     sampled = sorted(W, key=lambda o: (-W[o], o))
     comms = community_histogram(conn, run, sampled, k_comm=k_comm)
     b = Bundle(query=query, run_id=str(run.run_id), anchors=anchors,
                candidates=tele["seen"], sampled=sampled, communities=comms,
                enumerated=False, scores=dict(W),
+               origin=origin,
                params={"ef": ef, "T": T, "m": m, "seed": seed,
                        "k_anchor": k_anchor, "k_comm": k_comm,
-                       "ring_top": ring_top, "ring_per": ring_per, **tele})
+                       "ring_top": ring_top, "ring_per": ring_per,
+                       "bridge_pairs": bridge_pairs, **tele})
     return b, tele
 
 

@@ -299,35 +299,34 @@ with tab_walk:
             cid_of, in_cid, xedges, medoids, salient = (ws["cid_of"], ws["in_cid"], ws["xedges"],
                                                           ws["medoids"], ws["salient"])
 
-            # ---- 1. the model's answer, right under the prompt
-            b1, b2 = st.columns(2)
-            if b1.button("Reason about this walk", key="btn_reason",
-                         help="hypothesis -> premises -> evaluate -> answer over community briefs"):
-                with st.spinner("hypothesis -> premises -> evaluate -> answer ..."):
-                    st.session_state["reason"] = (q, interpret.reason(
-                        conn, run, bnd, terms, concept, embed=embed))
-            if b2.button("Judge this walk", key="btn_interpret",
-                         help="one verdict per retrieved chunk, then an answer from the entailed ones"):
-                with st.spinner("classifying the evidence ..."):
-                    st.session_state["interp"] = (q, interpret.answer(
-                        conn, run, bnd, terms, concept, embed=embed))
+            # ---- 1. the model's answer, right under the prompt (I13: one call)
+            pa_anchors = sorted({o for pair in medoids.values() for o in pair}
+                                | {max(in_cid[c], key=lambda o: bnd.scores.get(o, 0))
+                                   for c in cids if in_cid[c]})
+            pw = gt.pathways(conn, run, bnd.sampled, pa_anchors)
+            if st.button("Reason + judge this walk", key="btn_assess",
+                         help="ONE model call: hypothesis -> premises -> evaluate -> answer, "
+                              "plus a verdict per retrieved chunk; sees the subgraph map"):
+                with st.spinner("one call: reasoning over briefs + judging every chunk ..."):
+                    st.session_state["assess"] = (q, interpret.reason(
+                        conn, run, bnd, terms, concept, embed=embed,
+                        judge=True, pw=pw))
 
-            got_r = st.session_state.get("reason")
-            got_j = st.session_state.get("interp")
+            got = st.session_state.get("assess")
             has_answer = False
-
-            if got_r and got_r[0] == q:
-                rr = got_r[1]
+            if got and got[0] == q:
+                rr = got[1]
                 st.markdown("### Answer")
                 if not rr["ok"]:
-                    st.warning(f"Reasoning stopped: {rr['error']}")
-                if rr["ok"]:
+                    st.warning(f"Stopped: {rr['error']}")
+                else:
                     has_answer = True
                     st.markdown(rr["answer"] or
                                 "_No premise was judged supported, so there is nothing to "
                                 "answer from. The premises below say why._")
-                    st.caption(f"{rr['backend']} · reasoned over {len(rr['briefs'])} "
-                               f"community briefs · draft, checkable chunk by chunk")
+                    st.caption(f"{rr['backend']} · one call: {len(rr['briefs'])} community "
+                               f"briefs + {len(rr.get('shown', []))} chunks judged"
+                               f"{' · ' + rr['structure_note'] if rr.get('structure_note') else ''}")
                 if rr["hypotheses"]:
                     st.markdown("**Hypothesis** " + (rr["hypothesis"] or ""))
                     others = [h for h in rr["hypotheses"] if h != rr["hypothesis"]]
@@ -353,34 +352,16 @@ with tab_walk:
                 if rr["self_contradicting"]:
                     st.error("Answer cites ids outside the supported premises: "
                              + ", ".join(f"#{o}" for o in rr["self_contradicting"]))
-                if rr["briefs_text"]:
-                    with st.expander("Community briefs the model reasoned over"):
-                        st.code(rr["briefs_text"], language="text")
-                if rr["stages"]:
-                    with st.expander("Raw stage replies"):
-                        for name, txt in rr["stages"].items():
-                            st.markdown(f"**{name}**"); st.code(txt, language="json")
 
-            if got_j and got_j[0] == q:
-                res = got_j[1]
-                st.markdown("### Judged evidence")
-                if not res["ok"]:
-                    st.warning(f"No verdict: {res['error']}")
-                else:
-                    has_answer = True
-                    st.markdown(res["answer"] or
-                                "_No chunk was judged to entail an answer. Per-chunk reasons "
-                                "are under **Neutral** below._")
-                    st.caption(f"{res['backend']} · {res['rerank_note']} · judged "
-                               f"{res['coverage']:.0%} of {len(res['shown'])} shown · "
-                               f"{len(res['entailed'])} entail · {len(res['contradicts'])} contradict")
-                    if res["foreign"]:
-                        st.error("Foreign ids not in this walk: " + ", ".join(f"#{o}" for o in res["foreign"]))
-                    if res["self_contradicting"]:
-                        st.error("Cited but NOT judged entailing: " + ", ".join(f"#{o}" for o in res["self_contradicting"]))
-                    why = {v["ord"]: v["why"] for v in res["verdicts"]}
-                    for label, ords_, colour in (("Entails", res["entailed"], "#2a7"),
-                                                 ("Contradicts", res["contradicts"], "#c33")):
+                # ---- the judge channel of the same call
+                if rr.get("verdicts"):
+                    st.markdown("### Judged evidence")
+                    st.caption(f"judged {rr['coverage']:.0%} of {len(rr['shown'])} shown · "
+                               f"{len(rr['entailed'])} entail · "
+                               f"{len(rr['contradicts'])} contradict")
+                    why = {v["ord"]: v["why"] for v in rr["verdicts"]}
+                    for label, ords_, colour in (("Entails", rr["entailed"], "#2a7"),
+                                                 ("Contradicts", rr["contradicts"], "#c33")):
                         if ords_:
                             st.markdown(f"**{label}**")
                             for o in ords_:
@@ -390,8 +371,8 @@ with tab_walk:
                                     f"c{nd['cid']} · walk {bnd.scores.get(o, 0):.2f} — <i>{why.get(o, '')}</i><br>"
                                     f"<span style='opacity:.75;font-size:.88em'>{_clip(interpret.excerpt(nd['body'], q, 300, embed), 300)}</span>",
                                     unsafe_allow_html=True)
-                    neutral = [v for v in res["verdicts"]
-                               if v["verdict"] == "neutral" and v["ord"] in set(res["shown"])]
+                    neutral = [v for v in rr["verdicts"]
+                               if v["verdict"] == "neutral" and v["ord"] in set(rr["shown"])]
                     if neutral:
                         with st.expander(f"Neutral ({len(neutral)}) — the model's reason for each"):
                             for v in neutral:
@@ -399,41 +380,63 @@ with tab_walk:
                                 st.markdown(f"<span style='color:#999'>●</span> `#{v['ord']}` · "
                                             f"{nd['doc_id']} · c{nd['cid']} — <i>{v['why']}</i>",
                                             unsafe_allow_html=True)
-                    with st.expander("Exactly what the model was shown"):
-                        st.code(res["evidence"], language="text")
-                    with st.expander("Exactly what the model returned (raw)"):
-                        st.code(res["text"], language="json")
 
-            # ---- 1b. where the two readings disagree (design 6.7: Judge is stricter)
-            if (got_r and got_r[0] == q and got_r[1]["ok"]
-                    and got_j and got_j[0] == q and got_j[1]["ok"]):
-                sup = set(got_r[1]["supported_ids"])
-                ent = set(got_j[1]["entailed"])
-                jw = {v["ord"]: v["why"] for v in got_j[1]["verdicts"]}
-                reason_only = sorted(sup - ent)
-                judge_only = sorted(ent - sup)
-                if reason_only or judge_only:
-                    lines = ["**Reason vs Judge.** Reason argues from community briefs and "
-                             "accepts a chunk that supports a premise; Judge asks whether a "
-                             "chunk literally answers the prompt. When they disagree, trust "
-                             "Judge for *what the corpus says* and Reason for *how it hangs "
-                             "together*."]
-                    if reason_only:
-                        lines.append("Reason leaned on, Judge called neutral: " + "; ".join(
-                            f"#{o} — {jw.get(o, 'not judged')}" for o in reason_only))
-                    if judge_only:
-                        lines.append("Judge found entailing, Reason never used: " + ", ".join(
-                            f"#{o}" for o in judge_only))
-                    st.info(("  " + chr(10)).join(lines))
+                    # ---- where the two channels disagree (Judge is stricter)
+                    sup, ent = set(rr["supported_ids"]), set(rr["entailed"])
+                    reason_only = sorted(sup - ent)
+                    judge_only = sorted(ent - sup)
+                    if reason_only or judge_only:
+                        lines = ["**Reason vs Judge.** Reason argues from community briefs and "
+                                 "accepts a chunk that supports a premise; Judge asks whether a "
+                                 "chunk literally answers the prompt. When they disagree, trust "
+                                 "Judge for *what the corpus says* and Reason for *how it hangs "
+                                 "together*."]
+                        if reason_only:
+                            lines.append("Reason leaned on, Judge called neutral: " + "; ".join(
+                                f"#{o} — {why.get(o, 'not judged')}" for o in reason_only))
+                        if judge_only:
+                            lines.append("Judge found entailing, Reason never used: " + ", ".join(
+                                f"#{o}" for o in judge_only))
+                        st.info(("  " + chr(10)).join(lines))
+
+                if rr["briefs_text"]:
+                    with st.expander("Briefs + structure the model reasoned over"):
+                        st.code(rr["briefs_text"]
+                                + ("\n\n" + rr["structure"] if rr.get("structure") else ""),
+                                language="text")
+                if rr.get("evidence"):
+                    with st.expander("Exactly what the model was shown (judge channel)"):
+                        st.code(rr["evidence"], language="text")
+                if rr["stages"]:
+                    with st.expander("Exactly what the model returned (raw)"):
+                        for name, txt in rr["stages"].items():
+                            st.markdown(f"**{name}**"); st.code(txt, language="json")
 
             # ---- 2. the evidence: one expander, collapsed once an answer exists
             with st.expander(
                     f"Evidence — {len(bnd.sampled)} chunks · {len(cids)} communities · "
                     f"depth {tele['depth']} · {tele['stop']}"
-                    f"{' · +' + str(tele['ring']) + ' one degree out' if tele.get('ring') else ''}",
+                    f"{' · +' + str(tele['ring']) + ' one degree out' if tele.get('ring') else ''}"
+                    f"{' · +' + str(tele['bridge']) + ' bridges' if tele.get('bridge') else ''}",
                     expanded=not has_answer):
-                fig = draw_communities(touched, terms, xedges)
-                st.plotly_chart(fig, use_container_width=True)
+                org = getattr(bnd, "origin", {}) or {}
+                n_br = sum(1 for v in org.values() if v == "bridge")
+                st.caption("Key: **bold #id** = a bridge chunk, discovered on the best "
+                           "whole-graph path between two retrieved ideas, not found by "
+                           "the walk itself; its *salient terms are italicised*. "
+                           "Everything else was retrieved by the walk or its one-degree "
+                           "ring.")
+                def _mark(o):
+                    return f"**#{o}**" if org.get(o) == "bridge" else f"#{o}"
+                t_walk, t_glob = st.tabs(["This walk", "Global map"])
+                with t_walk:
+                    fig = draw_communities(touched, terms, xedges)
+                    st.plotly_chart(fig, use_container_width=True)
+                with t_glob:
+                    st.caption("Every community in the run; filled = reached by this "
+                               "walk. The same map the model sees.")
+                    st.image(interpret.render_walk_image(conn, run, bnd, pw),
+                             use_container_width=True)
 
                 st.markdown("#### Query terms")
                 ts = gt.term_stats(conn, run, q, bnd.sampled)
@@ -478,7 +481,7 @@ with tab_walk:
                                         unsafe_allow_html=True)
                     mine = in_cid[c]
                     st.caption("retrieved here (walk score): " + ", ".join(
-                        f"#{o} {bnd.scores.get(o, 0):.2f}" for o in mine[:12])
+                        f"{_mark(o)} {bnd.scores.get(o, 0):.2f}" for o in mine[:12])
                         + (f" … (+{len(mine) - 12})" if len(mine) > 12 else ""))
 
                 xc = gt.cross_community(conn, run, bnd.sampled)
@@ -499,10 +502,6 @@ with tab_walk:
                 st.caption("Anchors: the medoids above plus each community's top-scored "
                            "chunk. Pairs are scored by degree-damped path count (DWPC): "
                            "many hub-free paths beat one path through a hub.")
-                pa_anchors = sorted({o for pair in medoids.values() for o in pair}
-                                    | {max(in_cid[c], key=lambda o: bnd.scores.get(o, 0))
-                                       for c in cids if in_cid[c]})
-                pw = gt.pathways(conn, run, bnd.sampled, pa_anchors)
                 st.caption(f"subgraph: {pw['components']} WCC"
                            f"{'s' if pw['components'] != 1 else ''} · largest holds "
                            f"{pw['largest_component_frac']:.0%} · density {pw['density']:.2f} · "
@@ -512,13 +511,30 @@ with tab_walk:
                          or {}).get("top", [])
                     return " / ".join(t[:2]) or f"#{o}"
                 for p in pw["pairs"][:8]:
-                    chain = " → ".join(f"#{o}" for o in p["path"])
+                    chain = " → ".join(_mark(o) for o in p["path"])
                     st.markdown(
                         f"**{_idea(p['a'])}** ↔ **{_idea(p['b'])}** · dwpc {p['dwpc']:.3f} · "
                         f"{p['n_paths']} paths<br><span style='opacity:.7;font-size:.86em'>"
                         f"best: {chain}</span>", unsafe_allow_html=True)
                 if not pw["pairs"]:
                     st.caption("no anchor pair is connected inside this walk")
+
+                if n_br:
+                    st.markdown("#### Discovered bridges")
+                    st.caption("Chunks the walk never retrieved, pulled in because the "
+                               "strongest whole-graph path between two retrieved ideas "
+                               "runs through them.")
+                    br_ords = [o for o in bnd.sampled if org.get(o) == "bridge"]
+                    br_sal = gt.chunk_salient(conn, run, br_ords)
+                    for o in br_ords:
+                        nd = gt.node(conn, run, o)
+                        terms_i = ", ".join(f"*{t}*" for t in br_sal.get(o, {}).get("top", []))
+                        st.markdown(
+                            f"**#{o}** · {nd['doc_id']} · c{nd['cid']} · "
+                            f"walk {bnd.scores.get(o, 0):.2f} · {terms_i}<br>"
+                            f"<span style='opacity:.75;font-size:.86em'>"
+                            f"{_clip(interpret.excerpt(nd['body'], q, 300, embed), 300)}</span>",
+                            unsafe_allow_html=True)
 
 # ================================================================ MAP
 with tab_map:

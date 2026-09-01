@@ -912,3 +912,32 @@ approach is borrowed).
 `community_aware_layout` was declined in an earlier draft on the grounds that
 visualization is out of scope. The brown-10 render falsified that: the renderer is
 the instrument R8 depends on, and it could not show a 76%-intra partition.
+
+
+## Amendment 2026-08-31 — the collapse intent, restated by the operator
+
+The rejected collapse pass (5.x measurements) tested SUBSTITUTABILITY via
+position-tagged context profiles. The operator's intent was narrower and is
+recorded here so it is not lost: **collapse INDIVIDUAL WORDS (not phrases)
+into synset-like nodes** using the same machinery already trusted for chunks
+-- a correlation matrix, this time over word columns of the doc-term matrix
+(second-order co-occurrence: two words are similar when they keep the same
+company, "lh"/"left handed" style).
+
+Proposed mechanics, unmeasured, OPEN:
+1. Columns of the BM25 doc-term matrix -> word-word correlation (cosine).
+2. Merge threshold found from the DISTRIBUTION, not hand-set: a correlation
+   knee, and/or pairs flagged anomalous against the pair population
+   (isolation forest or density clustering over the correlation values).
+3. Merged words form one term node carrying its member surface forms --
+   mimicking a WordNet synset without WordNet.
+
+Standing guard that still applies: association is not substitutability -- the
+antonym confound was MEASURED (synonyms did not outscore antonyms on context
+similarity). Any merge pass must therefore pass the dual-measure band gate
+(5.x) or an equivalent discriminating check before two words become one node;
+the knee/anomaly detector chooses CANDIDATES, it does not certify them.
+
+Status: intent recorded; implementation OPEN, gated on the same measurement
+battery that rejected the first attempt (4+ varied pairs incl. an antonym
+pair that must NOT merge).
