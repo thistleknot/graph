@@ -73,6 +73,8 @@ One line each. Status is the only thing that changes in this file.
   _Files:_ sampler.py, tests/test_sampler.py  _Verify:_ pytest tests/test_sampler.py tests/test_reach.py -q
 - [TODO] anchor expansion: decode the prompt's model2vec vector to its nearest corpus vocabulary rows (CSLS, salient-gated) and add them as BM25 anchors; keep only if the reach test improves on >=7/10
   _Files:_ sampler.py, graph_tools.py  _Verify:_ pytest tests/test_reach.py -q
+- [TODO] A/B chunk-term weighting: BM25 vs length-normalized PMI (log-ratio keyness) + Dunning-G2 gate, brown-50, same edge pipeline; compare community coherence and walk reach
+  _Files:_ chunkgraph.py, tests/test_chunk.py  _Verify:_ side-by-side ingest report
 - [LATER] Leiden in place of Louvain at ingest (same API, better partitions; try on the next re-ingest against the coarse-7 problem)
 - [LATER] build-time DWPC term-mediated edges X.diag(deg^-0.4).X^T (graph-term-selection spec, approved, unbuilt)
 - [DONE] I8 excerpt by prompt: lexical+dense, paragraph cap at budget/3, anchors x4
