@@ -356,6 +356,7 @@ def test_w15_pathways_shape_and_dwpc_ordering(live):
     anchors = b.sampled[:4]
     pw = gt.pathways(conn, run, b.sampled, anchors)
     assert pw["n"] == len(b.sampled) and pw["components"] >= 1
+    assert sum(pw["wcc_sizes"]) == pw["n"] and pw["wcc_sizes"] == sorted(pw["wcc_sizes"], reverse=True)
     assert 0.0 < pw["largest_component_frac"] <= 1.0
     assert 0.0 <= pw["density"] <= 1.0 and 0.0 <= pw["conductance"] <= 1.0
     assert pw["pairs"], "top-4 walk chunks should be connected"

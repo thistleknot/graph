@@ -503,7 +503,7 @@ with tab_walk:
                                     | {max(in_cid[c], key=lambda o: bnd.scores.get(o, 0))
                                        for c in cids if in_cid[c]})
                 pw = gt.pathways(conn, run, bnd.sampled, pa_anchors)
-                st.caption(f"subgraph: {pw['components']} component"
+                st.caption(f"subgraph: {pw['components']} WCC"
                            f"{'s' if pw['components'] != 1 else ''} · largest holds "
                            f"{pw['largest_component_frac']:.0%} · density {pw['density']:.2f} · "
                            f"conductance {pw['conductance']:.2f}")

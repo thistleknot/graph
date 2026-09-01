@@ -758,7 +758,9 @@ def pathways(conn, run: RunHandle, ords: list[int], anchors: list[int],
         m_total = cur.fetchone()["m"]          # directed rows = 2x undirected edges
     cut = max(vol_s - 2 * e_in, 0)
     vol_rest = max(m_total - vol_s, 1)
+    comps.sort(reverse=True)
     shape = {"n": n, "edges": e_in, "components": len(comps),
+             "wcc_sizes": comps,
              "largest_component_frac": (max(comps) / n) if n else 0.0,
              "density": (2 * e_in / (n * (n - 1))) if n > 1 else 0.0,
              "conductance": cut / min(max(vol_s, 1), vol_rest)}
