@@ -346,3 +346,38 @@ def test_s13_ef_evidence_grows_by_the_ring_and_records_it(live):
     assert t1["ring"] > 0 and len(b1.sampled) == 24 + t1["ring"]
     assert b1.params["ring"] == t1["ring"] and set(b0.sampled) <= set(b1.sampled)
     assert b1.sampled == sorted(b1.sampled, key=lambda o: (-b1.scores[o], o))
+
+
+def test_w15_pathways_shape_and_dwpc_ordering(live):
+    """Design 6.11: DWPC pairs are ordered; every best path stays inside the
+    subgraph, joins its two anchors, repeats no node; shape numbers in range."""
+    conn, run = _dual(live)
+    b, _ = sp.ef_evidence(conn, run, Q, ef=24, T=0.0)
+    anchors = b.sampled[:4]
+    pw = gt.pathways(conn, run, b.sampled, anchors)
+    assert pw["n"] == len(b.sampled) and pw["components"] >= 1
+    assert 0.0 < pw["largest_component_frac"] <= 1.0
+    assert 0.0 <= pw["density"] <= 1.0 and 0.0 <= pw["conductance"] <= 1.0
+    assert pw["pairs"], "top-4 walk chunks should be connected"
+    scores = [p["dwpc"] for p in pw["pairs"]]
+    assert scores == sorted(scores, reverse=True)
+    S = set(b.sampled)
+    for p in pw["pairs"]:
+        assert p["path"][0] == p["a"] and p["path"][-1] == p["b"]
+        assert set(p["path"]) <= S and len(p["path"]) == len(set(p["path"]))
+        assert 2 <= len(p["path"]) <= 4                      # <= 3 edges
+
+
+def test_w15_hub_damping_costs_every_path(live):
+    """The point of damping: with damp=0 every pair scores strictly higher
+    than with damp=0.4, and the induced degrees actually vary."""
+    conn, run = _dual(live)
+    b, _ = sp.ef_evidence(conn, run, Q, ef=24, T=0.0)
+    deg = gt.degrees(conn, run, b.sampled)
+    assert set(deg) == set(b.sampled) and max(deg.values()) > min(deg.values())
+    d1 = {(p["a"], p["b"]): p["dwpc"]
+          for p in gt.pathways(conn, run, b.sampled, b.sampled[:6], damp=0.4, top_pairs=99)["pairs"]}
+    d0 = {(p["a"], p["b"]): p["dwpc"]
+          for p in gt.pathways(conn, run, b.sampled, b.sampled[:6], damp=0.0, top_pairs=99)["pairs"]}
+    common = set(d1) & set(d0)
+    assert common and all(d1[k] < d0[k] for k in common)

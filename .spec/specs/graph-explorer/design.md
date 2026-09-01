@@ -928,3 +928,29 @@ evidence, not anchors: it never seeds a further expansion.
 
 Guards: S13 -- every ring member is a direct edge_sym neighbour of a top-`ring_top`
 member of W and was not in W; ring score never exceeds its parent's.
+
+
+### 6.11 Evidence pathways: critical connectedness between ideas (2026-08-31)
+
+Operator intent: measure how strongly the IDEAS a walk touched are connected,
+not just which chunks scored. The earlier form of the idea was significant
+correlations in a score-to-score correlation matrix over chunks; this is the
+graph-native version: the matrix rows/columns are ANCHOR nodes ("ideas" --
+Louvain global medoids, walk-local medoids, top-scored chunks, or any ordinal
+the caller names), and the entries are degree-weighted path counts (DWPC,
+damping 0.4) over the subgraph induced by the walk plus its one-degree ring.
+Hub correction is the point: a pair connected by several paths through
+specific vocabulary outranks a pair connected once through a hub.
+
+Whole-subgraph shape comes with it, because a pathway only means something
+inside a shape: number of components and the largest component's share,
+density, and conductance of the retrieved set against the rest of the run
+(how leaky the evidence neighbourhood is). All computed, no model (S6).
+
+Path score = product of edge strengths x product of deg(v)^-0.4 over every
+node on the path, global degree, simple paths up to 3 edges. Each pair keeps
+its best path for display: a chain of chunk ids the operator can read as
+"how idea A reaches idea B". Pairs are ordered by DWPC.
+
+Guards: W15 in graph_tools. UI: a "Pathways between ideas" block in the
+Evidence expander, each pair titled by the anchors' salient terms.

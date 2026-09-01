@@ -31,6 +31,7 @@ TOOL SURFACE
 | community_terms     | top-k BM25 terms, community as the document  | k/cid  |
 | query_terms         | those terms re-ranked by the prompt          | k/cid  |
 | chunk_salient       | a chunk's own BM25 terms, gated (W14), top-k | ord    |
+| pathways            | idea-to-idea DWPC over the walked subgraph (W15) | ords, anchors |
 | chunk_terms         | the top-k of that, for titles                | k/ord  |
 | local_medoid        | most central retrieved chunk in a community  | 1/cid  |
 | cross_community     | retrieved chunks bridging retrieved cids     | set    |
@@ -79,6 +80,10 @@ W7  walk() SHALL return, per reached node, the EDGE PROVENANCE and SOURCE DOC of
     cannot name its own justification is a browser, not an evidence instrument.
     The arrays ride the recursive CTE at no extra join: edge_sym already exposes
     provenance and both endpoint docs.
+W15 Evidence pathways are computed on the induced subgraph only, with GLOBAL
+    degrees for damping and conductance; a pair's DWPC sums simple paths of
+    <= max_len edges, each scored prod(strength) * prod(deg^-damp) over every
+    node on the path, so no path outranks the same path through smaller hubs.
 
 NOT HERE, DELIBERATELY
 - No LLM. No prompt, no model call, no NL->query translation.
@@ -695,3 +700,91 @@ def _decorate(conn, run: RunHandle, rows: list[dict]) -> list[dict]:
     for r in rows:
         r.update({k: v for k, v in meta.get(r["ord"], {}).items() if k != "ord"})
     return rows
+
+
+def degrees(conn, run: RunHandle, ords: list[int]) -> dict:
+    """Global degree of each ordinal in the run's live edge set (W15)."""
+    if not ords:
+        return {}
+    with conn.cursor() as cur:
+        cur.execute("""SELECT a AS ord, count(*) AS deg FROM edge_sym
+                        WHERE run_id = %s AND valid_to IS NULL AND a = ANY(%s)
+                        GROUP BY a""", (run.run_id, list(ords)))
+        d = {r["ord"]: r["deg"] for r in cur.fetchall()}
+    return {o: d.get(o, 0) for o in ords}
+
+
+def pathways(conn, run: RunHandle, ords: list[int], anchors: list[int],
+             max_len: int = 3, damp: float = 0.4, top_pairs: int = 12) -> dict:
+    """W15 (design 6.11): critical connectedness between idea nodes.
+
+    Induced subgraph = `ords` and the edges among them. Anchors are any
+    ordinals in `ords` (medoids, top chunks -- the caller decides what an
+    "idea" is). For every anchor pair: DWPC = sum over simple paths (<= max_len
+    edges) of prod(edge strength) * prod(global deg(v)^-damp, every node on the
+    path). Also returns the subgraph's shape: components, largest component
+    share, density, and conductance of `ords` against the rest of the run.
+    Deterministic; edge table only.
+    """
+    ords = list(dict.fromkeys(ords))
+    anchors = [a for a in dict.fromkeys(anchors) if a in set(ords)]
+    edges = subgraph_edges(conn, run, ords)
+    adj: dict = {o: {} for o in ords}
+    for e in edges:
+        w = max(min(e["strength"], 1.0), 1e-9)
+        adj[e["src"]][e["dst"]] = w
+        adj[e["dst"]][e["src"]] = w
+    deg = degrees(conn, run, ords)
+
+    # ---- shape
+    seen, comps = set(), []
+    for o in ords:
+        if o in seen:
+            continue
+        stack, comp = [o], set()
+        while stack:
+            u = stack.pop()
+            if u in comp:
+                continue
+            comp.add(u)
+            stack += [v for v in adj[u] if v not in comp]
+        seen |= comp
+        comps.append(len(comp))
+    n, e_in = len(ords), len(edges)
+    vol_s = sum(deg.values())
+    with conn.cursor() as cur:
+        cur.execute("""SELECT count(*) AS m FROM edge_sym
+                        WHERE run_id = %s AND valid_to IS NULL""", (run.run_id,))
+        m_total = cur.fetchone()["m"]          # directed rows = 2x undirected edges
+    cut = max(vol_s - 2 * e_in, 0)
+    vol_rest = max(m_total - vol_s, 1)
+    shape = {"n": n, "edges": e_in, "components": len(comps),
+             "largest_component_frac": (max(comps) / n) if n else 0.0,
+             "density": (2 * e_in / (n * (n - 1))) if n > 1 else 0.0,
+             "conductance": cut / min(max(vol_s, 1), vol_rest)}
+
+    # ---- DWPC per anchor pair
+    dmp = {o: (deg.get(o, 0) or 1) ** (-damp) for o in ords}
+    pairs = []
+    for i, a in enumerate(anchors):
+        for b in anchors[i + 1:]:
+            total, best, best_p, count = 0.0, 0.0, None, 0
+            stack = [(a, [a], dmp[a])]
+            while stack:
+                u, path, sc = stack.pop()
+                for v, w in adj[u].items():
+                    if v in path:
+                        continue
+                    nsc = sc * w * dmp[v]
+                    if v == b:
+                        total += nsc
+                        count += 1
+                        if nsc > best:
+                            best, best_p = nsc, path + [v]
+                    elif len(path) <= max_len - 1:
+                        stack.append((v, path + [v], nsc))
+            if count:
+                pairs.append({"a": a, "b": b, "dwpc": total, "n_paths": count,
+                              "path": best_p})
+    pairs.sort(key=lambda p: (-p["dwpc"], p["a"], p["b"]))
+    return {**shape, "pairs": pairs[:top_pairs]}

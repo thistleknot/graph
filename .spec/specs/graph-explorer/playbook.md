@@ -65,6 +65,8 @@ One line each. Status is the only thing that changes in this file.
 - [TODO] walker: label the prompt box as the retrieval query; separate 'ask about this walk' box
 - [TODO] interpret: EXPLAIN mode -- prose over the same rendered bundle, same citation check, no verdicts
 - [TODO] re-measure ef on the 500-document graph (sweep was on 1,789 chunks)
+- [DONE] evidence pathways: idea-to-idea DWPC + subgraph shape over the walk (design 6.11, W15)
+  _Files:_ graph_tools.py, walker_app.py, tests/test_sampler.py  _Verify:_ pytest tests/test_sampler.py -q -k w15
 - [TODO] reach test: ten prompts with hand-listed topic docs; score = topic docs reached by the walk. Gates the next two.
   _Files:_ tests/test_reach.py  _Verify:_ pytest tests/test_reach.py -q
 - [TODO] walk-time DWPC: damp the path score by deg(intermediate)^-0.4 in ef_search and ring; keep only if the reach test does not drop

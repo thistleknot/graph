@@ -495,6 +495,31 @@ with tab_walk:
                             f"{_clip(interpret.excerpt(nd['body'], q, 220, embed), 220)}</span>",
                             unsafe_allow_html=True)
 
+                st.markdown("#### Pathways between ideas")
+                st.caption("Anchors: the medoids above plus each community's top-scored "
+                           "chunk. Pairs are scored by degree-damped path count (DWPC): "
+                           "many hub-free paths beat one path through a hub.")
+                pa_anchors = sorted({o for pair in medoids.values() for o in pair}
+                                    | {max(in_cid[c], key=lambda o: bnd.scores.get(o, 0))
+                                       for c in cids if in_cid[c]})
+                pw = gt.pathways(conn, run, bnd.sampled, pa_anchors)
+                st.caption(f"subgraph: {pw['components']} component"
+                           f"{'s' if pw['components'] != 1 else ''} · largest holds "
+                           f"{pw['largest_component_frac']:.0%} · density {pw['density']:.2f} · "
+                           f"conductance {pw['conductance']:.2f}")
+                def _idea(o):
+                    t = (salient.get(o) or gt.chunk_salient(conn, run, [o]).get(o)
+                         or {}).get("top", [])
+                    return " / ".join(t[:2]) or f"#{o}"
+                for p in pw["pairs"][:8]:
+                    chain = " → ".join(f"#{o}" for o in p["path"])
+                    st.markdown(
+                        f"**{_idea(p['a'])}** ↔ **{_idea(p['b'])}** · dwpc {p['dwpc']:.3f} · "
+                        f"{p['n_paths']} paths<br><span style='opacity:.7;font-size:.86em'>"
+                        f"best: {chain}</span>", unsafe_allow_html=True)
+                if not pw["pairs"]:
+                    st.caption("no anchor pair is connected inside this walk")
+
 # ================================================================ MAP
 with tab_map:
     st.subheader("Community map")
