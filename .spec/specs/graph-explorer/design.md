@@ -995,3 +995,12 @@ Presentation contract (operator): **bold #id** marks a bridge chunk wherever
 evidence ids are listed; its *salient terms are italicised* in the Discovered
 bridges block; a key line above the evidence explains the markup. The Bundle
 carries origin (walk | ring | bridge) so any renderer can honour this.
+
+6.12 addendum (2026-08-31, first live run): with judge=True the model is shown
+every retrieved chunk, so the Reason channel's citable set widens from the
+brief ids to ALL shown ids -- the first run discarded two on-screen citations
+(#98, #163) as "foreign" and then flagged the answer for citing them. The
+judge addendum also regained the standalone Judge's calibration ("a partial
+answer is entails"; judge against the PROMPT, not the chosen hypothesis) after
+the combined run returned 0 entails on evidence the split runs had entailed;
+and premises must be stated in the model's own words, not pasted quotes.

@@ -610,7 +610,7 @@ FINAL_SYSTEM = (
 )
 
 
-ONE_SHOT_SYSTEM = 'You are reasoning over COMMUNITY BRIEFS: groups of related documents from a corpus, each with its characteristic terms and representative excerpts tagged [id=<n>]. Do all of the following in ONE reply. (1) Propose up to three candidate answers to the PROMPT as falsifiable statements and choose one, saying why in one line. (2) List three to six premises the chosen statement needs, each naming the excerpt ids (copied exactly) that would support it, or an empty list. (3) Evaluate each premise against ONLY its cited excerpts: supports = an excerpt states, about the SAME subject, information that makes it true or partly true; contradicts = states information against it; insufficient = does not bear on it. Analogy or implication from a different subject is insufficient. (4) Answer the PROMPT using ONLY premises judged supports, citing #<id> after each claim. Reply with ONE JSON object and nothing else: {"hypotheses": ["<statement>", ...], "chosen": <index>, "why": "<one line>", "premises": [{"text": "<premise>", "ids": [<id>, ...]}, ...], "evaluations": [{"index": <premise index>, "verdict": "supports"|"contradicts"|"insufficient", "why": "<=12 words"}, ...], "answer": "<text with #id citations, or empty>"}'
+ONE_SHOT_SYSTEM = 'You are reasoning over COMMUNITY BRIEFS: groups of related documents from a corpus, each with its characteristic terms and representative excerpts tagged [id=<n>]. Do all of the following in ONE reply. (1) Propose up to three candidate answers to the PROMPT as falsifiable statements and choose one, saying why in one line. (2) List three to six premises the chosen statement needs, each STATED IN YOUR OWN WORDS (never a pasted quote), naming the excerpt ids (copied exactly) that would support it, or an empty list. (3) Evaluate each premise against ONLY its cited excerpts: supports = an excerpt states, about the SAME subject, information that makes it true or partly true; contradicts = states information against it; insufficient = does not bear on it. Analogy or implication from a different subject is insufficient. (4) Answer the PROMPT using ONLY premises judged supports, citing #<id> after each claim. Reply with ONE JSON object and nothing else: {"hypotheses": ["<statement>", ...], "chosen": <index>, "why": "<one line>", "premises": [{"text": "<premise>", "ids": [<id>, ...]}, ...], "evaluations": [{"index": <premise index>, "verdict": "supports"|"contradicts"|"insufficient", "why": "<=12 words"}, ...], "answer": "<text with #id citations, or empty>"}'
 
 
 # ------------------------------- 6.12 structural evidence + combined call (I12/I13)
@@ -620,7 +620,9 @@ JUDGE_ADDON = (
     'retrieved chunk with a [id=<n>] tag and a VALID IDS list. For EVERY one of '
     'those ids decide on that chunk\'s content alone: entails = it answers or '
     'partly answers the PROMPT; contradicts = it contradicts an answer; neutral '
-    '= it carries no information bearing on the prompt. Exactly one verdict per '
+    '= it carries no information bearing on the prompt. A PARTIAL answer is '
+    'entails. Judge every id on its own content against the PROMPT itself -- '
+    'not against your chosen hypothesis. Exactly one verdict per '
     'id, copied exactly. Add to the SAME JSON object: "verdicts": [{"id": <id>, '
     '"verdict": "entails"|"contradicts"|"neutral", "why": "<=8 words"}, ...]'
 )
@@ -791,6 +793,7 @@ def reason(conn, run, bundle, terms: dict, concept: dict, embed=None,
         out.update({"verdicts": [], "entailed": [], "contradicts": [],
                     "coverage": 0.0})
         text += "\n\n== FULL EVIDENCE (judge every id listed here) ==\n" + out["evidence"]
+        valid = valid | set(judge_shown)   # I13: every shown chunk is citable
         one_shot = True
     if one_shot:
         return _reason_one_shot(out, bundle, text, valid, ex_of, timeout,

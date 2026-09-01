@@ -643,7 +643,7 @@ def test_i13_combined_call_is_one_call_with_both_channels(live, walk, monkeypatc
         calls.append({"system": system, "images": images, "max_tokens": max_tokens})
         lm = sorted(b.sampled)[0]
         reply = {"hypotheses": ["H"], "chosen": 0, "why": "w",
-                 "premises": [{"text": "P", "ids": [lm]}],
+                 "premises": [{"text": "P", "ids": [lm, sorted(b.sampled)[-1]]}],
                  "evaluations": [{"index": 0, "verdict": "supports", "why": "ok"}],
                  "answer": f"A #{lm}.",
                  "verdicts": ([{"id": o, "verdict": "neutral", "why": "n"}
@@ -663,6 +663,8 @@ def test_i13_combined_call_is_one_call_with_both_channels(live, walk, monkeypatc
     assert set(rr["shown"]) == set(b.sampled)
     assert rr["coverage"] == 1.0
     assert rr["entailed"] == [sorted(b.sampled)[0]]
+    assert sorted(b.sampled)[-1] in rr["premises"][0]["ids"], (
+        "with judge on, ANY shown chunk is citable by a premise -- not only brief ids")
     assert 10**6 in rr["foreign"], "foreign verdict id must be discarded and reported"
 
 
