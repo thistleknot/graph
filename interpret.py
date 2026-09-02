@@ -680,7 +680,11 @@ def render_walk_image(conn, run, bundle, pw: dict, dpi: int = 110) -> bytes:
     best = set()
     for p in pw.get("pairs", [])[:6]:
         best |= {frozenset(t) for t in zip(p["path"], p["path"][1:])}
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 7))
+    fig = plt.figure(figsize=(14, 12))
+    gs = fig.add_gridspec(2, 2, height_ratios=[1.0, 0.75], hspace=0.18)
+    ax1 = fig.add_subplot(gs[0, 0])
+    ax2 = fig.add_subplot(gs[0, 1])
+    ax3 = fig.add_subplot(gs[1, :])
     for e in edges:
         k = frozenset((e["src"], e["dst"]))
         x = [pos[e["src"]][0], pos[e["dst"]][0]]
@@ -690,12 +694,36 @@ def render_walk_image(conn, run, bundle, pw: dict, dpi: int = 110) -> bytes:
         else:
             ax1.plot(x, y, color="#999999", lw=0.5, alpha=0.4, zorder=1)
     anchors = set(getattr(bundle, "anchors", []) or [])
+    # Top-3 salient terms as a small dithered word cloud per node -- terms are
+    # what the operator reads; the ord stays tiny for citation cross-reference.
+    # Jitter is seeded per ord so the picture stays deterministic (I3/I12).
+    import random as _random
+    sal1 = gt.chunk_salient(conn, run, ords)
+    offsets = [(0.0, 0.042), (-0.048, -0.034), (0.048, -0.034)]
+    # Crowding-aware thinning: a node hemmed in by many neighbours in layout
+    # space shows only its top term; anchors and pathway nodes always show 3.
+    on_path = {o for p in pw.get("pairs", [])[:6] for o in p["path"]}
+    def _n_labels(o):
+        if o in anchors or o in on_path:
+            return 3
+        crowd = sum(1 for u in ords if u != o
+                    and abs(pos[u][0] - pos[o][0]) < 0.08
+                    and abs(pos[u][1] - pos[o][1]) < 0.08)
+        return 3 if crowd <= 2 else (2 if crowd <= 5 else 1)
     for o in ords:
         ax1.scatter(*pos[o], s=170 if o in anchors else 80,
                     color=palette[cid_of[o] % len(palette)],
                     edgecolors="#111111", linewidths=1.6 if o in anchors else 0.4,
                     zorder=3)
-        ax1.annotate(str(o), pos[o], fontsize=6, ha="center", va="center", zorder=4)
+        ax1.annotate(str(o), pos[o], fontsize=4.5, ha="center", va="center",
+                     zorder=4, alpha=0.8)
+        rj = _random.Random(o)
+        for i, t in enumerate((sal1.get(o, {}).get("top") or [])[:_n_labels(o)]):
+            dx = offsets[i][0] + rj.uniform(-0.012, 0.012)
+            dy = offsets[i][1] + rj.uniform(-0.010, 0.010)
+            ax1.annotate(t[:16], (pos[o][0] + dx, pos[o][1] + dy),
+                         fontsize=6.0 - 0.7 * i, ha="center", va="center",
+                         color="#222222", alpha=0.95 - 0.18 * i, zorder=4)
     ax1.set_title(f"walked subgraph: {pw['n']} chunks · {pw['components']} WCC · "
                   f"density {pw['density']:.2f} · conductance {pw['conductance']:.2f}\n"
                   f"red = strongest DWPC pathways · ringed = lexical anchors", fontsize=9)
@@ -723,11 +751,107 @@ def render_walk_image(conn, run, bundle, pw: dict, dpi: int = 110) -> bytes:
         ax2.scatter(*qpos[c], s=300 + 2200 * size[c] / smax,
                     color=palette[c % len(palette)], alpha=1.0 if walked else 0.25,
                     edgecolors="#111111", linewidths=1.5 if walked else 0.4)
-        ax2.annotate(f"c{c}" + (f"\n{hit[c]}/{size[c]}" if walked else ""),
-                     qpos[c], fontsize=8, ha="center", va="center")
+        kw = " ".join((gt.community(conn, run, c)["keywords"] or [])[:3])
+        ax2.annotate(f"c{c}" + (f" {hit[c]}/{size[c]}" if walked else "")
+                     + (f"\n{kw[:40]}" if kw else ""),
+                     qpos[c], fontsize=7 if walked else 5.5, ha="center",
+                     va="center", alpha=1.0 if walked else 0.6)
+    # Project the strongest DWPC chains onto the community quotient: a red hop
+    # between the communities a chain crosses, labeled by the top salient term
+    # of the chunk on each side -- the pathway told in terms, not ids.
+    seen_hops = set()
+    for p in pw.get("pairs", [])[:6]:
+        for a, bb in zip(p["path"], p["path"][1:]):
+            ca, cb = cid_of.get(a), cid_of.get(bb)
+            if ca is None or cb is None or ca == cb:
+                continue
+            k = frozenset((ca, cb))
+            if k in seen_hops:
+                continue
+            seen_hops.add(k)
+            ax2.plot([qpos[ca][0], qpos[cb][0]], [qpos[ca][1], qpos[cb][1]],
+                     color="#E45756", lw=2.0, alpha=0.9, zorder=2)
     ax2.set_title("global community map · filled = communities this walk reached "
-                  "(hits/size) · edge width = inter-community edges", fontsize=9)
+                  "(hits/size) · red = DWPC pathway hops "
+                  "· edge width = inter-community edges", fontsize=9)
     ax2.axis("off")
+    # ---- translation layer (bipartite): pathway chunks on top, the salient
+    # terms that connect them drawn as their own nodes below. Term x-position
+    # is the barycentre of the chunks carrying it (no simulation, I3/I12
+    # deterministic). A red hop whose two chunks share NO drawn term is dashed:
+    # a semantic bridge -- the spaces agreed on meaning, not vocabulary.
+    path_ords = []
+    for p in pw.get("pairs", [])[:6]:
+        for o in p["path"]:
+            if o not in path_ords:
+                path_ords.append(o)
+    for o in sorted(anchors):
+        if o not in path_ords:
+            path_ords.append(o)
+    path_ords = path_ords[:18]
+    K_TERMS = 12
+    kept_of = {o: (sal1.get(o, {}).get("kept") or [])[:K_TERMS] for o in path_ords}
+    from collections import Counter as _Counter
+    deg = _Counter(t for o in path_ords for t in kept_of[o])
+    connectors = [t for t, d in deg.most_common() if d >= 2][:18]
+    tops = [kept_of[o][0] for o in path_ords
+            if kept_of[o] and kept_of[o][0] not in connectors]
+    terms_drawn = connectors + list(dict.fromkeys(tops))[:max(0, 24 - len(connectors))]
+    x_of = {o: float(i) for i, o in enumerate(path_ords)}
+    tx = {}
+    for t in terms_drawn:
+        xs = [x_of[o] for o in path_ords if t in kept_of[o]]
+        tx[t] = sum(xs) / len(xs)
+    last = -10.0
+    for t in sorted(terms_drawn, key=lambda t: (tx[t], t)):   # collision dither
+        if tx[t] - last < 0.62:
+            tx[t] = last + 0.62
+        last = tx[t]
+    for t in terms_drawn:
+        for o in path_ords:
+            if t in kept_of[o]:
+                ax3.plot([x_of[o], tx[t]], [0.93, 0.07], color="#888888",
+                         lw=0.9 if t in connectors else 0.45,
+                         alpha=0.6 if t in connectors else 0.35, zorder=1)
+        ax3.annotate(t[:18], (tx[t], 0.0), fontsize=6.5, ha="center", va="center",
+                     color="#333333", zorder=3,
+                     bbox=dict(boxstyle="round,pad=0.18", fc="#F2F2F2",
+                               ec="#BBBBBB", lw=0.4))
+    seen_arc = set()
+    for p in pw.get("pairs", [])[:6]:
+        for a, bb in zip(p["path"], p["path"][1:]):
+            if a not in x_of or bb not in x_of:
+                continue
+            k = frozenset((a, bb))
+            if k in seen_arc:
+                continue
+            seen_arc.add(k)
+            shared = any(t in kept_of[a] and t in kept_of[bb] for t in terms_drawn)
+            x1, x2 = x_of[a], x_of[bb]
+            xm, h = (x1 + x2) / 2, 1.0 + 0.10 + 0.045 * abs(x2 - x1)
+            tt = [i / 23 for i in range(24)]
+            xs = [(1 - u) * (1 - u) * x1 + 2 * (1 - u) * u * xm + u * u * x2 for u in tt]
+            ys = [(1 - u) * (1 - u) * 1.0 + 2 * (1 - u) * u * h + u * u * 1.0 for u in tt]
+            ax3.plot(xs, ys, color="#E45756", lw=1.6,
+                     linestyle="-" if shared else (0, (3, 2)), alpha=0.9, zorder=2)
+    for o in path_ords:
+        ax3.scatter(x_of[o], 1.0, s=170 if o in anchors else 95,
+                    color=palette[cid_of.get(o, 0) % len(palette)],
+                    edgecolors="#111111", linewidths=1.6 if o in anchors else 0.5,
+                    zorder=4)
+        ax3.annotate(str(o), (x_of[o], 1.0), fontsize=4.5, ha="center",
+                     va="center", zorder=5, alpha=0.8)
+        top1 = (sal1.get(o, {}).get("top") or [""])[0]
+        ax3.annotate(top1[:16], (x_of[o], 1.055), fontsize=6, ha="left",
+                     va="bottom", rotation=32, zorder=5, color="#222222")
+    if path_ords:
+        ax3.set_xlim(-0.8, max(max(x_of.values()),
+                               max(tx.values()) if tx else 0) + 0.8)
+    ax3.set_ylim(-0.28, 1.72)
+    ax3.axis("off")
+    ax3.set_title("translation layer: pathway chunks (top) ↔ their salient terms "
+                  "(below, barycentric) · red arc = DWPC hop, dashed = no shared "
+                  "drawn term (semantic bridge)", fontsize=9)
     fig.suptitle(f"PROMPT: {bundle.query}"[:140], fontsize=10)
     buf = io.BytesIO()
     fig.savefig(buf, format="png", dpi=dpi, bbox_inches="tight")

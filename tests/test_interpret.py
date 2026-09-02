@@ -736,3 +736,15 @@ def test_excerpt_warns_when_dense_scoring_fails_and_still_excerpts():
     assert "alpha" in out                       # lexical scoring still picked the hit
     msgs = [str(c.message) for c in caught if c.category is RuntimeWarning]
     assert any("dense scoring failed" in m and "ValueError" in m for m in msgs)
+
+
+def test_i12_walk_image_is_deterministic_with_term_labels(live, walk):
+    """The dithered term labels must not break I12 determinism: same inputs,
+    byte-identical PNG (jitter is seeded per ord, layout seeds fixed)."""
+    conn, run = live
+    b, terms, concept = walk
+    pw = gt.pathways(conn, run, b.sampled, sorted(b.sampled)[:4])
+    png1 = interpret.render_walk_image(conn, run, b, pw)
+    png2 = interpret.render_walk_image(conn, run, b, pw)
+    assert png1[:8] == b"\x89PNG\r\n\x1a\n"
+    assert png1 == png2

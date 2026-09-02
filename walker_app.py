@@ -253,6 +253,46 @@ def draw_communities(touched, terms, xedges, height=520):
     return fig
 
 
+def draw_global_map(comms, qrows, height=560):
+    """Whole-run community map for the Map tab: every community, sized by
+    member count, LABELLED BY ITS KEYWORDS, edges weighted by inter-community
+    edge counts. Prompt-independent twin of draw_communities (design §6:
+    the graph is read by its terms)."""
+    if not comms:
+        return None
+    G = nx.Graph()
+    for c in comms:
+        G.add_node(c["cid"], size=c["size"])
+    for r in qrows:
+        G.add_edge(r["cid_a"], r["cid_b"], weight=r["edges"])
+    pos = nx.spring_layout(G, weight="weight", seed=7, k=1.6)
+    wmax = max((d["weight"] for _, _, d in G.edges(data=True)), default=1)
+    fig = go.Figure()
+    for a, b, d in G.edges(data=True):
+        fig.add_trace(go.Scatter(
+            x=[pos[a][0], pos[b][0]], y=[pos[a][1], pos[b][1]], mode="lines",
+            line=dict(color="#bbb", width=0.8 + 4.0 * d["weight"] / wmax),
+            hoverinfo="none", showlegend=False))
+    smax = max(c["size"] for c in comms)
+    fig.add_trace(go.Scatter(
+        x=[pos[c["cid"]][0] for c in comms],
+        y=[pos[c["cid"]][1] for c in comms],
+        mode="markers+text",
+        text=[" / ".join((c["keywords"] or [])[:3]) for c in comms],
+        textposition="top center",
+        textfont=dict(size=11),
+        marker=dict(size=[14 + 44 * c["size"] / smax for c in comms],
+                    color=[cid_color(c["cid"]) for c in comms],
+                    line=dict(color="#333", width=1)),
+        hovertext=[f"c{c['cid']} · {c['size']} chunks · "
+                   + ", ".join((c["keywords"] or [])[:5]) for c in comms],
+        hoverinfo="text", showlegend=False))
+    fig.update_layout(height=height, margin=dict(l=10, r=10, t=10, b=10),
+                      xaxis=dict(visible=False), yaxis=dict(visible=False),
+                      plot_bgcolor="white")
+    return fig
+
+
 tab_walk, tab_map = st.tabs(["Walk", "Map"])
 
 @st.cache_data(show_spinner=False, max_entries=32)
@@ -553,6 +593,10 @@ with tab_map:
                          FROM community WHERE run_id = %s ORDER BY size DESC""",
                     (run.run_id,))
         comms = cur.fetchall()
+
+    gfig = draw_global_map(comms, gt.quotient(conn, run, limit=200))
+    if gfig is not None:
+        st.plotly_chart(gfig, use_container_width=True)
 
     rows = []
     for c in comms:

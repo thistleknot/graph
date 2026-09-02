@@ -220,3 +220,22 @@ def test_reason_and_judge_disagreement_is_shown():
     assert "#11" in info and "about lunch counters" in info      # Reason-only, with Judge's why
     assert "#13" in info                                        # Judge-only
     assert "#12" not in info                                    # agreed on: not a disagreement
+
+
+def test_draw_global_map_labels_communities_by_keywords(app):
+    """Map tab's prompt-independent community map: every community drawn, sized
+    by member count, labelled by its keywords -- not just tables (operator,
+    2026-09-01)."""
+    with app.conn.cursor() as cur:
+        cur.execute("""SELECT cid, size, keywords, medoid_text
+                         FROM community WHERE run_id = %s ORDER BY size DESC""",
+                    (app.run.run_id,))
+        comms = cur.fetchall()
+    fig = app.draw_global_map(comms, gt.quotient(app.conn, app.run, limit=200))
+    assert fig is not None
+    node_trace = fig.data[-1]
+    assert len(node_trace.x) == len(comms)
+    texts = list(node_trace.text)
+    kw = [c for c in comms if c["keywords"]]
+    assert kw and any(" / ".join(c["keywords"][:3]) in texts for c in kw)
+    assert app.draw_global_map([], []) is None
