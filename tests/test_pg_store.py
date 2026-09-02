@@ -31,11 +31,13 @@ DIM = 8
 class FakeGraph:
     """Duck-types ChunkGraph post-fit(). Attribute names mirror chunkgraph.py."""
 
-    def __init__(self, dim: int = DIM, with_embeddings: bool = True):
+    def __init__(self, dim: int = DIM, with_embeddings: bool = True,
+                 sources: list[str] | None = None):
         self.n = N
         self.chunks = [f"chunk number {i} about topic {i % 3}" for i in range(N)]
         self.docs_tok = [c.split() for c in self.chunks]
         self.doc_id = [f"doc{i // 4}" for i in range(N)]
+        self.source = sources                                                    # R20
         self.tfs = [{t: 1 for t in toks} for toks in self.docs_tok]
         self.qterms = [{"topic", f"{i % 3}"} for i in range(N)]
         self.disc = [{f"term{i}", "shared"} for i in range(N)]
@@ -72,16 +74,21 @@ class FakeGraph:
             (3, 4, "both", 0.60, 0.30, 0.55),
             (5, 9, "sparse", 0.45, 0.45, 0.02),
         ]
-        return [
-            {
+        srcs = getattr(self, "source", None)                                     # R20
+        out = []
+        for s, d, p, st, sp, dn in spec:
+            row = {
                 "src": s, "dst": d, "provenance": p, "strength": st,
                 "sim_sparse": sp,
                 "sim_dense": dn if self.sim_dense is not None else None,
                 "src_doc": self.doc_id[s], "dst_doc": self.doc_id[d],
                 "valid_from": now, "valid_to": None, "ingested_at": now,
             }
-            for s, d, p, st, sp, dn in spec
-        ]
+            if isinstance(srcs, list):            # R20: absent, not None, when unlabelled
+                row["src_source"] = srcs[s]
+                row["dst_source"] = srcs[d]
+            out.append(row)
+        return out
 
     def communities(self, min_size: int = 5) -> list[dict]:
         return [
@@ -317,3 +324,111 @@ def test_save_without_embeddings(db):
         cur.execute("""SELECT count(*) FROM edge
                         WHERE run_id = %s AND sim_sparse IS NOT NULL""", (run,))
         assert cur.fetchone()[0] == 5
+
+
+# ---------------------------------------------------------------- R20: source
+
+SOURCES = ["brown"] * 4 + ["quotes"] * 4 + ["wiki"] * 4      # ords 0-3/4-7/8-11
+
+
+def test_node_source_persisted_multi_source(db):
+    import graph_tools
+    label = LABEL + "_multisrc"
+    run = pg_store.save(FakeGraph(sources=SOURCES), label, dsn=db)
+    try:
+        with psycopg.connect(db) as conn, conn.cursor() as cur:
+            cur.execute("""SELECT ord, attrs->>'source' FROM node
+                            WHERE run_id = %s ORDER BY ord""", (run,))
+            rows = cur.fetchall()
+            assert [r[1] for r in rows] == SOURCES
+
+            cur.execute("""SELECT count(*) FROM node
+                            WHERE run_id = %s AND attrs ? 'source'""", (run,))
+            assert cur.fetchone()[0] == N
+
+        mix = graph_tools.source_mix(
+            [{"source": s, "doc_id": f"doc{i}"} for i, s in enumerate(SOURCES)])
+        assert mix == {"brown": 4, "quotes": 4, "wiki": 4}
+    finally:
+        with psycopg.connect(db, autocommit=True) as conn:
+            conn.execute("DELETE FROM graph_run WHERE label = %s", (label,))
+
+
+def test_node_source_absent_when_unlabelled(db, first_run):
+    with psycopg.connect(db) as conn, conn.cursor() as cur:
+        cur.execute("""SELECT count(*) FROM node
+                        WHERE run_id = %s AND attrs ? 'source'""", (first_run,))
+        assert cur.fetchone()[0] == 0
+
+        cur.execute("""SELECT attrs->>'source' FROM node
+                        WHERE run_id = %s AND ord = 0""", (first_run,))
+        assert cur.fetchone()[0] is None
+
+
+def test_edge_rows_carry_source_pair(db):
+    label = LABEL + "_multisrc2"
+    run = pg_store.save(FakeGraph(sources=SOURCES), label, dsn=db)
+    try:
+        out = pg_store.load_edges(label, dsn=db)
+        got = {(e["src"], e["dst"]): e for e in out}
+
+        cross = got[(3, 4)]
+        assert cross["src_source"] == "brown" and cross["dst_source"] == "quotes"
+
+        intra = got[(0, 1)]
+        assert intra["src_source"] == "brown" and intra["dst_source"] == "brown"
+    finally:
+        with psycopg.connect(db, autocommit=True) as conn:
+            conn.execute("DELETE FROM graph_run WHERE label = %s", (label,))
+
+
+def test_edge_source_pair_null_on_unlabelled_run(db, first_run):
+    out = pg_store.load_edges(LABEL, dsn=db)
+    assert out
+    for e in out:
+        assert e["src_source"] is None and e["dst_source"] is None
+
+    with psycopg.connect(db) as conn, conn.cursor() as cur:
+        cur.execute("SELECT attrs FROM edge WHERE run_id = %s", (first_run,))
+        assert all(attrs == {} for (attrs,) in cur.fetchall())
+
+
+def test_save_tolerates_graph_without_source_attr(db):
+    label = LABEL + "_nosrc"
+    cg = FakeGraph()
+    delattr(cg, "source")
+    try:
+        run = pg_store.save(cg, label, dsn=db)
+        assert run
+    finally:
+        with psycopg.connect(db, autocommit=True) as conn:
+            conn.execute("DELETE FROM graph_run WHERE label = %s", (label,))
+
+
+def test_chunkgraph_fit_labels_every_chunk():
+    """No Postgres required -- exercises chunkgraph.fit() directly (R20)."""
+    import chunkgraph
+
+    lens_a = [1, 2, 3, 4, 1, 2]
+    lens_b = [2, 3, 4, 1, 3, 2]
+    docs, doc_ids, sources = [], [], []
+    for i, ln in enumerate(lens_a):
+        docs.append("\n".join(f"line {i} {j}" for j in range(ln)))
+        doc_ids.append(f"a/{i}"); sources.append("a")
+    for i, ln in enumerate(lens_b):
+        docs.append("\n".join(f"line {i} {j}" for j in range(ln)))
+        doc_ids.append(f"b/{i}"); sources.append("b")
+
+    cg = chunkgraph.ChunkGraph(embed_fn=None, phrases=False)
+    cg.fit(docs, doc_ids=doc_ids, sources=sources)
+
+    assert len(cg.source) == cg.n
+    for i in range(cg.n):
+        assert cg.source[i] == cg.doc_id[i].split("/", 1)[0]
+    for e in cg.edges():
+        assert e["src_source"] == cg.source[e["src"]]
+        assert e["dst_source"] == cg.source[e["dst"]]
+
+    cg2 = chunkgraph.ChunkGraph(embed_fn=None, phrases=False)
+    cg2.fit(docs, doc_ids=doc_ids, sources=None)
+    assert cg2.source == [None] * cg2.n

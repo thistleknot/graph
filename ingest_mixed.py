@@ -1,0 +1,183 @@
+"""Populate the jsonb graph from a mixed multi-source corpus (Brown + quotes + wiki).
+
+R20 body (design.md sec 6.14, lines 1089-1095): mixing heterogeneous document
+sources into one ChunkGraph run so retrieval sees genre spread beyond Brown
+alone -- Brown (structured prose, genre-coded), abirate/english_quotes (short,
+aphoristic, high chunk-density), EleutherAI/wikitext_document_level (long,
+discursive). Each source is tagged on ingest so a consumer can reproduce the
+source of any doc_id from its prefix alone; retrieval itself never sees or
+weights the source (forbidden by R20 -- that's not this file's job).
+
+Usage:
+    python ingest_mixed.py [label] [--brown N] [--brown-stride S]
+                                     [--quotes N] [--quotes-stride S]
+                                     [--wiki N] [--wiki-stride S]
+
+Set CHUNKGRAPH_MODEL_DIR to a local sentence-transformer directory to exercise
+the DENSE arm as well; unset, the run stays sparse-only per R5.
+
+Spec: .spec/specs/graph-explorer/design.md sec 6.14 R20 - Task: playbook.md T2, T8
+"""
+from __future__ import annotations
+
+import argparse
+import inspect
+import sys
+import time
+
+import ingest_brown
+from chunkgraph import ChunkGraph
+import os
+import pg_store
+
+_START = time.time()
+
+
+def _ckpt(stage, detail=""):
+    """T8: stdout is buffered when redirected to a file, and plain prints
+    carry no timestamp -- this is the launch-verification and staleness
+    signal for the detached mixed-full run."""
+    ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    elapsed = time.time() - _START
+    line = f"CKPT {ts} +{elapsed:.1f}s {stage}"
+    if detail:
+        line += f" {detail}"
+    print(line, flush=True)
+
+QUOTES_DATASET = "abirate/english_quotes"   # field: quote
+WIKI_DATASET = "EleutherAI/wikitext_document_level"
+WIKI_CONFIG = "wikitext-103-raw-v1"         # field: page
+SOURCES = ("brown", "quotes", "wiki")
+
+
+def _hf_rows(path, config, split, field):
+    """Single point of network contact -- lazy import so the test suite never
+    needs `datasets` installed."""
+    try:
+        from datasets import load_dataset
+    except ImportError as e:
+        raise RuntimeError(f"`datasets` package required to load {path}") from e
+    ds = load_dataset(path, config, split=split) if config else load_dataset(path, split=split)
+    return list(ds[field])
+
+
+def _take(items, n, stride):
+    """Drops blank/whitespace-only texts, then strides and caps at n.
+
+    Returns (original_index, text) pairs so ids keep the pre-stride position
+    (D3: quotes/wiki ids are stable under n, not under stride)."""
+    non_blank = [(i, t) for i, t in enumerate(items) if t and t.strip()]
+    return non_blank[::stride][:n]
+
+
+def load_brown(n_docs, stride):
+    """(doc_ids, docs, sources) -- delegates to ingest_brown.load_docs, the
+    incumbent Brown loader, and re-prefixes its ids."""
+    if n_docs <= 0:
+        return [], [], []
+    fids, docs = ingest_brown.load_docs(n_docs, stride)
+    doc_ids = [f"brown/{fid}" for fid in fids]
+    sources = ["brown"] * len(docs)
+    return doc_ids, docs, sources
+
+
+def load_quotes(n_docs, stride):
+    """(doc_ids, docs, sources) for abirate/english_quotes."""
+    if n_docs <= 0:
+        return [], [], []
+    rows = _hf_rows(QUOTES_DATASET, None, "train", "quote")
+    taken = _take(rows, n_docs, stride)
+    doc_ids = [f"quotes/{i}" for i, _ in taken]
+    docs = [t for _, t in taken]
+    sources = ["quotes"] * len(docs)
+    return doc_ids, docs, sources
+
+
+def load_wiki(n_docs, stride):
+    """(doc_ids, docs, sources) for EleutherAI/wikitext_document_level."""
+    if n_docs <= 0:
+        return [], [], []
+    rows = _hf_rows(WIKI_DATASET, WIKI_CONFIG, "train", "page")
+    taken = _take(rows, n_docs, stride)
+    doc_ids = [f"wiki/{i}" for i, _ in taken]
+    docs = [t for _, t in taken]
+    sources = ["wiki"] * len(docs)
+    return doc_ids, docs, sources
+
+
+def load_mixed(brown, quotes, wiki, brown_stride, quotes_stride, wiki_stride):
+    """Concatenates the three arms in SOURCES order. Returns (doc_ids, docs, sources)."""
+    b_ids, b_docs, b_src = load_brown(brown, brown_stride)
+    q_ids, q_docs, q_src = load_quotes(quotes, quotes_stride)
+    w_ids, w_docs, w_src = load_wiki(wiki, wiki_stride)
+
+    doc_ids = b_ids + q_ids + w_ids
+    docs = b_docs + q_docs + w_docs
+    sources = b_src + q_src + w_src
+
+    assert len(doc_ids) == len(docs) == len(sources)
+    for did, src in zip(doc_ids, sources):
+        assert did.startswith(f"{src}/")
+    assert docs, "load_mixed produced zero docs"
+
+    return doc_ids, docs, sources
+
+
+def build_argparser():
+    p = argparse.ArgumentParser(description="Ingest a mixed multi-source corpus into ChunkGraph.")
+    p.add_argument("label", nargs="?", default="mixed")
+    p.add_argument("--brown", type=int, default=50)
+    p.add_argument("--brown-stride", type=int, default=10)
+    p.add_argument("--quotes", type=int, default=500)
+    p.add_argument("--quotes-stride", type=int, default=1)
+    p.add_argument("--wiki", type=int, default=200)
+    p.add_argument("--wiki-stride", type=int, default=1)
+    return p
+
+
+def _fit(cg, docs, doc_ids, sources):
+    """The D1 seam: passes sources= to fit() iff the parameter exists on the
+    ChunkGraph in play, so this module needs zero edits when Layer 3 lands it."""
+    if "sources" in inspect.signature(cg.fit).parameters:
+        print("sources: passed to fit")
+        return cg.fit(docs, doc_ids=doc_ids, sources=sources)
+    print("sources: carried in doc_id prefix only (pre-T4 fit)")
+    return cg.fit(docs, doc_ids=doc_ids)
+
+
+def main(argv=None):
+    args = build_argparser().parse_args(argv if argv is not None else sys.argv[1:])
+    _ckpt("start", f"label={args.label}")
+
+    print(f"DSN   : {pg_store.DSN}")
+    _ckpt("load:start")
+    doc_ids, docs, sources = load_mixed(
+        args.brown, args.quotes, args.wiki,
+        args.brown_stride, args.quotes_stride, args.wiki_stride,
+    )
+    _ckpt("load:done", f"docs={len(docs)} chars={sum(len(d) for d in docs)}")
+    for src in SOURCES:
+        print(f"{src:6s}: {sources.count(src)} docs")
+    print(f"corpus: {len(docs)} docs, {sum(len(d) for d in docs):,} chars")
+
+    model_dir = os.environ.get("CHUNKGRAPH_MODEL_DIR")   # R5: absent -> sparse-only
+    print(f"dense : {model_dir or 'DISABLED (sparse-only, R5)'}")
+    cg = ChunkGraph(model_dir=model_dir) if model_dir else ChunkGraph(embed_fn=None)
+    _ckpt("fit:start", f"docs={len(docs)} dense={'on' if model_dir else 'off'}")
+    _fit(cg, docs, doc_ids, sources)
+    _ckpt("fit:done", f"n={cg.n}")
+    print(f"fitted: {cg.n} chunks, blend_mode={cg.blend_mode}", flush=True)
+
+    edges = cg.edges()
+    comms = cg.communities(min_size=5)
+    _ckpt("graph:done", f"edges={len(edges)} comms={len(comms)}")
+    print(f"graph : {len(edges)} edges, {len(comms)} communities (min_size=5)")
+
+    run_id = pg_store.save(cg, args.label)
+    _ckpt("save:done", f"run_id={run_id} label={args.label}")
+    print(f"run_id: {run_id}")
+    return run_id
+
+
+if __name__ == "__main__":
+    main()

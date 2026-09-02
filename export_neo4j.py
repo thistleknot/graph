@@ -25,6 +25,8 @@ because a consumer that only walks SIMILAR should still see the whole graph.
 Require:   a live run under `label`; read-only DB access.
 Guarantee: nodes.csv + edges.csv + import.sh in `out`, neo4j-admin header
            format, every :START_ID/:END_ID resolvable within its id-space.
+           nodes.csv carries a `source` column, empty on runs predating R20
+           (design.md §6.14 R20).
 Maintain:  no writes; no re-partitioning; cid is read, never recomputed.
 
 GUARDS (EARS)
@@ -61,7 +63,8 @@ def _fetch(conn, run, min_tf: int):
     """Guarantee: (chunks, contains, similar) as plain row lists."""
     with conn.cursor() as cur:
         cur.execute(
-            """SELECT ord, doc_id, body, attrs -> 'tf' AS tf
+            """SELECT ord, doc_id, body, attrs -> 'tf' AS tf,
+                      attrs ->> 'source' AS source
                  FROM node WHERE run_id = %s ORDER BY ord""", (run.run_id,))
         rows = cur.fetchall()
         cur.execute(
@@ -76,7 +79,7 @@ def _fetch(conn, run, min_tf: int):
 
     chunks, contains = [], []
     for r in rows:
-        chunks.append((r["ord"], r["doc_id"], r["body"], cid.get(r["ord"])))
+        chunks.append((r["ord"], r["doc_id"], r["source"], r["body"], cid.get(r["ord"])))
         for term, tf in (r["tf"] or {}).items():
             if tf >= min_tf:
                 contains.append((r["ord"], term, tf))
@@ -90,6 +93,7 @@ def export(conn, run, out: Path, edges: str = "both", min_tf: int = MIN_TF) -> d
 
     terms = sorted({t for _, t, _ in contains})                     # X2
     chunk_ids = {c[0] for c in chunks}
+    src_mix = gt.source_mix({"source": c[2], "doc_id": c[1]} for c in chunks)
     term_ids = set(terms)
 
     dangling = ([e for e in contains if e[1] not in term_ids]       # X3
@@ -101,12 +105,13 @@ def export(conn, run, out: Path, edges: str = "both", min_tf: int = MIN_TF) -> d
 
     with (out / "nodes.csv").open("w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)                                           # X4
-        w.writerow(["id:ID(Chunk)", "id:ID(Term)", "doc_id", "text",
+        w.writerow(["id:ID(Chunk)", "id:ID(Term)", "doc_id", "source", "text",
                     "cid:int", ":LABEL"])
-        for ord_, doc_id, body, c in chunks:
-            w.writerow([ord_, "", doc_id, body, "" if c is None else c, "Chunk"])
+        for ord_, doc_id, source, body, c in chunks:
+            w.writerow([ord_, "", doc_id, source or "", body,
+                       "" if c is None else c, "Chunk"])
         for t in terms:
-            w.writerow(["", t, "", "", "", "Term"])
+            w.writerow(["", t, "", "", "", "", "Term"])
 
     n_contains = n_similar = 0
     with (out / "edges.csv").open("w", newline="", encoding="utf-8") as f:
@@ -126,9 +131,12 @@ def export(conn, run, out: Path, edges: str = "both", min_tf: int = MIN_TF) -> d
                             "" if e["sim_dense"] is None else e["sim_dense"]])
                 n_similar += 1
 
+    src_line = (f"# sources: {gt.format_source_mix(src_mix)}\n"
+                if src_mix else "")                                  # X5's spirit
     (out / "import.sh").write_text(
         f"#!/bin/sh\n"
         f"# run {run.label} ({run.run_id})\n"                        # X5
+        f"{src_line}"
         f"neo4j-admin database import full \\\n"
         f"  --nodes=nodes.csv \\\n"
         f"  --relationships=edges.csv \\\n"
@@ -138,6 +146,7 @@ def export(conn, run, out: Path, edges: str = "both", min_tf: int = MIN_TF) -> d
 
     return {"chunks": len(chunks), "terms": len(terms),
             "contains": n_contains, "similar": n_similar,
+            "sources": src_mix,
             "label": run.label, "run_id": str(run.run_id)}
 
 

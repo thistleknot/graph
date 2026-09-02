@@ -1004,3 +1004,198 @@ judge addendum also regained the standalone Judge's calibration ("a partial
 answer is entails"; judge against the PROMPT, not the chosen hypothesis) after
 the combined run returned 0 entails on evidence the split runs had entailed;
 and premises must be stated in the model's own words, not pasted quotes.
+
+### 6.14 Multi-source ingest: three corpora, one graph (2026-08-31)
+
+Operator intent: Brown alone is one register. Add HuggingFace
+`abirate/english_quotes` (~2.5k one-line quotations) and
+`EleutherAI/wikitext_document_level` (~29k long articles) so one retrieval graph
+spans aphorism, encyclopedia, and 1960s American prose. The sources ride the
+SAME pipeline — no second spec dir, no second chunker, no retrieval quotas.
+
+**1. The problem is scale mismatch, in two places.** A quote is one line; a
+wikitext article is hundreds. R17 derives ONE `hi` from ONE Box-Cox over the
+corpus; pooled across these three, the fit is dominated by whichever source
+brings the most documents, so quotes never split (correct, but by accident) and
+wikitext splits at a threshold set by Brown. Same mismatch downstream: pooled
+similarity distributions are dominated by the largest source-pair block, so a
+single k-sigma cut in a single fit keeps intra-wiki edges and drops every
+cross-source pair. The fix in both places is to fit per group and cut once.
+
+**2. Chunking is fitted per source (R19).** `fit(docs, doc_ids, sources=None)`
+groups documents by source and runs `derive_chunk_params` once per group;
+`chunk_params` becomes `{source: {unit, m, hi, lam}}`. Each document is chunked
+against its OWN source's params. `chunk_params` is already in `_PARAM_ATTRS`, so
+persistence and reproducibility are unchanged. A single-source run is one group
+and reproduces today's numbers exactly (Brown: m=107, hi=153, lambda −0.441).
+
+**3. Source is node metadata, not a retrieval dial (R20).** Every chunk carries
+`source` beside `doc_id`. Node payload contract, fixed here so T2/T3 and T5 agree
+without a second conversation:
+
+- `source` is a short lowercase token, one of `brown`, `quotes`, `wiki`.
+- `doc_id` is source-prefixed: `brown/<fileid>`, `quotes/<index>`, `wiki/<index>`.
+  The prefix is part of the id, not a display convenience; `doc_id.split("/", 1)[0]`
+  reproduces `source`, and `source` is nevertheless stored explicitly so no
+  consumer has to parse ids. `mixed-full` (2026-09-01) is the first live run with
+  prefixed ids; the explicit `source` key is now exercised end to end and the
+  prefix fallback is belt-and-braces, kept as specified rather than dropped.
+- The persisted node payload (jsonb, `pg_store`) carries `source` on EVERY node;
+  edge export rows name the source pair alongside the documents they came from.
+- Consumers (graph_tools, walker_app, export_neo4j) surface source mix where they
+  already surface documents. A run written before R20 has no `source` key;
+  consumers degrade to today's unlabelled display and MUST NOT raise.
+
+Source steers nothing at query time. Anchors stay pure BM25 over the whole run.
+sqrt-allocation of anchors per source is queued LATER and built only on measured
+starvation (T9 records the evidence either way).
+
+**4. Normalization is per source-pair block, the cut is global (R21).** With
+three sources each similarity space has six blocks — 3 intra (brown×brown,
+quotes×quotes, wiki×wiki) and 3 cross (brown×quotes, brown×wiki, quotes×wiki).
+Each block's nonzero similarities get their own Box-Cox with the existing R6
+estimator-pair gate, and R2/R3 fall back PER BLOCK (a degenerate cross block
+falls back alone, never dragging the space with it). The per-block z values are
+reassembled into one array and then cut ONCE with today's global k-sigma rule;
+backbone (R7) and FUSE (R3) run unchanged. This is the move FUSE already makes
+across spaces, applied across source pairs. Blocks with fewer than ~20 nonzero
+pairs inherit the pooled fit rather than fitting on noise, and diagnostics record
+which blocks were pooled plus the edge rate per block. A single-source run is one
+block and is byte-identical to today.
+
+**4b. Why this works — one alignment trick, applied twice.** The general move:
+whenever two score populations come off different rulers, align their
+distributions first, compare after. The full nonparametric version is quantile
+matching (ogive alignment); Box-Cox-to-z is the smooth two-parameter version of
+the same idea, and the rank/quantile fallback (R2/R3) is the full version taken
+literally when the parametric fit fails its estimator gate. FUSE already makes
+this move once, across the two spaces — raw sparse cosine is never compared with
+raw dense cosine. R21 makes it again, one level down, across source-pair blocks:
+same math, different axis of incomparability (spaces before, text registers now).
+After alignment, "significantly similar for what these two kinds of text are" is
+one comparable statement everywhere, and a quote–quote edge earns its place
+against its own null, not against wikitext's.
+
+Nothing extra is needed for the ~29k:2.5k:0.5k size imbalance, and that is the
+point. Size hurt exactly one thing: it let the largest source's distribution
+impersonate the global distribution, so the one threshold was really wikitext's
+threshold. Per-block fits remove that; block size stops mattering for fairness,
+and the per-node KNN backbone (R7) is size-blind. The imbalance that remains is
+legitimate — wikitext simply offers more candidates, so a wiki-flavored question
+gets more wiki results. That is relevance, not bias. The one real size effect
+left is statistical: a tiny block gives a noisy fit, handled by the <~20-pair
+pooled-fit inheritance recorded in diagnostics.
+
+Standing caveat: alignment makes the blocks comparable, not related. It says how
+strong a quote–quote resemblance is *for quotes*; whether a quote and a wiki
+passage are actually about the same thing is still cosine's job, in whichever
+space.
+
+**5. Acceptance.**
+(a) Per-block edge rate (edges kept / candidate pairs, read from run diagnostics)
+    for the three intra blocks lies within one order of magnitude of each other on
+    a mixed run.
+(b) "a quote about courage" returns at least one `source=quotes` chunk in the
+    Bundle; a "how does wikipedia describe ..." prompt returns at least one
+    `source=wiki` chunk; and at least 3 existing Brown prompts still anchor in
+    `source=brown` chunks.
+(c) `tests/test_sampler.py`, `tests/test_gist_walk.py`, `tests/test_walker_render.py`
+    pass unchanged against a mixed run — multi-source changes nothing observable
+    for a single-source consumer.
+
+Guards: R19, R20, R21 in `chunkgraph.py` (bodies below, pinned by
+`tests/test_chunk.py`, `tests/test_pg_store.py`, `tests/test_mixed_acceptance.py`).
+Spec and docstring verified identical modulo ASCII transliteration (`--` for
+`—`, `*` for `·`, curly quotes flattened), 2026-09-01 — no semantic drift; do
+not re-diff.
+
+R19 WHERE documents carry a source label, chunk params SHALL be derived once per
+   source — Box-Cox, m = median, hi = m + 2·MAD in transformed space, inverted —
+   and each document SHALL be chunked against its own source's `hi`. Generalizes
+   R17, which fitted the corpus as one population: pooled across corpora of
+   different registers the fit follows the most numerous source, so a 1-line
+   quote and a 400-line article are judged by the same threshold. `chunk_params`
+   SHALL be `{source: {unit, m, hi, lam}}` and SHALL be recorded in diagnostics
+   and run params. A single-source run is one group, keyed by the literal source
+   label `"default"`, and reproduces R17's numbers exactly.
+
+R20 WHEN chunks are produced, each SHALL carry its `source` beside its `doc_id`
+   (R8's twin), `doc_id` SHALL be source-prefixed (`brown/`, `quotes/`, `wiki/`),
+   and `source` SHALL be persisted on every node payload so retrieval results,
+   community summaries, and exports can name the corpus a chunk came from.
+   Source is metadata only: it SHALL NOT weight, quota, or filter retrieval.
+   WHERE a run predates this guard and carries no source, consumers SHALL degrade
+   to unlabelled display rather than fail.
+
+R21 WHEN similarities are normalized in a multi-source run, the Box-Cox fit SHALL
+   run per SOURCE-PAIR BLOCK (3 intra + 3 cross for three sources), each block
+   gated by R6 and falling back per R2/R3 independently, and the reassembled z
+   values SHALL then be cut ONCE by the global k-sigma rule. One pooled fit is
+   dominated by the largest block, which keeps that block's edges and starves
+   every cross-source pair; per-block fits make the blocks commensurable, exactly
+   as FUSE makes the two spaces commensurable, and a single global cut keeps ONE
+   significance standard for the run. Blocks with fewer than `MIN_BLOCK_PAIRS`
+   (= 20) nonzero pairs SHALL inherit the pooled fit, and per-block edge rates
+   SHALL be recorded in diagnostics. A run SHALL
+   carry at most 8 source labels — block codes are packed int8, so a ninth label
+   overflows the code space. A single-source run is one block and is
+   byte-identical to today.
+
+**Measured (2026-09-01, run mixed-full).**
+
+1. **Run identity and size.** Run `86527c4e-e0d0-4701-a554-8be2d7f6f5db`, label
+   `mixed-full`: 10,369 documents → 10,826 chunks (wiki 7,818 / quotes 2,508 /
+   brown 500), 373,215 edges, 27 communities. Wall 669 s, fit 549 s, peak RSS
+   7.1 GB against 6.6 GB predicted by the 55n² rule — the rule held.
+
+2. **Per-source chunk params (R19 evidence), read from `graph_run.params ->
+   'chunk_params'` in Postgres for this run:**
+
+   | source | unit  | m   | hi  | lam      |
+   |---|---|---|---|---|
+   | brown  | lines | 107 | 153 | -0.4409  |
+   | quotes | chars | 98  | 256 | -0.2293  |
+   | wiki   | lines | 30  | 78  | 0.1012   |
+
+   quotes' `hi` (256, char-scale) runs over 3x wiki's `hi` (78, line-scale) and
+   brown's `hi` (153, line-scale) sits between them — three different fitted
+   ceilings from three different registers, exactly what pooling a single
+   corpus-wide `hi` would have erased. brown reproduces R17's single-source
+   numbers exactly (m=107, hi=153, lam=-0.441), confirming the "single-source
+   run is one group" clause above still holds inside a multi-source run.
+
+3. **The chosen wiki stride, and why (R19/scale evidence).** `--wiki 7461
+   --wiki-stride 4`. Stride 4 is the largest stride keeping projected n under
+   the 12,000-chunk target derived from the dense n×n float64 memory budget;
+   stride 3 projected ~10,419 chunks with no headroom, and the earlier
+   unstrided `--wiki 200` attempt blew a 3.7 GB RSS cap mid-fit. The target is
+   memory-derived, not arbitrary.
+
+4. **Per-block sparse edge rates (acceptance 5(a) evidence).** All six:
+   brown|brown 2.292e-02, quotes|quotes 1.984e-02, wiki|wiki 2.002e-02,
+   brown|quotes 1.540e-02, brown|wiki 1.793e-02, quotes|wiki 1.553e-02. Intra
+   max/min ratio **1.156** against the 10x bound — 5(a) PASS. All six blocks
+   `fit=own` at this scale. Contrast with the smoke run (mixed-smoke, 633
+   chunks): ratio 1.239, wiki|wiki `fit=rank` — the per-block fallback firing
+   for one block alone is R21 working as specified, not a defect.
+
+5. **Acceptance battery result (5(b)/(c) evidence).** 72 tests green against
+   mixed-full; every source anchored on its own targeted prompts (brown: 5-11
+   chunks across 4 Brown prompts). Therefore the LATER sqrt-anchor allocation
+   has **no** supporting evidence at full scale and **stays parked** — this
+   verdict is explicit so the queued item is not mistaken for pending work.
+
+6. **R5 degradation, stated as a limitation.** Both mixed runs were
+   **sparse-only**: no embed model in the run environment, dense arm disabled
+   at ingest. Every number in this subsection is therefore the sparse space;
+   the per-block normalization above is proven on sparse and **untested on
+   dense**, and a dense mixed run is queued. This is the honest boundary on the
+   whole subsection.
+
+7. **Campaign defect worth recording.** `_merge_phrases` rebuilt the full
+   gensim `Phrases` model once per document (O(n²)); invisible at Brown's 500
+   docs, ~100 h projected at 10,369. Diagnosed with py-spy after 100+ CPU-min
+   burned; the model is now hoisted to one construction, semantically neutral,
+   pinned by `test_merge_phrases_single_model_matches_per_doc_rebuild`. The law
+   it implies: a per-document loop that constructs a corpus-wide model is a
+   scale bomb no small-corpus test can see.

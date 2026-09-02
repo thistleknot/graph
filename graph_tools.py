@@ -94,6 +94,12 @@ NOT HERE, DELIBERATELY
 - No re-partitioning. cid is read from community, never recomputed over an
   induced subgraph (subgraph Louvain does not restrict global Louvain).
 - No writes of any kind.
+
+SOURCE (R20)
+`source` is read from `attrs->>'source'` and is metadata only -- it never
+filters, weights, or steers a traversal (W2 still holds). A run predating R20
+has no `source` key, so it reads back as `None` and renders unlabelled rather
+than failing (design.md §6.14 R20).
 """
 from __future__ import annotations
 
@@ -213,7 +219,8 @@ def node(conn, run: RunHandle, ord_: int):
     with conn.cursor() as cur:
         cur.execute("""
             SELECT n.ord, n.doc_id, n.body, (n.attrs->>'n_tok')::int AS n_tok,
-                   n.attrs -> 'tf' AS tf, c.cid, c.keywords
+                   n.attrs -> 'tf' AS tf, n.attrs->>'source' AS source,
+                   c.cid, c.keywords
               FROM node n
               LEFT JOIN community c
                      ON c.run_id = n.run_id AND c.members @> ARRAY[n.ord]
@@ -229,7 +236,7 @@ def neighbors(conn, run: RunHandle, ord_: int, limit: int = 25,
         cur.execute("""
             SELECT s.b AS ord, s.strength, s.provenance, s.sim_sparse,
                    s.sim_dense, n.doc_id, left(n.body, 240) AS preview,
-                   c.cid, c.keywords
+                   n.attrs->>'source' AS source, c.cid, c.keywords
               FROM edge_sym s
               JOIN node n ON n.run_id = s.run_id AND n.ord = s.b
               LEFT JOIN community c
@@ -256,13 +263,34 @@ def communities_touched(conn, run: RunHandle, ords: list[int]) -> list[dict]:
         return []
     with conn.cursor() as cur:
         cur.execute("""
-            SELECT c.cid, c.size, c.keywords, c.medoid_text, count(*) AS hits
+            SELECT c.cid, c.size, c.keywords, c.medoid_text, count(*) AS hits,
+                   array_agg(n.attrs->>'source')
+                     FILTER (WHERE n.attrs ? 'source') AS sources
               FROM community c
               JOIN unnest(%s::int[]) AS v(ord) ON c.members @> ARRAY[v.ord]
+              JOIN node n ON n.run_id = c.run_id AND n.ord = v.ord
              WHERE c.run_id = %s
              GROUP BY c.cid, c.size, c.keywords, c.medoid_text
              ORDER BY hits DESC""", (ords, run.run_id))
-        return cur.fetchall()
+        rows = cur.fetchall()
+    for r in rows:
+        raw = r.pop("sources") or []
+        counts: dict = {}
+        for s in raw:
+            counts[s] = counts.get(s, 0) + 1
+        r["sources"] = {s: counts[s] for s in sorted(counts, key=lambda s: (-counts[s], s))}
+    return rows
+
+
+def run_sources(conn, run: RunHandle) -> dict:
+    """R20: the run-level source mix, the sidebar's headline. NULL bucket
+    (pre-R20 nodes) dropped. {} on a pre-R20 run."""
+    with conn.cursor() as cur:
+        cur.execute("""SELECT attrs->>'source' AS source, count(*) AS c
+                         FROM node WHERE run_id=%s GROUP BY 1""", (run.run_id,))
+        rows = cur.fetchall()
+    counts = {r["source"]: r["c"] for r in rows if r["source"] is not None}
+    return {s: counts[s] for s in sorted(counts, key=lambda s: (-counts[s], s))}
 
 
 def bridges(conn, run: RunHandle, cid_a: int, cid_b: int, limit: int = 20):
@@ -366,6 +394,7 @@ def walk(conn, run: RunHandle, seed: int, hops: int = 2,
             SELECT b.node AS ord, b.score, b.hop, b.node_path,
                    b.prov_path::text[] AS prov_path,   -- psycopg has no
                    b.doc_path, n.doc_id, left(n.body, 240) AS preview,
+                   n.attrs->>'source' AS source,
                    c.cid, c.keywords,
                    (b.doc_path[1] <> n.doc_id) AS cross_doc
               FROM best b
@@ -384,6 +413,39 @@ def why(row: dict) -> str:
     for i, prov in enumerate(row["prov_path"]):
         steps.append(f"{row['node_path'][i]} --{prov}--> {row['node_path'][i+1]}")
     return f"{' | '.join(steps)}  [{' > '.join(row['doc_path'])}]"
+
+
+def source_of(row: dict) -> str | None:
+    """R20: the corpus a row belongs to. Explicit `source` wins; else the
+    doc_id prefix (`wiki/1234` -> `wiki`) for a mid-campaign run that has
+    prefixed ids before the `source` key is persisted; else None. Never
+    raises on a row missing both keys."""
+    src = row.get("source")
+    if isinstance(src, str) and src:
+        return src
+    doc_id = row.get("doc_id")
+    if isinstance(doc_id, str) and "/" in doc_id:
+        return doc_id.split("/", 1)[0]
+    return None
+
+
+def source_mix(rows) -> dict:
+    """R20: counts of source_of() over row-dicts, None dropped. Deterministic
+    order: count desc, then name asc."""
+    counts: dict = {}
+    for row in rows:
+        src = source_of(row)
+        if src is None:
+            continue
+        counts[src] = counts.get(src, 0) + 1
+    return {s: counts[s] for s in sorted(counts, key=lambda s: (-counts[s], s))}
+
+
+def format_source_mix(mix: dict) -> str:
+    """R20: presentation only, e.g. 'brown 12 · wiki 3'; '' when empty."""
+    if not mix:
+        return ""
+    return " · ".join(f"{src} {n}" for src, n in mix.items())
 
 
 def term_stats(conn, run: RunHandle, query: str,
@@ -694,7 +756,8 @@ def _decorate(conn, run: RunHandle, rows: list[dict]) -> list[dict]:
     ords = [r["ord"] for r in rows]
     with conn.cursor() as cur:
         cur.execute("""
-            SELECT n.ord, n.doc_id, left(n.body, 240) AS preview, c.cid, c.keywords
+            SELECT n.ord, n.doc_id, left(n.body, 240) AS preview,
+                   n.attrs->>'source' AS source, c.cid, c.keywords
               FROM node n
               LEFT JOIN community c
                      ON c.run_id = n.run_id AND c.members @> ARRAY[n.ord]

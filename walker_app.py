@@ -148,6 +148,9 @@ with st.sidebar.expander("details"):
                    f"({run.provenance[run.single_provenance]}); nothing here is fused")
     st.caption(f"draft labels: {len(labels)} loaded (italic = model-authored)"
                if labels else "draft labels: none for this run")
+    mix = gt.run_sources(conn, run)
+    if mix:
+        st.caption("sources: " + gt.format_source_mix(mix))
 
 def draw_subgraph(ords, trail, current=None, height=340):
     """Shared renderer: nodes coloured by STORED cid, trail dotted."""
@@ -203,10 +206,11 @@ def community_panel(ords):
     for t in touched:
         lab = labels.get(t["cid"])
         name = f" — *{lab['label']}*" if lab else ""
+        src = f" · {gt.format_source_mix(t['sources'])}" if t.get("sources") else ""
         st.markdown(
             f"<span style='color:{cid_color(t['cid'])}'>●</span> "
             f"**c{t['cid']}**{name} · {t['hits']} of {t['size']} members · "
-            f"{', '.join(t['keywords'][:4])}", unsafe_allow_html=True)
+            f"{', '.join(t['keywords'][:4])}{src}", unsafe_allow_html=True)
     return touched
 
 

@@ -4,11 +4,11 @@ chunkgraph.py — dual-space retrieval graph over arbitrary text.
 STAGED PIPELINE
 | stage    | mechanism                                                            | tag        |
 |----------|----------------------------------------------------------------------|------------|
-| CHUNK    | recursive \n\n -> \n -> word window; never intra-word (R16); doc_id(R8)| [mandatory]|
+| CHUNK    | recursive \n\n -> \n -> word window; never intra-word (R16); doc_id, source(R8/R20)| [mandatory, R16/R8/R19/R20]|
 | PHRASE   | Dunning-LLR report + NPMI Phrases merged into tokens pre-BM25 (R9)   | [opt: R9]  |
 | SPARSE   | BM25-weighted CSR, L2 rows, blockwise X@X.T, in-loop threshold (R10) | [mandatory]|
 | DENSE    | pluggable embed_fn (default: local MiniLM mean-pool); cosine sim     | [opt: R5]  |
-| NORMAL   | Box-Cox per sim distribution (lambda stored); estimator-pair gate    | [mandatory]|
+| NORMAL   | Box-Cox per sim distribution per source-pair block (R21); estimator-pair gate| [mandatory, R21]|
 | EDGES    | k-sigma tail cut where post-kurt<=KURT_OK, else budget-match (R2)    | [mandatory]|
 | BACKBONE | per-node top-KNN neighbors unioned in, both spaces (R7)              | [mandatory]|
 | FUSE     | union graph + provenance {sparse,dense,both}; BC-z edge strength,    | [mandatory]|
@@ -101,6 +101,34 @@ R18 There SHALL be ONE stoplist, NLTK's English list plus the local extras,
    to `didn` + `t`, and `didn` surfaced as a community term. Content words of a
    register (got, knew, looked, eyes) are NOT stopwords; suppressing those is
    the keyness prior's job (salient_grams R9), not the tokenizer's.
+R19 WHERE documents carry a source label, chunk params SHALL be derived once per
+   source -- Box-Cox, m = median, hi = m + 2*MAD in transformed space, inverted --
+   and each document SHALL be chunked against its own source's `hi`. Generalizes
+   R17, which fitted the corpus as one population: pooled across corpora of
+   different registers the fit follows the most numerous source, so a 1-line
+   quote and a 400-line article are judged by the same threshold. `chunk_params`
+   SHALL be `{source: {unit, m, hi, lam}}` and SHALL be recorded in diagnostics
+   and run params. A single-source run is one group, keyed by the literal source
+   label "default", and reproduces R17's numbers exactly.
+R20 WHEN chunks are produced, each SHALL carry its `source` beside its `doc_id`
+   (R8's twin), `doc_id` SHALL be source-prefixed (`brown/`, `quotes/`, `wiki/`),
+   and `source` SHALL be persisted on every node payload so retrieval results,
+   community summaries, and exports can name the corpus a chunk came from.
+   Source is metadata only: it SHALL NOT weight, quota, or filter retrieval.
+   WHERE a run predates this guard and carries no source, consumers SHALL degrade
+   to unlabelled display rather than fail.
+R21 WHEN similarities are normalized in a multi-source run, the Box-Cox fit SHALL
+   run per SOURCE-PAIR BLOCK (3 intra + 3 cross for three sources), each block
+   gated by R6 and falling back per R2/R3 independently, and the reassembled z
+   values SHALL then be cut ONCE by the global k-sigma rule. One pooled fit is
+   dominated by the largest block, which keeps that block's edges and starves
+   every cross-source pair; per-block fits make the blocks commensurable, exactly
+   as FUSE makes the two spaces commensurable, and a single global cut keeps ONE
+   significance standard for the run. Blocks with fewer than MIN_BLOCK_PAIRS
+   (= 20) nonzero pairs SHALL inherit the pooled fit, and per-block edge rates
+   SHALL be recorded in diagnostics. A run SHALL carry at most 8 source labels --
+   block codes are packed int8, so a ninth label overflows the code space. A
+   single-source run is one block and is byte-identical to today.
 R6 WHEN both estimators (median/1.4826*MAD vs mean/std) diverge > DIV_WARN in
    BC space, fit() SHALL record a warning in self.diagnostics.
 
@@ -130,6 +158,7 @@ from scipy import stats
 
 DISC_M, KURT_OK, DIV_WARN, KNN = 25, 0.5, 0.15, 2   # MINK dropped with the R4 gate
 SIM_FLOOR, BLOCK = 0.02, 512   # R10: in-loop threshold, block rows
+MIN_BLOCK_PAIRS = 20     # R21: below this a block inherits the pooled fit
 from stoplist import _STOP                     # R18: one stoplist, no heavy imports
 
 def _tok(text):
@@ -176,6 +205,23 @@ def derive_chunk_params(docs):
     m, hi, lam = _bc_center(counts)
     return {"unit": unit, "m": m, "hi": hi, "lam": lam, "n": len(counts),
             "hi_frac": sum(c > hi for c in counts) / len(counts)}
+
+
+def derive_chunk_params_by_source(docs, sources=None):
+    """R19. Groups document INDICES by source label (first-appearance order)
+    and fits R17's estimator once per group, unchanged.
+    Guarantee: one entry per distinct label in `sources`, each entry the R17
+    dict (`derive_chunk_params`) for that group's documents only.
+    Maintain: with a single group (sources=None, or all-equal labels), the
+    entry equals derive_chunk_params(docs) element-for-element."""
+    if sources is None:
+        sources = ["default"] * len(docs)
+    assert len(sources) == len(docs)
+    groups = {}
+    for i, s in enumerate(sources):
+        groups.setdefault(s, []).append(i)
+    return {src: derive_chunk_params([docs[i] for i in idxs])
+            for src, idxs in groups.items()}
 
 
 def _chunk(doc, m=100, hi=170, unit="lines"):
@@ -275,17 +321,25 @@ class ChunkGraph:
         self.ingested_at = datetime.now(timezone.utc).isoformat()
 
     # ---------- fit ----------
-    def fit(self, docs, doc_ids=None):
+    def fit(self, docs, doc_ids=None, sources=None):
         """Require: docs list[str]. Guarantee: graph fitted; self.doc_id[i]
-        names the source document of chunk i (R8)."""
+        names the source document of chunk i (R8); self.source[i] names the
+        corpus of chunk i (R20), `None` when the caller supplied no sources.
+        `sources` defaults to a single "default" group for R19 grouping; each
+        document is chunked against its own source's params (R19)."""
         doc_ids = doc_ids or [f"doc{i}" for i in range(len(docs))]
-        self.chunk_params = derive_chunk_params(docs)                            # R17
-        self.diagnostics["chunk"] = dict(self.chunk_params)
-        cp = {k: self.chunk_params[k] for k in ("m", "hi", "unit")}
-        self.chunks, self.doc_id = [], []
-        for did, d in zip(doc_ids, docs):
+        labelled = sources is not None                                          # R20
+        sources = ["default"] * len(docs) if sources is None else list(sources)
+        assert len(sources) == len(docs)
+        self.chunk_params = derive_chunk_params_by_source(docs, sources)         # R19
+        self.diagnostics["chunk"] = {s: dict(p) for s, p in self.chunk_params.items()}
+        self.chunks, self.doc_id, self.source = [], [], []
+        for did, d, src in zip(doc_ids, docs, sources):
+            cp = {k: self.chunk_params[src][k] for k in ("m", "hi", "unit")}
             cs = _chunk(d, **cp)
             self.chunks += cs; self.doc_id += [did]*len(cs)
+            self.source += [src if labelled else None] * len(cs)                # R20
+        assert len(self.source) == len(self.doc_id) == len(self.chunks)          # R20
         raw_tok = [_tok(c) for c in self.chunks]
         self.docs_tok = self._merge_phrases(raw_tok) if self.phrases else raw_tok   # R9
         n = self.n = len(self.chunks)
@@ -324,8 +378,8 @@ class ChunkGraph:
             llr = [' '.join(b) for b in f.nbest(BigramAssocMeasures.likelihood_ratio, 20)]
         except Exception:
             llr = []
-        out = [Phraser(Phrases(toks, min_count=5, threshold=0.4, scoring='npmi'))[t]
-               for t in toks]
+        phraser = Phraser(Phrases(toks, min_count=5, threshold=0.4, scoring='npmi'))
+        out = [phraser[t] for t in toks]
         self.diagnostics["phrases"] = {
             "mode": "npmi", "llr_top": llr[:10],
             "merged": len({t for d in out for t in d if '_' in t})}
@@ -368,12 +422,12 @@ class ChunkGraph:
         except Exception:
             return None, None, None                                 # R3
 
-    def _cut(self, tri_vals, name):
+    def _cut_pooled(self, tri_vals, name):
         """Maintain: Box-Cox is fitted on NONZERO sims only. The in-loop floor
         (R10) zeroes most pairs; including them makes the fit a zero-inflation
         artifact (measured kurt 1.61 -> forced budget path)."""
         nz = tri_vals > 0
-        y_nz, lam, kurt = self._bc(tri_vals[nz]) if nz.sum() >= 20 else (None, None, None)
+        y_nz, lam, kurt = self._bc(tri_vals[nz]) if nz.sum() >= MIN_BLOCK_PAIRS else (None, None, None)
         d = self.diagnostics.setdefault(name, {})
         if y_nz is None:
             d["mode"] = "rank-fallback"; return None, None
@@ -389,6 +443,135 @@ class ChunkGraph:
         mask = None if kurt > KURT_OK else ((y > mu + self.k_sigma*sd) & nz)  # R2 defer
         return z, mask
 
+    def _block_codes(self):
+        """R21: order-insensitive source-pair block code per upper-triangle
+        position, computed once per fit and shared by both spaces. Returns
+        None when there is exactly one distinct source label (the single-block
+        signal that keeps a single-source run on the pooled path, byte-identical
+        to pre-R21 behaviour)."""
+        labels = []
+        for s in self.source:
+            lbl = s if s is not None else "default"
+            if lbl not in labels:
+                labels.append(lbl)
+        if len(labels) <= 1:
+            return None
+        assert len(labels) <= 8, "R21: block codes are int8; >8 source labels overflows"
+        idx = {lbl: i for i, lbl in enumerate(labels)}
+        codes = np.array([idx[s if s is not None else "default"] for s in self.source], dtype=np.int8)
+        self._block_labels = labels
+        tri = np.triu_indices(self.n, 1)
+        a, b = codes[tri[0]], codes[tri[1]]
+        K = len(labels)
+        blk = (np.minimum(a, b).astype(np.int32)*K + np.maximum(a, b).astype(np.int32)).astype(np.int8)
+        self._block_names = {
+            int(np.minimum(i, j)*K + np.maximum(i, j)): "|".join(sorted((labels[i], labels[j])))
+            for i in range(K) for j in range(K)}
+        return blk
+
+    def _cut_blocks(self, tri_vals, name, blk):
+        """R21: per-source-pair-block Box-Cox fit, ONE global k-sigma cut in z.
+        A three-rung ladder per block (own -> pooled -> rank) makes the blocks
+        commensurable before the single cut, so no block's edges dominate."""
+        nz = tri_vals > 0
+        if nz.sum() < MIN_BLOCK_PAIRS:
+            return self._cut_pooled(tri_vals, name)                     # whole space degenerate
+        x_pool = tri_vals[nz]
+        shift_p = -x_pool.min() + 1e-3
+        y_p, lam_p, kurt_p = self._bc(x_pool)
+        mu_p = sd_p = None
+        if y_p is not None:
+            mu_p, sd_p = y_p.mean(), y_p.std()
+
+        z = np.full(tri_vals.shape, np.nan)
+        blocks_present = np.unique(blk[nz])
+        entries = []
+        max_div = 0.0
+        for b in blocks_present:
+            idx = np.flatnonzero(nz & (blk == b))
+            x_b = tri_vals[idx]
+            n_b = len(idx)
+            y_b, lam_b, kurt_b = self._bc(x_b)
+            fit = lam = post_kurt = divergence = None
+            if n_b >= MIN_BLOCK_PAIRS and y_b is not None and kurt_b <= KURT_OK:
+                z_b = (y_b - y_b.mean())/y_b.std()
+                fit, lam, post_kurt = "own", lam_b, kurt_b
+            elif (n_b < MIN_BLOCK_PAIRS or y_b is None) and lam_p is not None:
+                z_b = (stats.boxcox(x_b + shift_p, lmbda=lam_p) - mu_p)/sd_p
+                fit, lam, post_kurt = "pooled", lam_p, None
+            else:
+                z_b = stats.norm.ppf((stats.rankdata(x_b) - 0.5)/n_b)
+                fit, lam = "rank", None
+                post_kurt = kurt_b if y_b is not None else None
+            z[idx] = z_b
+            med, mad = np.median(z_b), stats.median_abs_deviation(z_b)
+            mu_b, sd_b = z_b.mean(), z_b.std()
+            if sd_b > 0:
+                divergence = float(abs(med-mu_b)/sd_b + abs(1.4826*mad - sd_b)/sd_b)
+                max_div = max(max_div, divergence)
+            entries.append({"block": self._block_names[int(b)], "n_pairs": int(n_b),
+                             "n_pairs_all": int((blk == b).sum()), "fit": fit,
+                             "lam": float(lam) if lam is not None else None,
+                             "post_kurt": float(post_kurt) if post_kurt is not None else None,
+                             "divergence": divergence, "edge_rate": None})
+        z[~nz] = np.nanmin(z[nz]) - 1.0
+
+        d = self.diagnostics.setdefault(name, {})
+        d["nonzero_frac"] = float(nz.mean())
+        d.update(dict(mode="boxcox-blocks", lam=float(lam_p) if lam_p is not None else None,
+                       post_kurt=float(stats.kurtosis(z[nz])), divergence=max_div))
+        if max_div > DIV_WARN:
+            d["warning"] = "estimator divergence: normalization imperfect"  # R6
+        d.setdefault("blocks", []).extend(sorted(entries, key=lambda e: e["block"]))
+
+        mask = (z > self.k_sigma) & nz                                   # R21: ONE global cut
+        return z, mask
+
+    def _record_block_rates(self, name, sel, tri_vals, blk):
+        """R21: fills `edge_rate` on the diagnostics blocks recorded by _cut,
+        called after the final selection mask (post budget-fallback) is known
+        and before the backbone union, so it measures significance not
+        connectivity."""
+        d = self.diagnostics.get(name, {})
+        entries = d.get("blocks")
+        if not entries:
+            return
+        nz = tri_vals > 0
+        if blk is None:                             # single-block run: one entry, all nz pairs
+            n_pairs = max(entries[0]["n_pairs"], 1)
+            entries[0]["edge_rate"] = float((sel & nz).sum() / n_pairs)
+            return
+        by_name = {}
+        for i in np.unique(blk):
+            by_name[self._block_names[int(i)]] = i
+        for e in entries:
+            b = by_name.get(e["block"])
+            if b is None:
+                continue
+            n_pairs = max(e["n_pairs"], 1)
+            e["edge_rate"] = float((sel & nz & (blk == b)).sum() / n_pairs)
+
+    def _cut(self, tri_vals, name):
+        """Dispatcher (R21): a single-label run short-circuits to _cut_pooled
+        unmodified (byte-identical to pre-R21); a multi-label run fits per
+        source-pair block and cuts once globally in z (_cut_blocks)."""
+        blk = self._blk if hasattr(self, "_blk") else self._block_codes()
+        if blk is None:
+            z, mask = self._cut_pooled(tri_vals, name)
+            d = self.diagnostics.setdefault(name, {})
+            entries = d.setdefault("blocks", [])
+            if z is not None:
+                lbl = self.source[0] if self.source[0] is not None else "default"
+                nz = tri_vals > 0
+                entries.append({"block": f"{lbl}|{lbl}", "n_pairs": int(nz.sum()),
+                                 "n_pairs_all": int(nz.size),
+                                 "fit": "own" if d.get("mode") == "boxcox" else "rank",
+                                 "lam": d.get("lam"), "post_kurt": d.get("post_kurt"),
+                                 "divergence": d.get("divergence"), "edge_rate": None})
+        else:
+            z, mask = self._cut_blocks(tri_vals, name, blk)
+        return z, mask
+
     @staticmethod
     def _backbone(sim, k=KNN):
         """Guarantee: boolean adj where every node keeps its k nearest (R7)."""
@@ -402,6 +585,7 @@ class ChunkGraph:
 
     def _edges_and_strength(self):
         n, tri = self.n, np.triu_indices(self.n, 1)
+        self._blk = self._block_codes()                                # R21
         z_sp, m_sp = self._cut(self.sim_sparse[tri], "sparse")
         A_sp = np.zeros((n, n), bool)
         if m_sp is None:   # kurtosis too high or bc failed -> budget by z rank
@@ -409,6 +593,7 @@ class ChunkGraph:
             m_sp = np.argsort(-(z_sp if z_sp is not None else self.sim_sparse[tri]))[:budget]
             sel = np.zeros(len(tri[0]), bool); sel[m_sp] = True; m_sp = sel
             self.diagnostics["sparse"]["mode"] += "+budget"
+        self._record_block_rates("sparse", m_sp, self.sim_sparse[tri], self._blk)   # R21
         A_sp[tri[0][m_sp], tri[1][m_sp]] = True; A_sp |= A_sp.T
         A_sp |= self._backbone(self.sim_sparse)                       # R7
         self.A_sparse = A_sp
@@ -421,6 +606,7 @@ class ChunkGraph:
                 order = np.argsort(-(z_de if z_de is not None else self.sim_dense[tri]))[:budget]
                 sel = np.zeros(len(tri[0]), bool); sel[order] = True; m_de = sel
                 self.diagnostics["dense"]["mode"] = self.diagnostics["dense"].get("mode","") + "+budget-matched"
+            self._record_block_rates("dense", m_de, self.sim_dense[tri], self._blk)  # R21
             A_de[tri[0][m_de], tri[1][m_de]] = True; A_de |= A_de.T
             A_de |= self._backbone(self.sim_dense)                    # R7
             self.A_dense = A_de
@@ -442,6 +628,7 @@ class ChunkGraph:
             self.strength = self.sim_sparse.copy(); self.blend_mode = "sparse-only"
             self.D = 1 - self.sim_sparse
         np.fill_diagonal(self.D, 0)
+        del self._blk                                                  # R21
 
     # ---------- SERVE ----------
     def query(self, q, k_anchor=2):
@@ -545,8 +732,9 @@ class ChunkGraph:
     # ---------- EXPORT ----------
     def edges(self, valid_from=None):
         """Guarantee: one row per undirected edge, carrying provenance, blended
-        strength, both raw sims, source documents, and bitemporal columns (R11).
-        Maps 1:1 onto an edge table; valid_to is None until superseded."""
+        strength, both raw sims, source documents, source pair (R20), and
+        bitemporal columns (R11). Maps 1:1 onto an edge table; valid_to is
+        None until superseded."""
         PROV = {1: "sparse", 2: "dense", 3: "both"}
         out = []
         for a, b in zip(*np.where(np.triu(self.A, 1))):
@@ -554,6 +742,7 @@ class ChunkGraph:
             out.append(dict(
                 src=a, dst=b,
                 src_doc=self.doc_id[a], dst_doc=self.doc_id[b],
+                src_source=self.source[a], dst_source=self.source[b],           # R20
                 provenance=PROV.get(int(self.provenance[a, b]), "sparse"),
                 strength=float(1 - self.D[a, b]),                     # R15
                 sim_sparse=float(self.sim_sparse[a, b]),

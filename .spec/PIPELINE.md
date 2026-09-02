@@ -23,25 +23,33 @@ E RESULTS   answer first; all evidence one expander deep                        
 
 ## Phase A — INGEST (build a run)
 
-`ingest_brown.py` → `chunkgraph.py` → `pg_store.py`. Offline, deterministic,
+`ingest_mixed.py` → `chunkgraph.py` → `pg_store.py`. Offline, deterministic,
 reproducible from stored params (`_PARAM_ATTRS`).
 
 | step | what happens | guard |
 |---|---|---|
-| chunk | the DOCUMENT is the unit. Lines per document → Box-Cox; a doc splits only above `hi = median + 2·MAD`, at paragraph bounds, short tail merged back. Never inside a word. `doc_id` kept | R17, R8 |
+| chunk | the DOCUMENT is the unit. Lines per document → Box-Cox, fitted **per source**; a doc splits only above its own source's `hi = median + 2·MAD`, at paragraph bounds, short tail merged back. Never inside a word. `doc_id` is source-prefixed | R17, R19, R8, R20 |
 | phrases | NPMI welds collocations into single tokens (`white_citizens`, `self_help`) before any scoring; Dunning-LLR reported as diagnostic only | R9 |
 | stoplist | one stoplist for build and serve, contraction-aware, read straight from the NLTK english file | R18 |
 | sparse arm | BM25-weighted term matrix, L2 rows, blockwise cosine chunk×chunk. BM25 over PPMI because BM25 corrects for length; PPMI would make long chunks hubs | R10 |
-| dense arm | pluggable embedder; default model2vec static vectors (MiniLM-distilled, 256d). Absent model ⇒ sparse-only still works | R5, R14 |
-| normalize | Box-Cox each similarity distribution so the two spaces are commensurable |  |
-| edges | k-sigma tail cut per space; budget-match fallback when kurtosis is high | R2 |
+| dense arm | pluggable embedder; default model2vec static vectors (MiniLM-distilled, 256d). Absent model ⇒ sparse-only still works — both shipped mixed runs (mixed-smoke, mixed-full) exercised exactly this path: sparse-only, dense disabled, R5 degradation observed live | R5, R14 |
+| normalize | Box-Cox per source-pair block (3 intra + 3 cross), so the two spaces AND the source pairs are commensurable | R21 |
+| edges | k-sigma tail cut per space; budget-match fallback when kurtosis is high; one global cut over the reassembled z (never per block) | R2, R21 |
 | backbone | per-node top-KNN unioned in from both spaces, so significance ranks but never isolates | R7 |
 | fuse | union with **provenance** `{sparse, dense, both}` on every edge; strength persisted bounded (`1 − D`) so path products cannot amplify | R3, R15 |
 | communities | Louvain (fixed seed) on the fused graph; per-community tf·idf keywords and a global medoid chunk | — |
-| persist | one `graph_run` + nodes/edges/communities/embeddings, atomic; re-ingest **supersedes, never deletes** (bitemporal `valid_from`/`valid_to`) | pg_store contract |
+| persist | one `graph_run` + nodes/edges/communities/embeddings, atomic, every node payload carries `source`; re-ingest **supersedes, never deletes** (bitemporal `valid_from`/`valid_to`) | pg_store contract, R20 |
 
 What a run guarantees downstream: every edge names its space(s), every chunk
-names its document, and the whole thing rebuilds byte-identically from params.
+names its document, every chunk names its source corpus, and the whole thing
+rebuilds byte-identically from params.
+
+**Measured — run `mixed-full`, 2026-09-01.** 10,369 docs → 10,826 chunks
+(wiki 7,818 / quotes 2,508 / brown 500), 373,215 edges, 27 communities, 669 s
+wall / 549 s fit, peak RSS 7.1 GB; `--wiki-stride 4` chosen against a
+12,000-chunk memory-derived target; intra-block edge-rate ratio 1.156 inside
+the 10x bound, all six blocks `fit=own`; sparse-only. Full per-source params
+and rationale: `specs/graph-explorer/design.md` §6.14 "Measured".
 
 ## Phase B — QUERY (the walk)
 
@@ -135,7 +143,9 @@ R = `chunkgraph.py` build guards · S = `sampler.py` walk guards ·
 W = `graph_tools.py` tool-surface guards · I = `interpret.py` model-boundary
 guards · X = `export_neo4j.py` export guards. Each guard is pinned by a test
 in `tests/`; §6.x references are `specs/graph-explorer/design.md`. This file
-describes; the guards govern. If they disagree, fix this file.
+describes; the guards govern. If they disagree, fix this file. R19–R21 govern
+multi-source ingest and are pinned in `tests/test_chunk.py` /
+`tests/test_pg_store.py`.
 
 
 ---

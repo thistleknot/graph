@@ -671,3 +671,69 @@ def test_stoplist_is_cheap_and_knows_contractions():
     assert dt < 1.0, f"stoplist import took {dt:.2f}s"
     assert {"didn", "wasn", "couldn", "the", "how"} <= stoplist._STOP
     assert "election" not in stoplist._STOP
+
+
+# ---- source metadata (R20)
+# DB-free: exercise the pure helpers directly, no `conn`/`run` fixtures.
+
+
+def test_source_of_battery():
+    assert gt.source_of({"source": "brown", "doc_id": "wiki/12"}) == "brown"
+    assert gt.source_of({"doc_id": "wiki/12"}) == "wiki"
+    assert gt.source_of({"doc_id": "ca01"}) is None            # today's Brown id
+    assert gt.source_of({}) is None
+    assert gt.source_of({"source": "", "doc_id": "wiki/12"}) == "wiki"
+
+
+def test_source_mix_counts_and_orders():
+    rows = [
+        {"source": "brown", "doc_id": "brown/ca01"},
+        {"source": "brown", "doc_id": "brown/ca02"},
+        {"doc_id": "wiki/7"},
+        {"doc_id": "ca03"},                                    # unsourced
+    ]
+    assert gt.source_mix(rows) == {"brown": 2, "wiki": 1}
+    assert list(gt.source_mix(rows)) == ["brown", "wiki"]      # count desc, name asc
+    assert gt.source_mix([{"doc_id": "ca01"}, {}]) == {}
+    assert gt.source_mix([]) == {}
+
+
+def test_format_source_mix():
+    assert gt.format_source_mix({}) == ""
+    assert gt.format_source_mix({"brown": 2, "wiki": 1}) == "brown 2 · wiki 1"
+
+
+# DB-backed, skip-tolerant: the degrade path on real pre-R20 data.
+
+
+def test_node_search_neighbors_walk_carry_none_source_on_pre_r20_run(conn, run):
+    n = gt.node(conn, run, HUB)
+    assert "source" in n and n["source"] is None
+    for h in gt.search(conn, run, "jury election county", k=5):
+        assert h.get("source") is None
+    for nb in gt.neighbors(conn, run, HUB, limit=10):
+        assert nb.get("source") is None
+    rows = gt.walk(conn, run, HUB, hops=2, cap=25)
+    assert rows
+    for r in rows:
+        assert r.get("source") is None
+        assert len(r["prov_path"]) == r["hop"], "W7 unbroken"
+
+
+def test_communities_touched_sources_empty_on_pre_r20_run(conn, run):
+    nbrs = gt.neighbors(conn, run, HUB, limit=100)
+    ords = [HUB] + [n["ord"] for n in nbrs]
+    touched = gt.communities_touched(conn, run, ords)
+    assert touched
+    for t in touched:
+        assert t["sources"] == {}
+    # pre-existing assertions still hold
+    hits = [t["hits"] for t in touched]
+    assert hits == sorted(hits, reverse=True)
+    assert sum(hits) <= len(ords)
+    for t in touched:
+        assert t["hits"] <= t["size"]
+
+
+def test_run_sources_empty_on_pre_r20_run(conn, run):
+    assert gt.run_sources(conn, run) == {}

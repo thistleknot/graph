@@ -84,7 +84,10 @@ One line each. Status is the only thing that changes in this file.
 - [TODO] synset-style word collapse: word-column correlation + knee/anomaly candidate detection + dual-measure certification (term-selection amendment 2026-08-31)
   _Files:_ chunkgraph.py, salient_grams.py  _Verify:_ 4-pair battery incl. antonym pair that must not merge
 - [TODO] A/B chunk-term weighting: BM25 vs length-normalized PMI (log-ratio keyness) + Dunning-G2 gate, brown-50, same edge pipeline; compare community coherence and walk reach
+  _Evidence (operator comparison, 2026-09-01):_ the quadrants are settled -- low-BM25/high-PPMI terms are garbage for a retrieval vocabulary (PMI's rare-event bias: tight one-context collocates, names, fragments); high-BM25/low-PPMI is where the real domain terms live. Direction: PMI does not replace BM25 as the term weight; at most PPMI is a DEMOTION filter on the vocabulary (drop the low-BM25/high-PPMI quadrant). The A/B's remaining open question is only whether that filter moves community coherence / walk reach.
   _Files:_ chunkgraph.py, tests/test_chunk.py  _Verify:_ side-by-side ingest report
+- [TODO] dual-run probe battery as process, not chat advice (operator, 2026-09-01): (1) cross-register prompts whose walk must cross a dense-only bridge (e.g. a quotes-anchored prompt reaching Brown fiction), asserting the source-changing hop has provenance=dense; (2) community source-mix audit -- per-cid node counts by source separating integrated cross-register topics from single-source islands (dual run collapsed 27 comms -> 16; the merge is the claim to falsify); (3) a `both`-provenance cross-source edge as the corroboration exhibit
+  _Files:_ tests/test_mixed_acceptance.py, cookbook/  _Verify:_ pytest tests/test_mixed_acceptance.py -q
 - [LATER] Leiden in place of Louvain at ingest (same API, better partitions; try on the next re-ingest against the coarse-7 problem)
 - [LATER] build-time DWPC term-mediated edges X.diag(deg^-0.4).X^T (graph-term-selection spec, approved, unbuilt)
 - [DONE] I8 excerpt by prompt: lexical+dense, paragraph cap at budget/3, anchors x4

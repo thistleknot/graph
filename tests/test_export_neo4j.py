@@ -212,3 +212,83 @@ def test_a_shared_term_connects_two_chunks_without_a_similar_edge(exported):
                 if frozenset((a, b)) not in sim:
                     return          # found one; the pattern reaches further than SIMILAR
     pytest.fail("no term-mediated pair outside the SIMILAR edge set")
+
+
+# ---- source column (R20)
+# DB-free: export() touches `conn` ONLY through `_fetch`, so `conn=None` is
+# safe once `_fetch` is monkeypatched.
+
+
+class _FakeRun:
+    def __init__(self, label="fake-run", run_id="00000000-0000-0000-0000-000000000000"):
+        self.label = label
+        self.run_id = run_id
+
+
+def _fake_fetch(chunks):
+    def _fetch(conn, run, min_tf):
+        return chunks, [(0, "term", 2)], []
+    return _fetch
+
+
+def test_source_column_all_sourced(monkeypatch, tmp_path):
+    chunks = [(0, "brown/ca01", "brown", "body a", None),
+              (1, "wiki/7", "wiki", "body b", None),
+              (2, "brown/ca02", "brown", "body c", None)]
+    monkeypatch.setattr(export_neo4j, "_fetch", _fake_fetch(chunks))
+    stats = export_neo4j.export(None, _FakeRun(), tmp_path)
+    nodes = list(csv.DictReader((tmp_path / "nodes.csv").open(encoding="utf-8")))
+    chunk_rows = {r["doc_id"]: r for r in nodes if r[":LABEL"] == "Chunk"}
+    assert chunk_rows["brown/ca01"]["source"] == "brown"
+    assert chunk_rows["wiki/7"]["source"] == "wiki"
+    assert chunk_rows["brown/ca02"]["source"] == "brown"
+    term_rows = [r for r in nodes if r[":LABEL"] == "Term"]
+    assert all(r["source"] == "" for r in term_rows)
+    assert stats["sources"] == {"brown": 2, "wiki": 1}
+    body = (tmp_path / "import.sh").read_text(encoding="utf-8")
+    assert "brown 2" in body
+    for r in nodes:
+        assert bool(r["id:ID(Chunk)"]) + bool(r["id:ID(Term)"]) == 1        # X1
+
+
+def test_source_column_none_sourced(monkeypatch, tmp_path):
+    """Today's shape: source=None, unprefixed doc_ids -- the pre-R20 degrade."""
+    chunks = [(0, "ca01", None, "body a", None),
+              (1, "ca02", None, "body b", None)]
+    monkeypatch.setattr(export_neo4j, "_fetch", _fake_fetch(chunks))
+    stats = export_neo4j.export(None, _FakeRun(), tmp_path)
+    nodes = list(csv.DictReader((tmp_path / "nodes.csv").open(encoding="utf-8")))
+    chunk_rows = [r for r in nodes if r[":LABEL"] == "Chunk"]
+    assert all(r["source"] == "" for r in chunk_rows)
+    assert stats["sources"] == {}
+    body = (tmp_path / "import.sh").read_text(encoding="utf-8")
+    assert "sources:" not in body
+    for r in nodes:
+        assert bool(r["id:ID(Chunk)"]) + bool(r["id:ID(Term)"]) == 1        # X1
+
+
+def test_source_column_mixed(monkeypatch, tmp_path):
+    chunks = [(0, "brown/ca01", "brown", "body a", None),
+              (1, "wiki/7", "wiki", "body b", None),
+              (2, "ca03", None, "body c", None)]
+    monkeypatch.setattr(export_neo4j, "_fetch", _fake_fetch(chunks))
+    stats = export_neo4j.export(None, _FakeRun(), tmp_path)
+    nodes = list(csv.DictReader((tmp_path / "nodes.csv").open(encoding="utf-8")))
+    chunk_rows = {r["doc_id"]: r for r in nodes if r[":LABEL"] == "Chunk"}
+    assert chunk_rows["brown/ca01"]["source"] == "brown"
+    assert chunk_rows["wiki/7"]["source"] == "wiki"
+    assert chunk_rows["ca03"]["source"] == ""
+    assert stats["sources"] == {"brown": 1, "wiki": 1}
+    for r in nodes:
+        assert bool(r["id:ID(Chunk)"]) + bool(r["id:ID(Term)"]) == 1        # X1
+
+
+# DB-backed, skip-tolerant: the degrade path against real pre-R20 data.
+
+
+def test_source_column_empty_on_real_pre_r20_export(exported):
+    _, stats, nodes, _ = exported
+    chunk_rows = [r for r in nodes if r[":LABEL"] == "Chunk"]
+    assert chunk_rows
+    assert all(r["source"] == "" for r in chunk_rows)
+    assert stats["sources"] == {}

@@ -13,3 +13,5 @@ __pycache__/
 community_labels.json      # model DRAFT labels; regenerate with label_communities.py
 trigram.zip                # duplicate of trigram/
 trigram/*.jpg              # photos of trigram.md; the markdown is the source
+.playbook/
+.tmp/

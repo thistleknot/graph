@@ -3,7 +3,9 @@
 Require: a ChunkGraph on which fit() has already run.
 Guarantee: one graph_run row plus its nodes/edges/communities/embeddings,
 committed atomically; any prior live run under the same label is superseded,
-never deleted.
+never deleted. Node payloads carry `source` and edge rows carry the source
+pair when the run was fit with labelled sources; absent otherwise
+(design.md §6.14 R20).
 """
 from __future__ import annotations
 
@@ -71,6 +73,7 @@ def save(cg, label: str, dsn: str = DSN, min_size: int = 5) -> str:
                 "COPY node (run_id, ord, doc_id, chunk_hash, body, attrs) "
                 "FROM STDIN"
             ) as cp:
+                sources = getattr(cg, "source", None)
                 for i, body in enumerate(cg.chunks):
                     attrs = {
                         "n_tok": len(cg.docs_tok[i]),
@@ -78,21 +81,32 @@ def save(cg, label: str, dsn: str = DSN, min_size: int = 5) -> str:
                         "disc": sorted(cg.disc[i]),
                         "tf": {t: int(f) for t, f in cg.tfs[i].items()},
                     }
+                    src = sources[i] if sources is not None else None
+                    if isinstance(src, str) and src:
+                        attrs["source"] = src                                  # R20
                     cp.write_row((run_id, i, cg.doc_id[i], _hash(body),
                                   body, Jsonb(attrs)))
 
             # ---- edges (already canonical src < dst from np.triu)
             with cur.copy(
                 "COPY edge (run_id, src, dst, provenance, strength, sim_sparse, "
-                "sim_dense, src_doc, dst_doc, valid_from, valid_to, ingested_at) "
-                "FROM STDIN"
+                "sim_dense, src_doc, dst_doc, valid_from, valid_to, ingested_at, "
+                "attrs) FROM STDIN"
             ) as cp:
                 for e in edges:
+                    edge_attrs = {}                                            # R20
+                    src_source = e.get("src_source")
+                    dst_source = e.get("dst_source")
+                    if isinstance(src_source, str) and src_source:
+                        edge_attrs["src_source"] = src_source
+                    if isinstance(dst_source, str) and dst_source:
+                        edge_attrs["dst_source"] = dst_source
                     cp.write_row((
                         run_id, e["src"], e["dst"], e["provenance"],
                         e["strength"], e["sim_sparse"], e["sim_dense"],
                         e["src_doc"], e["dst_doc"],
                         e["valid_from"], e["valid_to"], e["ingested_at"],
+                        Jsonb(edge_attrs),
                     ))
 
             # ---- communities
@@ -152,7 +166,9 @@ def load_edges(run_label: str, dsn: str = DSN) -> list[dict]:
         cur.execute(
             """SELECT e.src, e.dst, e.src_doc, e.dst_doc, e.provenance::text,
                       e.strength, e.sim_sparse, e.sim_dense,
-                      e.valid_from, e.valid_to, e.ingested_at
+                      e.valid_from, e.valid_to, e.ingested_at,
+                      e.attrs ->> 'src_source' AS src_source,
+                      e.attrs ->> 'dst_source' AS dst_source
                  FROM edge e JOIN live_run r USING (run_id)
                 WHERE r.label = %s AND e.valid_to IS NULL
                 ORDER BY e.src, e.dst""",
