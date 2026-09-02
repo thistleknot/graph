@@ -77,6 +77,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import warnings
 from datetime import datetime, timezone
 
 import graph_tools as gt
@@ -170,8 +171,13 @@ def excerpt(body: str, query: str, n_chars: int = MAX_CHUNK_CHARS, embed=None) -
             lo, hi = min(cos), max(cos)
             cosn = [(c - lo) / (hi - lo) if hi > lo else 0.0 for c in cos]
             score = [0.5 * a + 0.5 * b for a, b in zip(score, cosn)]
-        except Exception:
-            pass                                          # lexical only
+        except Exception as e:
+            # Graceful degrade to lexical-only scoring, but SAY SO (R2.3/R5
+            # honest-fallback): a silently absent dense signal is how short
+            # chunks quietly stop excerpting well.
+            warnings.warn(f"excerpt: dense scoring failed, lexical only "
+                          f"({type(e).__name__}: {str(e)[:120]})",
+                          RuntimeWarning, stacklevel=2)
     if max(score) <= 0:
         return _clip(body, n_chars)
     order = sorted(range(len(paras)), key=lambda k: (-score[k], k))
@@ -821,6 +827,8 @@ def reason(conn, run, bundle, terms: dict, concept: dict, embed=None,
         p = stage("premises", PREM_SYSTEM, text + "\n\nHYPOTHESIS: " + hyps[ci])
         prem = []
         for item in (p.get("premises") or [])[:8]:
+            if isinstance(item, str):                 # model drift: bare-string premise
+                item = {"text": item}
             txt = str((item or {}).get("text", "")).strip()
             if not txt:
                 continue
@@ -875,7 +883,14 @@ def reason(conn, run, bundle, terms: dict, concept: dict, embed=None,
             out["self_contradicting"] = [o for o in cited if o not in sup_ids]   # I10
         out["ok"] = True
     except Exception as ex:                                              # I4
-        out["error"] = f"{type(ex).__name__}: {str(ex)[:300]}"
+        tb = ex.__traceback__
+        site = ""
+        while tb:                                   # innermost in-repo frame
+            fn = tb.tb_frame.f_code.co_filename
+            if "site-packages" not in fn:
+                site = f" at {os.path.basename(fn)}:{tb.tb_lineno}"
+            tb = tb.tb_next
+        out["error"] = f"{type(ex).__name__}: {str(ex)[:300]}{site}"
     return out
 
 
@@ -909,6 +924,8 @@ def _reason_one_shot(out: dict, bundle, text: str, valid: set, ex_of: dict,
         out.update({"hypotheses": hyps, "hypothesis": hyps[ci], "why": str(obj.get("why", ""))[:300]})
         prem = []
         for item in (obj.get("premises") or [])[:8]:
+            if isinstance(item, str):                 # model drift: bare-string premise
+                item = {"text": item}
             txt = str((item or {}).get("text", "")).strip()
             if not txt:
                 continue
@@ -954,5 +971,12 @@ def _reason_one_shot(out: dict, bundle, text: str, valid: set, ex_of: dict,
             out["foreign"] = sorted(set(out["foreign"]) | set(jc["foreign"]))
         out["ok"] = True
     except Exception as ex:                                                  # I4
-        out["error"] = f"{type(ex).__name__}: {str(ex)[:300]}"
+        tb = ex.__traceback__
+        site = ""
+        while tb:                                   # innermost in-repo frame
+            fn = tb.tb_frame.f_code.co_filename
+            if "site-packages" not in fn:
+                site = f" at {os.path.basename(fn)}:{tb.tb_lineno}"
+            tb = tb.tb_next
+        out["error"] = f"{type(ex).__name__}: {str(ex)[:300]}{site}"
     return out

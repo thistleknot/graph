@@ -688,3 +688,51 @@ def test_i12_image_rejection_falls_back_to_numbers(live, walk, monkeypatch):
     assert rr["ok"], rr["error"]
     assert calls[0] and calls[1] is None, "must retry text-only after image rejection"
     assert "numbers" in rr["structure_note"]
+
+
+def test_one_shot_tolerates_bare_string_premises(monkeypatch):
+    """Model drift pin: `premises` returned as plain strings (not objects) must
+    parse as evidence-free premises, not crash with AttributeError ('str' has
+    no attribute 'get') after the hypothesis was already accepted."""
+    import json as _json
+    import interpret
+
+    reply = _json.dumps({
+        "hypotheses": ["Broken people cannot be fixed"],
+        "chosen": 0, "why": "the text says so",
+        "premises": ["Some people stay broken",            # bare string (drift)
+                     {"text": "The text asserts it", "ids": [1]}],
+        "evaluations": [{"index": 1, "verdict": "supports", "why": "stated"}],
+        "answer": "Yes [id=1]",
+    })
+    monkeypatch.setattr(interpret, "_call",
+                        lambda *a, **k: (reply, "test:stub"))
+    out = {"ok": False, "backend": None, "briefs": [1], "briefs_text": "",
+           "hypotheses": [], "hypothesis": "", "why": "", "premises": [],
+           "supported_ids": [], "answer": "", "cited": [], "foreign": [],
+           "self_contradicting": [], "stages": {}, "error": None}
+    got = interpret._reason_one_shot(out, None, "BRIEFS", {1}, {1: "[id=1] x"}, 5.0)
+    assert got["ok"] is True and got["error"] is None
+    assert got["hypothesis"] == "Broken people cannot be fixed"
+    texts = [p["text"] for p in got["premises"]]
+    assert "Some people stay broken" in texts
+    bare = next(p for p in got["premises"] if p["text"] == "Some people stay broken")
+    assert bare["ids"] == [] and bare["verdict"] == "unsupported"
+    assert got["supported_ids"] == [1]
+
+
+def test_excerpt_warns_when_dense_scoring_fails_and_still_excerpts():
+    """R2.3/R5 honest fallback: a broken embed degrades excerpt() to lexical
+    scoring WITH a RuntimeWarning, never silently and never raising."""
+    import warnings as _w
+    import interpret
+
+    body = "alpha beta gamma\n\ntotally unrelated paragraph\n\nalpha alpha beta"
+    def bad_embed(_texts):
+        raise ValueError("embed exploded")
+    with _w.catch_warnings(record=True) as caught:
+        _w.simplefilter("always")
+        out = interpret.excerpt(body, "alpha beta", 200, bad_embed)
+    assert "alpha" in out                       # lexical scoring still picked the hit
+    msgs = [str(c.message) for c in caught if c.category is RuntimeWarning]
+    assert any("dense scoring failed" in m and "ValueError" in m for m in msgs)
