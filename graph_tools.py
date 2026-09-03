@@ -35,6 +35,7 @@ TOOL SURFACE
 | chunk_terms         | the top-k of that, for titles                | k/ord  |
 | local_medoid        | most central retrieved chunk in a community  | 1/cid  |
 | cross_community     | retrieved chunks bridging retrieved cids     | set    |
+| second_order         | which terms keep this term's company (W17)   | k/term |
 
 GUARDS (EARS)
 W1  Every statement SHALL be run-scoped: run_id is the first predicate, so the
@@ -88,6 +89,22 @@ W16 Bridge discovery searches the WHOLE live edge set: best_path maximises
     prod(strength) x prod(deg^-damp) over interior nodes (Dijkstra on the
     negative log). It finds evidence the walk missed; pathways (W15) only
     scores what was already retrieved. Two jobs, two functions.
+W17 second_order_terms() SHALL apply the ladder as a gate-then-fallback chain,
+    in order: (a) Dunning-LLR co-occurrence gate (rung "llr") admits only
+    candidates whose 2x2 association with the target clears g2_gate, and
+    min_df floors BOTH the target and every candidate before anything else
+    runs; (b) Schutze context-centroid cosine (rung "centroid") ranks the
+    LLR survivors by shared company, not raw co-occurrence; (c) a skew
+    diagnostic over the survivors' cosine scores decides whether the
+    centroid ranking is trustworthy -- ONLY when it trips (|skew| >
+    skew_trip, and only past min_skew_n survivors) does Mann-Whitney AUC
+    re-rank the top_k (rung "auc"); otherwise the centroid ordering from (b)
+    stands untouched. WHERE a run has no dense space (W5), the ladder
+    degrades to the LLR ordering (rung "llr", cos/auc None) rather than
+    failing -- rungs (b)/(c) are a dense-only refinement, never a
+    requirement. The v0 nomen pool is a df-band + stoplist floor (df in
+    [min_df, max_df_frac*n], len > 2, not stoplisted); true PPMI demotion of
+    the high-frequency band is LATER, once entities v0's ppmi table exists.
 
 NOT HERE, DELIBERATELY
 - No LLM. No prompt, no model call, no NL->query translation.
@@ -1012,3 +1029,197 @@ def subgraph_embeddings(conn, run: RunHandle, ords: list[int]):
     E = np.array([np.fromstring(r["e"].strip("[]"), sep=",") for r in rows])
     E /= np.maximum(np.linalg.norm(E, axis=1, keepdims=True), 1e-12)
     return E, [r["ord"] for r in rows]
+
+
+# ------------------------------------------ second-order terms (W17)
+def llr(k11, k12, k21, k22) -> float:
+    """Dunning log-likelihood ratio (G2) on a 2x2 chunk-level co-occurrence
+    table. Basis: .tmp/second_order_probe.py (measured probe, 2026-09-02);
+    no governing REQ, W17 minted here."""
+    def h(*ks):
+        tot = sum(ks)
+        return sum(k * math.log(k / tot) for k in ks if k > 0)
+    return 2 * (h(k11, k12, k21, k22) - h(k11 + k12, k21 + k22)
+                - h(k11 + k21, k12 + k22) + h(k11 + k12 + k21 + k22))
+
+
+def second_order_terms(M, names, E, target, g2_gate: float = 10.83,
+                       min_df: int = 5, skew_trip: float = 2.0,
+                       min_skew_n: int = 8, top_k: int = 30) -> dict:
+    """Which terms keep TARGET's company (W17). Pure, array-in/array-out --
+    mirrors dendrite_sort's (M, names, ...) shape, no DB. Rows of M are
+    chunks, columns are terms, nonzero = present; E is the matching chunk
+    embedding matrix (or None/empty for a sparse-only run).
+
+    Ladder: (1) Dunning-LLR gate on chunk-level co-occurrence admits only
+    candidates significantly associated with the target and above min_df;
+    (2) Schutze context-centroid cosine ranks the survivors by shared
+    company; (3) a skew diagnostic over the survivors' cosine scores decides
+    whether that ranking is trustworthy -- only when it trips does
+    Mann-Whitney AUC re-rank the top_k. See W17.
+
+    Basis: .tmp/second_order_probe.py (measured probe, 2026-09-02); no
+    governing REQ, W17 minted here.
+
+    Require: target in names, else LookupError.
+    Guarantee: target never appears in its own ranked; sub-floor terms never
+      enter the candidate pool and land in dropped (sorted); a sub-floor
+      target returns ranked=[] with reason="target_df_below_min"; an empty
+      candidate pool returns ranked=[] with reason="no_candidates"; every
+      sort key is (-score, term) -- total and deterministic.
+    """
+    import numpy as np
+    names = list(names)
+    if target not in names:
+        raise LookupError(f"target {target!r} not in vocabulary")
+    ti = names.index(target)
+    M = np.asarray(M)
+    present = M != 0
+    n_chunks = present.shape[0]
+    df_arr = present.sum(axis=0)
+
+    dropped = sorted(names[j] for j in range(len(names))
+                     if j != ti and df_arr[j] < min_df)
+
+    if df_arr[ti] < min_df:
+        return {"target": target, "rung": "llr", "skew": 0.0, "ranked": [],
+                "n_candidates": 0, "n_survivors": 0, "dropped": dropped,
+                "reason": "target_df_below_min"}
+
+    candidates = [j for j in range(len(names)) if j != ti and df_arr[j] >= min_df]
+    n_candidates = len(candidates)
+    if not candidates:
+        return {"target": target, "rung": "llr", "skew": 0.0, "ranked": [],
+                "n_candidates": 0, "n_survivors": 0, "dropped": dropped,
+                "reason": "no_candidates"}
+
+    tidx = np.nonzero(present[:, ti])[0]
+    tset = set(tidx.tolist())
+    N = n_chunks
+
+    survivors = []                                    # (j, g2, member_idx)
+    for j in candidates:
+        idx = np.nonzero(present[:, j])[0]
+        m = set(idx.tolist())
+        k11 = len(tset & m)
+        k12 = len(tset) - k11
+        k21 = len(m) - k11
+        k22 = N - k11 - k12 - k21
+        g2 = llr(k11, k12, k21, k22)
+        if g2 >= g2_gate:
+            survivors.append((j, g2, idx))
+    n_survivors = len(survivors)
+
+    have_dense = E is not None and np.asarray(E).size > 0
+    if n_survivors == 0 or not have_dense:
+        ranked_rows = sorted(survivors, key=lambda x: (-x[1], names[x[0]]))[:top_k]
+        ranked = [{"term": names[j], "g2": float(g2), "df": int(df_arr[j]),
+                   "cos": None, "auc": None} for j, g2, _ in ranked_rows]
+        return {"target": target, "rung": "llr", "skew": 0.0, "ranked": ranked,
+                "n_candidates": n_candidates, "n_survivors": n_survivors,
+                "dropped": dropped, "reason": None}
+
+    E = np.asarray(E, dtype=float)
+    E = E / np.maximum(np.linalg.norm(E, axis=1, keepdims=True), 1e-12)
+
+    def centroid(idx):
+        v = E[idx].mean(axis=0)
+        n = np.linalg.norm(v)
+        return v / (n if n > 1e-12 else 1.0)
+
+    v_target = centroid(tidx)
+    scored = [(j, g2, idx, float(v_target @ centroid(idx))) for j, g2, idx in survivors]
+    ranked_centroid = sorted(scored, key=lambda x: (-x[3], names[x[0]]))
+
+    cos_vals = np.array([x[3] for x in ranked_centroid])
+    skew = 0.0
+    if len(cos_vals) > min_skew_n and cos_vals.std() > 0:
+        m3 = ((cos_vals - cos_vals.mean()) ** 3).mean() / cos_vals.std() ** 3
+        n_ = len(cos_vals)
+        skew = m3 * math.sqrt(n_ * (n_ - 1)) / max(n_ - 2, 1)
+    trip = abs(skew) > skew_trip
+
+    if not trip:
+        rows = ranked_centroid[:top_k]
+        ranked = [{"term": names[j], "g2": float(g2), "df": int(df_arr[j]),
+                   "cos": cos, "auc": None} for j, g2, _, cos in rows]
+        return {"target": target, "rung": "centroid", "skew": skew,
+                "ranked": ranked, "n_candidates": n_candidates,
+                "n_survivors": n_survivors, "dropped": dropped, "reason": None}
+
+    top_rows = ranked_centroid[:top_k]
+    is_t = np.zeros(N, dtype=bool)
+    if tset:
+        is_t[list(tset)] = True
+    m_ = len(tset)
+    reranked = []
+    for j, g2, idx, cos in top_rows:
+        s_all = E @ centroid(idx)
+        r = s_all.argsort().argsort() + 1
+        auc = float((r[is_t].sum() - m_ * (m_ + 1) / 2) / (m_ * (N - m_)))
+        reranked.append((j, g2, cos, auc))
+    reranked.sort(key=lambda x: (-x[3], names[x[0]]))
+    ranked = [{"term": names[j], "g2": float(g2), "df": int(df_arr[j]),
+               "cos": cos, "auc": auc} for j, g2, cos, auc in reranked]
+    return {"target": target, "rung": "auc", "skew": skew, "ranked": ranked,
+            "n_candidates": n_candidates, "n_survivors": n_survivors,
+            "dropped": dropped, "reason": None}
+
+
+def second_order(conn, run: RunHandle, target, ords: list[int] | None = None,
+                 nomen_pool: list[str] | None = None, top_nomens: int = 400,
+                 min_df: int = 5, max_df_frac: float = 0.5, k: int = 8) -> dict:
+    """Thin DB-facing assembler for second_order_terms (W17): builds M,
+    names, E from the corpus index and stored embeddings, then delegates.
+    No ladder logic lives here.
+
+    v0 nomen pool (when nomen_pool is None): terms with len > 2, not
+    stoplisted, and df in [min_df, max_df_frac*n_chunks], ranked by df desc
+    then term asc, truncated to top_nomens. This is a df-band + stoplist
+    floor, NOT PPMI -- the upper max_df_frac band is the PPMI demotion's
+    cheap proxy (a term carried by half the corpus co-occurs with
+    everything, so its PMI against any target is near zero).
+    # LATER: true PPMI demotion (entities v0 already computes ppmi in
+    # entity_edges); swap this band for it once that table exists.
+    Pass nomen_pool explicitly to bypass the floor entirely.
+
+    Basis: .tmp/second_order_probe.py (measured probe, 2026-09-02); no
+    governing REQ, W17 minted here.
+    """
+    import numpy as np
+    ix = corpus_index(conn, run)
+    if ords is None:
+        ords = sorted(ix["dl"])
+    E, kept = subgraph_embeddings(conn, run, ords)
+    if kept:
+        universe = kept
+    else:
+        universe = ords
+        E = None
+
+    if nomen_pool is None:
+        n = ix["n"]
+        cands = [t for t, d in ix["df"].items()
+                 if len(t) > 2 and t not in _STOP and min_df <= d <= max_df_frac * n]
+        cands.sort(key=lambda t: (-ix["df"][t], t))
+        pool = cands[:top_nomens]
+    else:
+        pool = list(nomen_pool)
+
+    names = list(pool)
+    if target not in names:
+        names = names + [target]
+    post = ix["post"]
+    M = np.zeros((len(universe), len(names)))
+    for j, t in enumerate(names):
+        p = post.get(t, {})
+        for i, o in enumerate(universe):
+            v = p.get(o)
+            if v:
+                M[i, j] = v
+
+    result = second_order_terms(M, names, E, target, min_df=min_df)
+    result["ranked"] = result["ranked"][:k]
+    result["n_nomens"] = len(pool)
+    result["universe"] = len(universe)
+    return result

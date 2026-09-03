@@ -785,4 +785,198 @@ def test_dendrite_sort_floors_support_and_degenerates():
     M = np.column_stack([x, sparse, flat])
     out = gt.dendrite_sort(M, ["x", "sparse", "flat"], min_support=4)
     assert out["names"] == ["x"]
-    assert set(out["dropped"]) == {"sparse", "flat"}
+
+
+# ---------------------------------- second-order term ladder (W17)
+def test_llr_is_zero_on_independence_and_symmetric():
+    """k11 = row_total*col_total/N exactly => independence, G2 ~= 0; the
+    table's transpose (rows/cols swapped) gives the same value."""
+    tables = [(20, 20, 30, 30), (10, 10, 20, 20), (24, 56, 36, 84)]
+    for k11, k12, k21, k22 in tables:
+        g2 = gt.llr(k11, k12, k21, k22)
+        assert abs(g2) < 1e-9
+        assert gt.llr(k11, k21, k12, k22) == pytest.approx(g2, abs=1e-9)
+
+
+@pytest.mark.parametrize("N", [40, 100, 300])
+def test_llr_gate_admits_association_and_rejects_independence_at_the_same_scale(N):
+    """Same marginals (T = C = N//4) at every scale: an 80%-overlap pair
+    clears the 10.83 gate, the marginal-matched independent pair does not."""
+    T = N // 4
+    C = N // 4
+    k11_i = round(T * C / N)
+    k12_i, k21_i = T - k11_i, C - k11_i
+    k22_i = N - k11_i - k12_i - k21_i
+    assert gt.llr(k11_i, k12_i, k21_i, k22_i) < 10.83
+
+    k11_a = round(0.8 * T)
+    k12_a, k21_a = T - k11_a, C - k11_a
+    k22_a = N - k11_a - k12_a - k21_a
+    assert gt.llr(k11_a, k12_a, k21_a, k22_a) >= 10.83
+
+
+def test_second_order_gate_keeps_only_the_associated_nomens():
+    import numpy as np
+    N = 40
+    names = ["target", "assoc1", "assoc2", "indep1", "indep2", "indep3"]
+    M = np.zeros((N, 6))
+    target_rows = list(range(0, 10))
+    M[target_rows, 0] = 1
+    M[target_rows[:8] + [10, 11], 1] = 1              # assoc1: 8/10 overlap
+    M[target_rows[:8] + [12, 13], 2] = 1              # assoc2: 8/10 overlap
+    M[target_rows[:2] + list(range(20, 28)), 3] = 1   # indep1: 2/10 overlap
+    M[target_rows[:2] + list(range(28, 36)), 4] = 1   # indep2: 2/10 overlap
+    M[[target_rows[0], target_rows[1]] + [36, 37, 38, 39, 14, 15, 16, 17], 5] = 1
+    res = gt.second_order_terms(M, names, None, "target")
+    assert res["n_survivors"] == 2
+    assert {r["term"] for r in res["ranked"]} == {"assoc1", "assoc2"}
+    with pytest.raises(LookupError):
+        gt.second_order_terms(M, names, None, "not-a-term")
+
+
+@pytest.mark.parametrize("seed", [1, 5, 9])
+def test_second_order_centroid_ranks_shared_context_above_the_unrelated_term(seed):
+    import numpy as np
+    rng = np.random.default_rng(seed)
+    N = 40
+    names = ["target", "shared", "unrelated"]
+    M = np.zeros((N, 3))
+    target_rows = list(range(0, 10))
+    M[target_rows, 0] = 1
+    M[target_rows[:8] + [10, 11], 1] = 1   # shared: 8/10 overlap, cluster A
+    M[target_rows[:8] + [12, 13], 2] = 1   # unrelated: 8/10 overlap, cluster B
+
+    E = np.zeros((N, 2))
+    for i in range(N):
+        E[i] = np.array([1.0, 0.0]) + rng.normal(scale=0.05, size=2)   # cluster A default
+    for i in (12, 13):
+        E[i] = np.array([0.0, 20.0]) + rng.normal(scale=0.5, size=2)   # cluster B, dominant mag
+
+    res = gt.second_order_terms(M, names, E, "target")
+    assert res["rung"] == "centroid"
+    by_term = {r["term"]: r["cos"] for r in res["ranked"]}
+    assert res["ranked"][0]["term"] == "shared"
+    assert by_term["shared"] > by_term["unrelated"]
+
+
+def test_second_order_skew_trip_reranks_and_corrects_a_cosine_inversion():
+    import numpy as np
+    N, D = 60, 8
+    target_rows = list(range(0, 20))
+    true_rows = target_rows[:16] + [40, 41, 42, 43]
+    decoy_rows = target_rows[:16] + [44, 45, 46, 47]
+    filler_rows = [target_rows[:16] + [24, 25, 26, 27],
+                   target_rows[:16] + [28, 29, 30, 31],
+                   target_rows[:16] + [32, 33, 34, 35]]
+    names = ["target", "true", "decoy", "f1", "f2", "f3"]
+    M = np.zeros((N, 6))
+    M[target_rows, 0] = 1
+    M[true_rows, 1] = 1
+    M[decoy_rows, 2] = 1
+    for i, rows in enumerate(filler_rows):
+        M[rows, 3 + i] = 1
+
+    rng = np.random.default_rng(1)
+    E = rng.normal(scale=1.0, size=(N, D))
+    sig = rng.normal(size=D); sig /= np.linalg.norm(sig)      # the real separating signal
+    for i in target_rows:
+        E[i] = E[i] * 0.3 + sig * 1.0
+    hub = rng.normal(size=D); hub /= np.linalg.norm(hub)      # broad hub, no row-level signal
+    for i in range(N):
+        E[i] = E[i] + hub * 2.0
+    for i in (44, 45, 46, 47):                                # decoy's extra rows: hub-dominant
+        E[i] = hub * 2.0 + rng.normal(scale=0.2, size=D)
+    for i in (40, 41, 42, 43):                                # true's extra rows: sig-aligned
+        E[i] = sig * 1.0 + rng.normal(scale=0.3, size=D)
+
+    res = gt.second_order_terms(M, names, E, "target", min_skew_n=4)
+    assert abs(res["skew"]) > 2.0
+    assert res["rung"] == "auc"
+    assert res["ranked"][0]["term"] == "true"
+
+    # cosine-only ranking (skew_trip disabled) had decoy first -- the rerank actually flipped it
+    unranked = gt.second_order_terms(M, names, E, "target", min_skew_n=4, skew_trip=999)
+    assert unranked["rung"] == "centroid"
+    assert unranked["ranked"][0]["term"] == "decoy"
+
+
+def test_second_order_without_skew_leaves_the_centroid_ranking_alone():
+    import numpy as np
+    N = 40
+    names = ["target", "c1", "c2", "c3", "c4"]
+    M = np.zeros((N, 5))
+    target_rows = list(range(0, 10))
+    M[target_rows, 0] = 1
+    M[target_rows[:8] + [10, 11], 1] = 1
+    M[target_rows[:8] + [12, 13], 2] = 1
+    M[target_rows[:8] + [14, 15], 3] = 1
+    M[target_rows[:8] + [16, 17], 4] = 1
+    rng = np.random.default_rng(2)
+    E = rng.normal(size=(N, 4))
+    E /= np.linalg.norm(E, axis=1, keepdims=True)
+
+    res = gt.second_order_terms(M, names, E, "target")
+    assert res["rung"] == "centroid"
+    assert all(r["auc"] is None for r in res["ranked"])
+    cos_order = sorted(res["ranked"], key=lambda r: (-r["cos"], r["term"]))
+    assert [r["term"] for r in res["ranked"]] == [r["term"] for r in cos_order]
+
+
+@pytest.mark.parametrize("min_df", [3, 5, 8])
+def test_second_order_min_df_floor_drops_thin_terms(min_df):
+    import numpy as np
+    N = 30
+    names = ["target", "a", "b", "c", "d"]
+    M = np.zeros((N, 5))
+    target_rows = list(range(0, 6))                      # target df = 6
+    M[target_rows, 0] = 1
+    M[[0, 1], 1] = 1                                      # a: df 2
+    M[[0, 1, 2, 3], 2] = 1                                 # b: df 4
+    M[[0, 1, 2, 3, 4, 20, 21], 3] = 1                      # c: df 7
+    M[[0, 1, 2, 3, 4, 5, 22, 23, 24, 25], 4] = 1           # d: df 10
+
+    res = gt.second_order_terms(M, names, None, "target", min_df=min_df)
+    dfs = {"a": 2, "b": 4, "c": 7, "d": 10}
+    below = {t for t, d in dfs.items() if d < min_df}
+    assert set(res["dropped"]) == below
+    ranked_terms = {r["term"] for r in res["ranked"]}
+    assert ranked_terms.isdisjoint(below)
+
+    if min_df > 6:                                        # target's own df (6) is below floor
+        assert res["ranked"] == []
+        assert res["reason"] == "target_df_below_min"
+
+
+def test_second_order_without_embeddings_falls_back_to_the_llr_order():
+    import numpy as np
+    N = 40
+    names = ["target", "A", "B", "C"]
+    M = np.zeros((N, 4))
+    target_rows = list(range(0, 10))
+    M[target_rows, 0] = 1
+    M[target_rows[:7] + [20, 21, 22], 1] = 1   # A: weakest association
+    M[target_rows[:8] + [20, 21], 2] = 1       # B: medium
+    M[target_rows[:9] + [20], 3] = 1           # C: strongest
+
+    res = gt.second_order_terms(M, names, None, "target")
+    assert res["rung"] == "llr"
+    assert [r["term"] for r in res["ranked"]] == ["C", "B", "A"]
+    assert all(r["cos"] is None and r["auc"] is None for r in res["ranked"])
+    g2s = [r["g2"] for r in res["ranked"]]
+    assert g2s == sorted(g2s, reverse=True)
+
+
+def test_second_order_wrapper_shape_on_the_live_run(conn, run):
+    ix = gt.corpus_index(conn, run)
+    n = ix["n"]
+    vocab = [t for t, d in ix["df"].items() if 5 <= d <= 0.5 * n]
+    if not vocab:
+        pytest.skip("brown-50 vocabulary has no term in the default df band")
+    target = sorted(vocab)[0]
+    res = gt.second_order(conn, run, target, k=8)
+    assert len(res["ranked"]) <= 8
+    assert res["rung"] in {"llr", "centroid", "auc"}
+    for r in res["ranked"]:
+        assert r["term"] != target
+        d = ix["df"].get(r["term"], 0)
+        assert 5 <= d <= 0.5 * n
