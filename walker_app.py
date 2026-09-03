@@ -536,9 +536,29 @@ with tab_walk:
                          help="ONE model call: hypothesis -> premises -> evaluate -> answer, "
                               "plus a verdict per retrieved chunk; sees the subgraph map"):
                 with st.spinner("one call: reasoning over briefs + judging every chunk ..."):
+                    ds_ = dendrite_state(str(run.run_id), q, _bnd=bnd,
+                                         _members=ws["term_members"])
+                    digest = None
+                    if ds_ is not None:
+                        src_counts: dict = {}
+                        for o in ds_["kept"]:
+                            c_ = cid_of.get(o)
+                            s_ = gt.source_of(gt.node(conn, run, o)) or "unlabelled"
+                            src_counts.setdefault(c_, {})
+                            src_counts[c_][s_] = src_counts[c_].get(s_, 0) + 1
+                        kw = {c_: (gt.community(conn, run, c_)["keywords"] or [])
+                              for c_ in cids}
+                        cset = {t for ts_ in terms.values() for t in ts_}
+                        uset = {t for ts_ in concept.values() for t in ts_}
+                        ws_ = sorted(w for _, _, w in ds_["cross"]) or [0.0]
+                        q3 = ws_[int(0.75 * (len(ws_) - 1))]
+                        strong = [b for b in ds_["cross"] if b[2] >= q3]
+                        digest = interpret.render_digest(
+                            touched, kw, src_counts, ds_["chunks"]["chains"],
+                            ds_["terms"]["chains"], cset, uset, strong, pw)
                     st.session_state["assess"] = (q, interpret.reason(
                         conn, run, bnd, terms, concept, embed=embed,
-                        judge=True, pw=pw))
+                        judge=True, pw=pw, digest=digest))
 
             got = st.session_state.get("assess")
             has_answer = False

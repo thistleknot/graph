@@ -748,3 +748,28 @@ def test_i12_walk_image_is_deterministic_with_term_labels(live, walk):
     png2 = interpret.render_walk_image(conn, run, b, pw)
     assert png1[:8] == b"\x89PNG\r\n\x1a\n"
     assert png1 == png2
+
+
+def test_render_digest_is_deterministic_and_carries_every_partition():
+    """I12 extension: the digest serializes communities, dendrite chains
+    (chunk ids elided past 20), tri-state term sets, bindings, pathways --
+    same inputs, same string."""
+    import interpret
+    touched = [{"cid": 8, "hits": 74, "size": 962}]
+    kw = {8: ["ship", "aircraft", "navy"]}
+    src = {8: {"wiki": 70, "brown": 4}}
+    long_chain = list(range(100, 130))
+    args = (touched, kw, src, [long_chain, [1, 2]],
+            [["carrier", "torpedo", "midway"]],
+            {"carrier", "midway"}, {"carrier", "navy"},
+            [(1, "carrier", 2.0), (1, "midway", 1.0), (2, "navy", 0.5)],
+            {"pairs": [{"a": 1, "b": 2, "dwpc": 0.5, "path": [1, 9, 2]}]})
+    d1 = interpret.render_digest(*args)
+    assert d1 == interpret.render_digest(*args)
+    assert "c8|74/962|wiki:70,brown:4|ship,aircraft,navy" in d1
+    assert "30|" in d1 and "..(15)>" in d1          # long chunk chain elided
+    assert "3|carrier>torpedo>midway" in d1
+    assert "both=carrier" in d1 and "walk_only=midway" in d1 \
+        and "global_only=navy" in d1
+    assert "1|carrier,midway" in d1                  # bindings sorted by weight
+    assert "1<->2 0.500|1>9>2" in d1

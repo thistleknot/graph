@@ -657,6 +657,55 @@ def render_structure(conn, run, bundle, pw: dict) -> str:
     return "\n".join(L)
 
 
+def render_digest(touched, keywords, src_counts, chunk_chains, term_chains,
+                  term_cond, term_unsup, bindings, pw) -> str:
+    """I12 extension (operator, 2026-09-02): the partitions the pictures draw,
+    serialized as compact pregrouped text so the model reasons over structure
+    directly, never over pixels. Deterministic: same inputs, same string.
+
+    Sections (one row per item, pipe-packed):
+      communities  cid|hits/size|sources|keywords
+      chunk_chains len|ids (dendrite order; >20 ids elided head..tail)
+      term_chains  len|terms (dendrite order, full)
+      term_sets    both / walk_only / global_only (tri-state membership)
+      bindings     chunk|its strongest terms (top-quartile tf*idf)
+      pathways     a<->b dwpc|best chain
+    """
+    L = ["== DIGEST (computed, not model-authored; ids are citable)"]
+    L.append(f"communities[{len(touched)}]: cid|hits/size|sources|keywords")
+    for t in touched:
+        c = t["cid"]
+        mix = ",".join(f"{s}:{n}" for s, n in sorted((src_counts.get(c) or {}).items(),
+                                                     key=lambda kv: -kv[1])) or "-"
+        L.append(f"  c{c}|{t['hits']}/{t['size']}|{mix}|"
+                 + ",".join((keywords.get(c) or [])[:5]))
+    L.append(f"chunk_chains[{len(chunk_chains)}]: len|ids (correlation-sorted)")
+    for ch in chunk_chains:
+        ids = [str(o) for o in ch]
+        row = ">".join(ids) if len(ids) <= 20 else \
+            ">".join(ids[:10]) + f"..({len(ids) - 15})>" + ">".join(ids[-5:])
+        L.append(f"  {len(ch)}|{row}")
+    L.append(f"term_chains[{len(term_chains)}]: len|terms (correlation-sorted)")
+    for ch in term_chains:
+        L.append(f"  {len(ch)}|{'>'.join(ch)}")
+    both = sorted(term_cond & term_unsup)
+    L.append("term_sets: both=" + (",".join(both) or "-")
+             + "; walk_only=" + (",".join(sorted(term_cond - term_unsup)) or "-")
+             + "; global_only=" + (",".join(sorted(term_unsup - term_cond)) or "-"))
+    by_chunk: dict = {}
+    for o, t, w in bindings:
+        by_chunk.setdefault(o, []).append((w, t))
+    L.append(f"bindings[{len(by_chunk)}]: chunk|strongest terms")
+    for o in sorted(by_chunk):
+        ts = [t for w, t in sorted(by_chunk[o], reverse=True)[:4]]
+        L.append(f"  {o}|{','.join(ts)}")
+    L.append(f"pathways[{min(len(pw.get('pairs', [])), 8)}]: a<->b dwpc|best chain")
+    for p in pw.get("pairs", [])[:8]:
+        L.append(f"  {p['a']}<->{p['b']} {p['dwpc']:.3f}|"
+                 + ">".join(str(o) for o in p["path"]))
+    return "\n".join(L)
+
+
 def render_walk_image(conn, run, bundle, pw: dict, dpi: int = 110) -> bytes:
     """I12: the same picture the operator sees -- left the walked subgraph
     (nodes coloured by community, best DWPC chains in red, anchors ringed),
@@ -861,7 +910,8 @@ def render_walk_image(conn, run, bundle, pw: dict, dpi: int = 110) -> bytes:
 
 def reason(conn, run, bundle, terms: dict, concept: dict, embed=None,
            timeout: float = 90.0, one_shot: bool = True, judge: bool = False,
-           structure: str = "image", pw: dict | None = None) -> dict:
+           structure: str = "image", pw: dict | None = None,
+           digest: str | None = None) -> dict:
     """Hypothesis -> premises -> evaluate -> answer, over community briefs.
     Never raises on transport or parse failure; every stage is kept (I11).
 
@@ -900,6 +950,11 @@ def reason(conn, run, bundle, terms: dict, concept: dict, embed=None,
             pw = gt.pathways(conn, run, bundle.sampled, sorted(set(anch)))
         out["pw"] = pw
         out["structure"] = render_structure(conn, run, bundle, pw)
+        if digest:
+            # pregrouped partitions ride as TEXT regardless of image mode --
+            # the model reasons over structure, never over pixels.
+            out["structure"] += "\n\n" + digest
+            text += "\n\n" + digest
         if structure == "image":
             try:
                 images = [render_walk_image(conn, run, bundle, pw)]
