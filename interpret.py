@@ -614,7 +614,11 @@ HYP_SYSTEM = (
     "corpus, each with its characteristic terms and two representative excerpts "
     "tagged [id=<n>]. Propose up to three candidate answers to the PROMPT as "
     "falsifiable statements the briefs could support or refute, then choose one "
-    "to pursue and say why in one line. Reply with ONE JSON object and nothing "
+    "to pursue and say why in one line. If the PROMPT asks you to FIND or "
+    "PROVIDE something (e.g. 'a quote about X') rather than asserting a fact, "
+    "each hypothesis MUST be a specific candidate taken from the shown evidence "
+    "-- the actual passage, named by its [id] -- never a restatement or "
+    "decomposition of the request itself. Reply with ONE JSON object and nothing "
     'else: {"hypotheses": ["<statement>", ...], "chosen": <index>, "why": "<one line>"}'
 )
 PREM_SYSTEM = (
@@ -640,7 +644,11 @@ ONE_SHOT_SYSTEM = (
     'You are reasoning over COMMUNITY BRIEFS: groups of related documents from a corpus, '
     'each with its characteristic terms and representative excerpts tagged [id=<n>]. Do '
     'all of the following in ONE reply. (1) Propose up to three candidate answers to the '
-    'PROMPT as falsifiable statements and choose one, saying why in one line. (2) List '
+    'PROMPT as falsifiable statements and choose one, saying why in one line. If the '
+    "PROMPT asks you to FIND or PROVIDE something (e.g. 'a quote about X') rather than "
+    'asserting a fact, each hypothesis MUST be a specific candidate taken from the shown '
+    'evidence -- the actual passage, named by its [id] -- never a restatement or '
+    'decomposition of the request itself. (2) List '
     'three to six premises the chosen statement needs, each STATED IN YOUR OWN WORDS '
     '(never a pasted quote), naming the excerpt ids (copied exactly) that would support '
     'it, or an empty list. If a DIGEST section is present, its chunk ids are citable too '

@@ -447,3 +447,14 @@ first (ids resolvable), then demand grounding, then measure, then move the layer
   bridge chunks; per-chunk salient terms along a pathway. Each query header states the question in
   operator English and the digest row it replaces. This is the contract a future Cypher-tool-equipped
   reasoner codes against.
+
+- [DONE] T16 Hypotheses for find-me-X prompts are candidates from the evidence
+  _Files:_ interpret.py, tests/test_interpret.py, .spec/specs/graph-explorer/design.md
+  _Verify:_ pytest tests/test_interpret.py -q && PYTHONPATH=. python .tmp/reason_digest_test.py mixed-full-dual B3
+  _Notes:_ The lever T13 recorded. Retrieval-shaped prompts ("a quote about X")
+  must yield hypotheses that ARE specific candidates drawn from the shown
+  evidence (the actual quotation, by id), never a restatement of the request.
+  E3 must hold (still cites #7).
+  _Lessons:_ B3 FIXED: hypothesis is now Kafka's "a book must be the axe for the frozen sea
+  within us", 3 premises all citing #2266 (quotes chunk), all supported, answer carries the
+  citation. E3 held (#7). 48 tests pass. The whole grounded-reasoning gap is closed at 9b.

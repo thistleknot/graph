@@ -838,6 +838,17 @@ def test_grounding_instruction_present_for_prem_and_one_shot():
         assert "empty ids list" in sysmsg or "empty list" in sysmsg
 
 
+def test_find_me_x_hypotheses_must_be_evidence_candidates():
+    """I14 amendment (T16): retrieval-shaped prompts ('a quote about X') must
+    yield hypotheses that ARE candidates from the shown evidence, never a
+    restatement of the request -- measured basis: B3's hypothesis degenerated
+    to the prompt verbatim and its meta-premises stayed ungrounded (T13)."""
+    for sysmsg in (interpret.HYP_SYSTEM, interpret.ONE_SHOT_SYSTEM):
+        assert "FIND or PROVIDE" in sysmsg
+        assert "specific candidate" in sysmsg
+        assert "restatement" in sysmsg
+
+
 def test_digest_only_id_is_accepted_not_foreign_without_judge(live, walk, monkeypatch):
     """I13 amendment: a premise citing an id that appears only in the digest
     (not in any brief's local/global/evidence set) must be accepted, not

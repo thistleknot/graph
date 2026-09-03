@@ -1033,6 +1033,16 @@ prompt change, not a digest or parse change. Recorded per T13's
 no-retuning law; the 9b model's instruction-following is a confound a stronger
 INTERPRET_MODEL would isolate.
 
+Hypotheses for find-me-X prompts are candidates from the evidence (I14
+amendment, 2026-09-03, T16 -- the lever T13 recorded, now taken). WHEN the
+PROMPT is a retrieval request ("a quote about X", "an example of Y") rather
+than a factual assertion, HYP_SYSTEM/ONE_SHOT_SYSTEM SHALL instruct that each
+hypothesis is a SPECIFIC candidate drawn from the shown evidence -- the actual
+quotation or passage, named by its [id] -- never a restatement or
+decomposition of the request itself. Premises then cite the ids holding the
+candidate. Propositional prompts are unaffected (E3's grounded behavior is
+the do-no-harm check).
+
 Community references (c<cid>) and pathway pairs named in the digest describe
 structure, not a single citable excerpt, and stay outside the numeric `ids`
 schema -- widening `ids` to accept them would need a second id namespace with
