@@ -1050,6 +1050,10 @@ Source steers nothing at query time. Anchors stay pure BM25 over the whole run.
 sqrt-allocation of anchors per source is queued LATER and built only on measured
 starvation (T9 records the evidence either way).
 
+**Closed 2026-09-03:** it was built, measured, and superseded — see §6.15 A. No
+sqrt code path exists in `sampler.py`; anchors are additive-only (S15/S16) and the
+ring share (S17) is the source lever.
+
 **4. Normalization is per source-pair block, the cut is global (R21).** With
 three sources each similarity space has six blocks — 3 intra (brown×brown,
 quotes×quotes, wiki×wiki) and 3 cross (brown×quotes, brown×wiki, quotes×wiki).
@@ -1185,6 +1189,10 @@ R21 WHEN similarities are normalized in a multi-source run, the Box-Cox fit SHAL
    has **no** supporting evidence at full scale and **stays parked** — this
    verdict is explicit so the queued item is not mistaken for pending work.
 
+   **Superseded 2026-09-03:** the item was un-parked on B-class evidence, built (T2),
+   and MEASURED harmful — it capped the majority source rather than flooring
+   minorities. §6.15 A carries the amendment and the numbers.
+
 6. **R5 degradation, stated as a limitation.** Both mixed runs were
    **sparse-only**: no embed model in the run environment, dense arm disabled
    at ingest. Every number in this subsection is therefore the sparse space;
@@ -1199,3 +1207,347 @@ R21 WHEN similarities are normalized in a multi-source run, the Box-Cox fit SHAL
    pinned by `test_merge_phrases_single_model_matches_per_doc_rebuild`. The law
    it implies: a per-document loop that constructs a corpus-wide model is a
    scale bomb no small-corpus test can see.
+
+### 6.15 Per-source anchors, titles, entities v0 (2026-09-03)
+
+Three amendments, one pass, so the code tasks that follow paste rather than re-decide.
+(A) anchors are allocated per source instead of taken globally; (B) the R20 payload
+contract gains `title`; (C) entities get a bipartite store of their own beside the chunk
+graph. Nothing here changes what a single-source run does.
+
+**A. Anchors are allocated per source, by sqrt(n_s) (S15, S16).**
+
+The measured finding is that a GLOBAL anchor count cannot fix register starvation.
+On run `bfa594df` (mixed-full-dual, 2026-09-02) raising `k_anchor` 3 -> 9 lifted the
+quotes share on register-explicit prompts from 14-18% to 23-29% but dropped C3's brown
+floor from 30% to 19%: extra global slots are spent in whichever source has the most
+candidates, so buying one register's recall sells another's. The frozen diagnostic set's
+rule is do-no-harm, so k=3 stood and the structural fix was queued. This is that fix.
+
+The allocation: `n_s` is the run's per-source chunk count from `gt.run_sources`, each
+source's share is `sqrt(n_s) / sum_t sqrt(n_t)`, and the total anchor budget `k_anchor`
+is split by largest-remainder rounding so the parts sum to the budget exactly. Sqrt and
+not linear: linear proportionality reproduces the global behaviour (wiki holds 72% of
+mixed-full's chunks and would hold 72% of the anchors), while equal split ignores that a
+larger source really does offer more candidates. Sqrt is the standard compromise between
+"size counts" and "every register gets a seat" -- the same shape as sqrt-allocation in
+stratified sampling, where it minimises variance across strata of unequal size.
+[empirical:cited -- k=3/k=9 numbers from sampler.py's DEFAULT_K_ANCHOR comment and
+diagnostic-prompts.md; the stratified-sampling rationale is convention, not a measurement
+on this corpus.]
+
+Selection is per source and merging is by score: each source runs its own BM25 search for
+its own `k_s`, the results are concatenated, deduplicated and ordered by score. R1's
+anchor validation (the matched query term must appear in the chunk's top DISC_M tf*idf
+terms) is applied exactly as today, per anchor, unchanged -- allocation decides how many
+anchors a source may contribute, never whether a weak one is admitted.
+
+A run with one source label -- including the literal `"default"` label R19 mints for a
+single-source run, and a pre-R20 run whose nodes carry no source at all -- takes the
+degenerate path: one group, the whole budget, one search, and an anchor list byte-identical
+to today's single global `gt.search(conn, run, query, k=k_anchor)`. That identity is a
+regression test, not a hope.
+
+`DEFAULT_K_ANCHOR` stays 3. Allocation changes WHERE the three anchors come from, not how
+many there are. If the frozen-set re-run shows B still under 40%, the recorded escalation
+lever is the run-level `k_anchor` knob plus the queued source-aware ring share -- with the
+measured per-source shares as the evidence -- and not a second structural change invented
+inline.
+
+**Amended 2026-09-03 (T7 measurement, run bfa594df-1238-448f-8e2b-d05136e6307a).**
+The sqrt split above is SUPERSEDED. Measured on the frozen set, it acts as a CAP on the
+majority source rather than a floor for minorities: on the 3-source dual run wiki is held
+to 1-of-3 anchors even on a 99%-wiki query, flipping A1 and E3 PASS -> FAIL, and B moved
+the wrong way (quotes 6-31% -> 2-25%, B3 at 2%). The amended law: an anchor earned
+competitively is never taken away -- the global BM25 top-k stands untouched, and minority
+sources receive at most one EXTRA anchor each, beyond `k_anchor`, only when their best hit
+is competitive (>= COMPETITIVE_FRAC of the global k-th score). Anchors are therefore
+do-no-harm only; they are not the B lever. The measured B lever is the ring lane: on
+B1-B5 the ring origin carries 8/24, 4/24, 0/24, 8/24, 4/24 quotes chunks per walk while
+walk-only quotes sits at 4-17%, so the queued source-aware ring share is promoted (S17):
+ring top-off slots are allocated across sources by the anchor list's source mix.
+[empirical:cited -- all numbers from T7's re-run, playbook.md T7 _Blocked:_ and
+diagnostic-prompts.md's 2026-09-03 calibration line.]
+
+**Outcome 2026-09-03 (T7c measurement, run bfa594df-1238-448f-8e2b-d05136e6307a).**
+The three-point B trajectory in one line: pre-campaign (global k=3) **6-31%** -> sqrt
+allocation (T2) **2-25%** -> additive anchors + S17 ring share (T7a/T7b) **8-29%**
+quotes_all; quotes_walk 4-12%; the gate is **>=40%** and none of the three cleared it.
+Ring fill of the 24 ring slots: B1 6, B2 6, B3 2, B4 6, B5 12.
+
+Do-no-harm ledger: A1 broke under sqrt and is **RESTORED** to PASS under additive
+anchors (n=77, wiki 76/77, `wiki/28410` anchored) -- the amended law works exactly as
+specified. **E3 is NOT restored** (n=72, wiki 68/72, brown 4/72): this is a *different*
+failure mode from the sqrt cap, since anchors no longer cap the majority -- the miss
+now sits upstream in ring/PPR steering. 13/20 rows PASS, matching the original
+calibration count; A2 stays KNOWN-FAIL.
+
+The disposition, stated as a stop, not a defect: per the 2-round ladder law the B lane
+is **STOPPED and handed to the operator**. Two fable-tier scopes were spent (sqrt ->
+additive+ring). No third re-scope, no inline tuning. What is pinned and green is the
+*mechanism* (S15/S16/S17, 63/63 sampler tests); what is open is the *B share target and
+E3*.
+
+**The sqrt closure sentence -- this one is load-bearing for T9's `_Verify:`:** sqrt
+allocation is DEAD. `allocate_anchors` and its per-source split are deleted from
+`sampler.py`; every remaining occurrence of the word "sqrt" in this spec and in
+`sampler.py`'s S15 docstring is superseded-history prose, retained deliberately so the
+measurement that killed it is not re-derived. A grep for "sqrt" returning hits is
+expected and means history preserved, not code shipped.
+[empirical:cited -- playbook.md T7/T7c _Blocked:_ and diagnostic-prompts.md's two
+2026-09-03 entries.]
+
+**B. `title` joins the node payload (R22, extending R20).**
+
+R20 fixed the law: parse at the boundary, store explicitly, never make a consumer scan
+text. `source` obeys it; the article title did not, and every consumer that wanted to show
+"Battle of Midway" instead of `wiki/28410` had to re-parse the leading `= Title =` line
+out of chunk text -- or, more often, showed the opaque id. `ingest_mixed.wiki_title()`
+already parses it once at the boundary; R22 carries that value through `fit()` into the
+persisted payload.
+
+Payload contract, extending the §6.14 R20 list:
+
+- `title` is the document's own title as a NON-EMPTY string. It is per-DOCUMENT: every
+  chunk of a document carries the same value.
+- Where a document has no title -- a source with no such notion (brown, quotes), a parse
+  returning None, or a run written before this guard -- the `title` key is **ABSENT** from
+  the payload. It is never present-and-null and never the empty string, so
+  `attrs.get("title")` being falsy has exactly one meaning.
+- Consumers display `title` where present and fall back to `doc_id` where absent, and a
+  pre-R22 run renders exactly as it does today. No re-ingest is required by this
+  amendment; titles appear on the next natural re-ingest.
+- Titles reach `fit()` as a list aligned with `docs` (the same shape as `sources`), whose
+  entries may be None.
+- Like `source`, `title` is metadata: it does not weight, quota, or filter retrieval.
+
+**C. Entities v0: a bipartite entity store beside the chunk graph (E1-E5).**
+
+v0 fixes the SHAPE, not the extraction. The population is the vocabulary the run already
+has -- the salient/phrase terms persisted in `node.attrs->'tf'` -- typed `"term_v0"`, built
+with deterministic NLP only: no LLM, no NER dependency. Real NER is v1 and replaces the
+population without changing the tables. Three tables, run-scoped like everything else
+(W1), created idempotently by the builder itself:
+
+    entities(run_id, entity_id, name, type)          -- PK (run_id, entity_id)
+                                                     -- UNIQUE (run_id, name)
+    mentions(run_id, ord, entity_id, cnt)            -- PK (run_id, ord, entity_id)
+                                                     -- FK (run_id, ord) -> node
+                                                     -- FK (run_id, entity_id) -> entities
+    entity_edges(run_id, a, b, npmi, ppmi, bm25)     -- PK (run_id, a, b), CHECK (a < b)
+                                                     -- a, b are entity_ids
+
+`mentions.ord` IS the chunk id: chunk identity in this schema is the run-local node
+ordinal, the same key `node`, `community.members` and the walker already use, so no new
+id space is minted (X1's lesson, one level down).
+
+Counting definitions, fixed here so the builder and its tests agree:
+
+    N          = number of chunks in the run
+    df(x)      = number of chunks with cnt(x) >= 1
+    joint(a,b) = number of chunks containing both a and b
+    p(x)       = df(x) / N ;  p(a,b) = joint(a,b) / N
+    pmi(a,b)   = log( p(a,b) / (p(a) * p(b)) )
+    npmi(a,b)  = pmi(a,b) / -log( p(a,b) )
+    ppmi(a,b)  = max(pmi(a,b), 0)
+    bm25(a,b)  = bm25_dir(a -> b) + bm25_dir(b -> a)        -- symmetric by construction
+    bm25_dir(x -> y) = sum over chunks c containing x of
+        idf(y) * tf(y,c) * (K1 + 1) / (tf(y,c) + K1 * (1 - B + B * dl(c) / avgdl))
+      with idf(y) = log(1 + (N - df(y) + 0.5) / (df(y) + 0.5)), tf from mentions.cnt,
+      dl(c) from node.attrs->'n_tok', and K1 = 1.5, B = 0.75 -- graph_tools.search's
+      constants, so the entity weighting and the retrieval weighting are the same ruler.
+
+Three weights on one row because the queued A/B between them (BM25 vs length-normalized
+PMI for chunk-term weighting) must be a column choice at read time, never a rebuild.
+
+**Acceptance.**
+
+(a) **Anchors + ring (amended 2026-09-03).** On any query where no minority source's
+    best hit clears 0.5x the global k-th score -- and on every single-source or pre-R20
+    run -- the anchor list is EQUAL, element for element and in order, to
+    `gt.search(conn, run, query, k=k_anchor)`. Where a minority source's best hit does
+    clear it, the anchor list is the global top-k PLUS that hit, ordered (-score, ord):
+    a 99%-wiki query keeps all its wiki anchors by construction (A1's shape, pinned as
+    a planted-score unit test). Ring: on an anchor list spanning >= 2 sources, ring
+    slots split by the anchor source mix (anchors {wiki 2, quotes 1}, budget 24 ->
+    {wiki 16, quotes 8}); on a one-source anchor list the ring fill is byte-identical
+    to today. Pinned by `pytest tests/test_sampler.py -q`.
+
+    **MEASURED 2026-09-03.** The byte-identity and planted-score clauses PASS --
+    `pytest tests/test_sampler.py -q`, 63/63, live DB, 0 skipped. The B-share target
+    (>=40%) and E3's >=50% combined share are **OPEN**, not met, and are no longer this
+    section's acceptance: they are handed to the operator per the ladder law.
+
+(b) **Title.** A `fit()` over two documents whose titles are `["Battle of Midway", None]`
+    persists `title == "Battle of Midway"` on every chunk of the first document and NO
+    `title` key on any chunk of the second; walker and digest render the title for the
+    first and `doc_id` for the second; and a payload with no `title` key at all (a pre-R22
+    run) renders exactly as it does today and raises nothing. Pinned by
+    `pytest tests/test_ingest_mixed.py tests/test_pg_store.py tests/test_interpret.py
+    tests/test_walker_render.py -q`.
+
+(c) **Entities v0.** On a planted corpus with hand-counted co-occurrence, `entities`,
+    `mentions` and `entity_edges` hold exactly the expected rows; every pair whose joint
+    count is below 5 has NO `entity_edges` row while every pair at or above 5 has one;
+    `npmi` matches the closed form above to 1e-9 on at least 3 planted pairs; and a second
+    build over the same run leaves that run's row counts identical and another run's rows
+    untouched. Pinned by `pytest tests/test_entities.py -q`.
+
+    **Shipped deviation, accepted 2026-09-03:** `entity_id` is `integer`, not
+    `smallint` -- 32k entities is inside reach on a full wiki run and the spec named no
+    width. Rationale recorded rather than reverted.
+
+Guards: S15, S16, S17 in `sampler.py`; R22 in `chunkgraph.py` (with `ingest_mixed.py`,
+`pg_store.py` and the display consumers honouring it); E1-E5 in `entities.py`. Bodies below
+are ASCII and are pasted into those docstrings unchanged -- spec text and docstring are the
+same bytes by construction, so there is nothing to transliterate and nothing to re-diff.
+
+S15 (amended 2026-09-03; supersedes the sqrt reallocation, which MEASURED on run
+    bfa594df flipped A1 and E3 PASS -> FAIL by capping wiki to 1-of-3 anchors on a
+    3-source run, and moved B 6-31% -> 2-25%.) BM25 anchors SHALL start from the
+    plain global search top-k_anchor, unchanged from today: a source that earned an
+    anchor competitively SHALL never lose it to allocation. WHERE the run reports
+    more than one source label, each source with n_s > 0 holding no anchor in that
+    global top-k MAY receive at most ONE extra anchor slot BEYOND k_anchor, filled
+    by that source's best hit ONLY IF that hit's BM25 score >= COMPETITIVE_FRAC
+    (0.5) of the global k_anchor-th hit's score. Extra anchors, never reallocated
+    ones. Every anchor, base or extra, SHALL still pass R1 validation unchanged:
+    the floor decides how many anchors a source MAY add, never whether a weak one
+    is admitted.
+
+S16 (amended 2026-09-03.) WHERE no minority hit clears S15's competitive threshold
+    -- and on every run reporting one source label, including R19's literal
+    "default" and a pre-R20 run carrying no labels -- the anchor list SHALL be
+    identical, element for element and in order, to today's single
+    gt.search(k=k_anchor): byte-identity whenever the allocation would change
+    nothing. The merged list (base top-k plus extras) SHALL be deduplicated by
+    ordinal and ordered by BM25 score descending, ties by ordinal ascending. Extra
+    anchors draw against ef as all anchors do (S10) and SHALL never displace a
+    base anchor.
+
+S17 (new 2026-09-03; promotes the queued source-aware ring share. Trigger: T7's
+    ring evidence, run bfa594df -- B1-B5 ring origin carries 8/24, 4/24, 0/24,
+    8/24, 4/24 quotes chunks per walk while walk-only quotes sits at 4-17%, so the
+    ring top-off, not the walk, is where register share is won or lost.) WHERE the
+    run reports more than one source label AND the anchor list spans more than one
+    source, the ring top-off budget (RING_TOP x RING_PER, S13) SHALL be allocated
+    across sources in proportion to the anchor list's source composition by
+    largest-remainder rounding, each source's slots filled by its strongest ring
+    candidates -- S13's candidate pool and strength ordering unchanged, only which
+    slots go to which source changes. A source with fewer candidates than slots
+    SHALL forfeit the shortfall to the remaining candidates in global strength
+    order, so the walk never shrinks. WHERE every anchor shares one source -- or
+    the run reports one label -- allocation SHALL be skipped and the ring fill
+    SHALL be identical to today's, element for element and in order.
+
+R22 WHEN a document carries a parsed title, every chunk of that document SHALL carry
+    `title` in its persisted node payload beside `doc_id` and `source`, and the title
+    SHALL be parsed ONCE at the ingest boundary (ingest_mixed.wiki_title() for
+    wikitext) and passed into fit() as a list aligned with `docs`. Extends R20's
+    contract and obeys R20's law: parse at the boundary, select by equality, never
+    scan chunk text downstream. WHERE a document has no title -- a source with no
+    such notion, a parse returning None, or a run written before this guard -- the
+    `title` key SHALL BE ABSENT rather than present and null or empty, and consumers
+    SHALL degrade to displaying `doc_id` rather than fail. Title is display and
+    selection metadata only: it SHALL NOT weight, quota, or filter retrieval.
+
+E1  Entities v0 SHALL be populated from the run's EXISTING salient/phrase vocabulary
+    (the terms already persisted in node.attrs->'tf'), typed "term_v0", by
+    deterministic NLP only -- no LLM call, no NER dependency. v0 exists to fix the
+    SHAPE, a bipartite entity-mention store beside the chunk graph, not to improve
+    extraction; real NER is v1 and SHALL replace the population without changing
+    these tables.
+
+E2  Every entities table SHALL be run-scoped with run_id as the first column and the
+    leading key predicate (W1), and rows SHALL cascade with graph_run. Chunk identity
+    SHALL be the run-local node ordinal `ord`, the key node, community.members and
+    the walker already use; no new chunk id space SHALL be minted (X1's lesson one
+    level down).
+
+E3  The builder SHALL be READ-ONLY against node, edge and community -- it reads
+    node.attrs and writes only entities, mentions and entity_edges -- and SHALL be
+    re-runnable: a second build over the same run REPLACES that run's rows and leaves
+    every other run's rows untouched.
+
+E4  WHERE a pair of entities co-occurs in fewer than MIN_JOINT_CHUNKS (= 5) chunks,
+    NO entity_edges row SHALL be written. NPMI on a joint count of one or two is
+    dominated by rare-event bias -- a pair occurring exactly once, together, scores
+    1.0 by construction -- so an unfloored ranking is a list of hapax coincidences
+    rather than of associations.
+
+E5  entity_edges SHALL carry npmi, ppmi and bm25 on the SAME row, computed over the
+    same chunk-level co-occurrence counts, so choosing between weightings is a column
+    choice at read time and never a rebuild. bm25 SHALL be the symmetric sum of both
+    directions and SHALL use graph_tools.search's constants (K1 = 1.5, B = 0.75), so
+    entity weighting and retrieval weighting share one ruler. a < b SHALL hold on
+    every row: one row per undirected pair, the same law `edge` carries.
+
+### 6.16 Export, live annotation, and the second-order term lane (2026-09-03)
+
+Article IX repair: these guards shipped in `export_neo4j.py` and `graph_tools.py`
+docstrings with no spec text anywhere in this file or PIPELINE.md. This subsection
+records what exists; it does not redesign anything.
+
+**A. The 4-file neo4j layout (X6-X8).** Measured rejection that forced it: the
+dual-ID single-file header (`id:ID(Chunk)` + `id:ID(Term)`) is rejected by current
+`neo4j-admin` as a duplicate property; the split into
+`chunks/terms/contains/similar.csv` imported 286,158 nodes / 6,462,576 rels in 42 s
+with `--multiline-fields=true`. Plus: a `;`-separated 256-dim embedding column read
+via `embedding::text` (dim measured from data, `vector_index.cypher` emitted iff any
+embedding was written), and `C<cid>` carried as a `:LABEL` column (10,820 labeled
+live). X1-X5 stand unchanged.
+
+**B. Walks are first-class in the mirror (X9, X10).**
+`(:Walk {prompt,n,edges,wcc,density,conductance})-[:ANCHORS]->(:Chunk)` and
+`(:Chunk)-[:PATHWAY {dwpc,of}]->(:Chunk)`, written from `gt.pathways` at retrieval
+time over stdlib `urllib` (interpret.py's house transport, no new dep). Two facts
+worth spec text because they cost a live failure: chunk ids are matched as
+`id: STRING` (X9) and Chunk nodes are **MATCHed, never MERGEd**, so the writer cannot
+mint phantom chunks; and neo4j refuses a schema statement sharing a transaction with
+writes, so `CREATE CONSTRAINT` goes over the wire in its own call before the write
+tx. Live demo: midway walk, density 0.67, conductance 0.80, top DWPC 0.138
+3439<->3552.
+
+**C. Second-order term ladder (W17).** The three rungs as shipped: Dunning-LLR gate
+on chunk-level co-occurrence, Schutze context-centroid cosine on survivors,
+Mann-Whitney AUC re-rank fired ONLY when the skew diagnostic trips -- named as the
+R2/R6 gate-then-fallback pattern applied at term level. Pool = the operator's
+high-BM25/low-PPMI keyness quadrant. Pinned by 9 planted-data tests + 1 live shape
+test.
+
+Guard bodies below are copied verbatim from the shipped docstrings -- spec text and
+docstring are the same bytes, the §6.15 convention.
+
+X6 Nodes SHALL be emitted one id-space per file. A single file carrying two
+   `:ID(...)` columns is rejected by current neo4j-admin; the 4-file layout is
+   what makes X1 structural rather than a per-row invariant.
+X7 The embedding column SHALL be `;`-separated tokens copied verbatim from
+   storage, of uniform length across the run, and `vector_index.cypher` SHALL
+   be emitted if and only if at least one vector was written.
+X8 A chunk with a community SHALL carry `C<cid>` as a second label in the
+   `:LABEL` column, so the imported database is partitionable without a
+   post-import pass.
+X9  The live writer SHALL MATCH Chunk nodes, never MERGE them, and SHALL address
+    them by `id` as a STRING -- the CSV import runs --id-type=STRING, so an integer
+    parameter matches nothing and the write silently succeeds having written nothing.
+X10 A walk SHALL be re-writable: (:Walk) is keyed on `prompt`, (:PATHWAY) on
+    (src, dst, of) with the ordinal pair normalized low->high, so a second write of
+    the same walk updates in place instead of duplicating. Any transport or MATCH
+    shortfall SHALL raise; there is no partial-write fallback.
+
+W17 second_order_terms() SHALL apply the ladder as a gate-then-fallback chain,
+    in order: (a) Dunning-LLR co-occurrence gate (rung "llr") admits only
+    candidates whose 2x2 association with the target clears g2_gate, and
+    min_df floors BOTH the target and every candidate before anything else
+    runs; (b) Schutze context-centroid cosine (rung "centroid") ranks the
+    LLR survivors by shared company, not raw co-occurrence; (c) a skew
+    diagnostic over the survivors' cosine scores decides whether the
+    centroid ranking is trustworthy -- ONLY when it trips (|skew| >
+    skew_trip, and only past min_skew_n survivors) does Mann-Whitney AUC
+    re-rank the top_k (rung "auc"); otherwise the centroid ordering from (b)
+    stands untouched. WHERE a run has no dense space (W5), the ladder
+    degrades to the LLR ordering (rung "llr", cos/auc None) rather than
+    failing -- rungs (b)/(c) are a dense-only refinement, never a
+    requirement. The v0 nomen pool is a df-band + stoplist floor (df in
+    [min_df, max_df_frac*n], len > 2, not stoplisted); true PPMI demotion of
+    the high-frequency band is LATER, once entities v0's ppmi table exists.

@@ -1,7 +1,7 @@
 <!-- Spec: top-level e2e pipeline description. Sources: steering/{product,structure,tech}.md,
      specs/graph-explorer/design.md 6.1-6.11, specs/graph-term-selection/requirements.md.
      Guard ids cited here live in module docstrings (R=chunkgraph, S=sampler, W=graph_tools,
-     I=interpret, X=export_neo4j) and each is pinned by a test. Operator request 2026-08-31. -->
+     I=interpret, X=export_neo4j, E=entities) and each is pinned by a test. Operator request 2026-08-31. -->
 
 # The pipeline, end to end
 
@@ -38,7 +38,7 @@ reproducible from stored params (`_PARAM_ATTRS`).
 | backbone | per-node top-KNN unioned in from both spaces, so significance ranks but never isolates | R7 |
 | fuse | union with **provenance** `{sparse, dense, both}` on every edge; strength persisted bounded (`1 − D`) so path products cannot amplify | R3, R15 |
 | communities | Louvain (fixed seed) on the fused graph; per-community tf·idf keywords and a global medoid chunk | — |
-| persist | one `graph_run` + nodes/edges/communities/embeddings, atomic, every node payload carries `source`; re-ingest **supersedes, never deletes** (bitemporal `valid_from`/`valid_to`) | pg_store contract, R20 |
+| persist | one `graph_run` + nodes/edges/communities/embeddings, atomic, every node payload carries `source` **and `title` where the document has one** (absent, never null); re-ingest **supersedes, never deletes** (bitemporal `valid_from`/`valid_to`) | pg_store contract, R20, R22 |
 
 What a run guarantees downstream: every edge names its space(s), every chunk
 names its document, every chunk names its source corpus, and the whole thing
@@ -58,7 +58,9 @@ deterministic, ~1 s.
 
 1. **Anchors** — BM25 search of the prompt against a per-run cached inverted
    index (Python, ~4 ms); top-k chunks seed the walk. No lexical hit ⇒ the walk
-   says so rather than walking nothing.
+   says so rather than walking nothing. Anchors are the plain global BM25 top-k,
+   plus at most one EXTRA anchor per source absent from that top-k when its best
+   hit clears 0.5x the k-th score — additive, never reallocated (S15/S16).
 2. **Expansion** — HNSW-style ef-search: a frontier expands along stored edges,
    path score = product of edge strengths, and it **stops itself** when the best
    frontier candidate cannot beat the worst held result at `ef` width (tuned
@@ -66,7 +68,9 @@ deterministic, ~1 s.
    the frontier, never the output. | S9–S12
 3. **Ring** — one degree out from the top-3 chunks: their strongest unseen
    edges enter at `parent score × strength`, ≤8 per parent, never outranking
-   the parent, never seeding further expansion. | S13
+   the parent, never seeding further expansion. Where the anchor list spans
+   >1 source the ring budget is split by the anchor source mix, largest-remainder,
+   shortfall forfeited to global strength order (S17). | S13
 4. **Bridges (discovery)** — for each pair among the top-3 chunks, the single
    strongest degree-damped path over the WHOLE run (Dijkstra on −log strength
    with a deg^-0.4 interior penalty). Chunks that path crosses which the walk
@@ -95,6 +99,7 @@ All computed on the Bundle, no model. `graph_tools.py`.
 | in between | retrieved chunks whose walked edges reach a different retrieved community — where the concepts meet | — |
 | shape | WCC count and sizes, largest-component share, density, conductance of the walk against the rest of the run (how leaky the neighbourhood is) | W15 |
 | pathways | idea-to-idea **DWPC**: enumerate simple paths ≤3 edges between anchor pairs, score each `Π strength × Π deg(node)^-0.4` (global degrees), sum per pair, keep the best chain for display. Hub correction is the point: many specific paths beat one path through a hub | W15, 6.11 |
+| second-order terms | domain token ↔ semantic nomen affinity: Dunning-LLR gate → Schütze context-centroid cosine → Mann-Whitney AUC re-rank only when the skew diagnostic trips | W17 |
 
 ## Phase D — INTERPRET (the only model phase)
 
@@ -132,7 +137,12 @@ diagnostics only surface when a signal is genuinely degraded.
 
 ## Periphery
 
-`export_neo4j.py` (X1–X5) exports nodes/CONTAINS/SIMILAR CSVs with provenance;
+`export_neo4j.py` (X1–X10) emits the 4-file neo4j-admin layout
+(chunks/terms/contains/similar.csv) with provenance, a 256-dim embedding column
+plus `CREATE VECTOR INDEX`, and `C<cid>` community labels; it also writes walks
+back into a live neo4j as `(:Walk)-[:ANCHORS]->(:Chunk)` and
+`(:Chunk)-[:PATHWAY]->(:Chunk)`. `entities.py` (E1–E5) builds the run-scoped
+bipartite entity store from the existing salient/phrase vocabulary.
 `label_communities.py` drafts model-authored community labels — drafts over a
 frozen cluster, run-scoped, never a join key. `graph3d.py`/`render_graph.py`
 render outputs.
@@ -141,7 +151,8 @@ render outputs.
 
 R = `chunkgraph.py` build guards · S = `sampler.py` walk guards ·
 W = `graph_tools.py` tool-surface guards · I = `interpret.py` model-boundary
-guards · X = `export_neo4j.py` export guards. Each guard is pinned by a test
+guards · X = `export_neo4j.py` export guards · E = `entities.py` entity-store
+guards. Each guard is pinned by a test
 in `tests/`; §6.x references are `specs/graph-explorer/design.md`. This file
 describes; the guards govern. If they disagree, fix this file. R19–R21 govern
 multi-source ingest and are pinned in `tests/test_chunk.py` /
