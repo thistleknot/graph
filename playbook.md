@@ -329,3 +329,21 @@ Everything else in the settled design stands.
 - Leiden in place of Louvain at ingest (next re-ingest, coarse-7 problem).
 - Dual-run probe battery as process (cross-register dense-bridge assertions,
   per-cid source-mix audit, both-provenance exhibit).
+
+## Layer 3 -- sequential (reopened B lane, operator 2026-09-03 "iterate until the failures are no longer failures")
+- [DONE] T10 Promote the LM source router + ring-pool injection (S18)
+  _Files:_ sampler.py, tests/test_sampler.py, .spec/specs/graph-explorer/design.md, .spec/specs/graph-explorer/diagnostic-prompts.md
+  _Verify:_ pytest tests/test_sampler.py -q && PYTHONPATH=. python .tmp/diag_rerun.py mixed-full-dual
+  _Notes:_ Probe-validated (4 rounds, .tmp/steer_probe_results.json R4_PROMOTE_lm_t0.2_eps0.05_FULL:
+  18/20, B1-B5 48-52%, zero regressions, E3 unchanged-fails-at-baseline). Three parts, spec BEFORE code
+  (Article IX): (1) additive per-source BM25 top-k=24 injection into the S17 ring pool, rescaled to pool
+  score range, never displacing; (2) router w_s = softmax_tau(mean over query tokens of
+  log(p_s(t)/p_corpus(t))), tau=0.2, p_s = occurrences/token add-0.5 smoothed, cached per run off
+  corpus_index postings; (3) ring mix = max(w_s, 0.05) renormalized, REPLACING the anchor mix -- the
+  anchor-mix floor is the measured cap, do not apply it. Steering levers (degree penalties, source
+  boosts, community caps) are falsified for this problem -- recorded in probe json rounds 1-2.
+  _Lessons:_ Port matched the probe 1:1 (no divergence to chase). 72/72 sampler tests pass (63 existing
+  + 9 new), do-no-harm test_mixed_acceptance.py 5/5 pass. diag_rerun.py mixed-full-dual: 18/20 PASS,
+  fails=['E3'], A2 KNOWN-FAIL, B1-B5 48-52% quotes_all (matches probe's 48-52% exactly), ring origin
+  22/24 every B row. Sprawl review: collapsed 0 / nothing to collapse -- select_ring/ring/gt.search all
+  extended in place per Gate A, no sibling selector or second retriever added.
