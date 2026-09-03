@@ -1587,8 +1587,40 @@ PMI for chunk-term weighting) must be a column choice at read time, never a rebu
     `smallint` -- 32k entities is inside reach on a full wiki run and the spec named no
     width. Rationale recorded rather than reverted.
 
+    (d) **Entity resolution v1.** On planted names, a near-duplicate pair sharing >= 2
+        co-occurrence neighbors merges and a near-duplicate pair sharing none does not;
+        the canonical of every component is its longest name (ties by ascending name);
+        the same input in a different order yields an identical mapping; a second
+        `resolve_entities` over the same run leaves that run's rows identical and
+        another run's rows untouched; and every `entities` row of the run carries a
+        non-NULL `canonical_id`. The embedding signal is off by default and contributes
+        nothing when unavailable. Pinned by `pytest tests/test_entities.py -q`.
+
+**D. Entity resolution v1: canonical ids from string + neighbor agreement
+(E6-E8, amended 2026-09-03).** E1 reserved the phrase "v1" for NER replacing the
+v0 population. This is a different v1 and does not claim that one: the population
+stays `term_v0`, extraction is untouched, and what is added is a *resolution*
+pass that decides which of those rows name the same thing. NER remains future
+work and E1's population clause stands unamended.
+
+The ladder is deterministic and runs on two independent signals, in this order:
+(1) string similarity over normalized entity names proposes candidate pairs;
+(2) a corroboration gate keeps a candidate only where the pair ALSO shares
+co-occurrence neighbors in `entity_edges`; (3) union-find over the survivors
+yields connected components, and each component's longest name (ties by ascending
+name) becomes its canonical entity. A third signal -- model2vec embedding
+agreement -- exists behind a flag that is OFF by default and stays off until
+measured. Surface forms are never rewritten: `entities.name` and `mentions` are
+untouched, and `canonical_id` is an added column, so the aliases are exactly the
+rows whose `canonical_id != entity_id`. Supersede, never delete.
+
+    entities(run_id, entity_id, name, type, canonical_id)   -- ADDed column
+
+Every row gets a non-NULL `canonical_id`: a singleton's canonical is itself, so a
+consumer joins on `canonical_id` unconditionally and never has to branch on NULL.
+
 Guards: S15, S16, S17, S18 in `sampler.py`; R22 in `chunkgraph.py` (with `ingest_mixed.py`,
-`pg_store.py` and the display consumers honouring it); E1-E5 in `entities.py`. Bodies below
+`pg_store.py` and the display consumers honouring it); E1-E8 in `entities.py`. Bodies below
 are ASCII and are pasted into those docstrings unchanged -- spec text and docstring are the
 same bytes by construction, so there is nothing to transliterate and nothing to re-diff.
 
@@ -1697,6 +1729,35 @@ E5  entity_edges SHALL carry npmi, ppmi and bm25 on the SAME row, computed over 
     entity weighting and retrieval weighting share one ruler. a < b SHALL hold on
     every row: one row per undirected pair, the same law `edge` carries.
 
+E6  Candidate pairs SHALL come from a NORMALIZED string similarity over
+    entities.name -- casefold, separators collapsed to single spaces, surrounding
+    punctuation stripped -- scored by difflib.SequenceMatcher.ratio(), stdlib only,
+    NO new dependency. A pair scoring below SIM_THRESHOLD (= 0.90) SHALL NOT be a
+    candidate. Candidate generation SHALL be blocked by a character-3-gram
+    inverted index plus the lossless length bound 2*min(la,lb)/(la+lb) >=
+    SIM_THRESHOLD: an unblocked pass is O(V^2) over a vocabulary that reaches six
+    figures on a full wiki run, which is not a tuning choice but the difference
+    between a pass that terminates and one that does not.
+
+E7  A candidate pair SHALL be merged ONLY WHERE it also shares at least
+    MIN_SHARED_NEIGHBORS (= 2) co-occurrence neighbors, taken as each entity's top
+    NEIGHBOR_TOP_K (= 25) entity_edges partners by bm25 among rows with ppmi > 0.
+    String similarity alone merges "united" into "untied"; requiring a SECOND,
+    independent signal -- that the two names keep the same company in the corpus --
+    is what makes a false merge cost two coincidences rather than one. An entity
+    with no qualifying edges SHALL merge with nothing.
+
+E8  Resolution SHALL be additive and idempotent. canonical_id SHALL be added by
+    idempotent DDL (ALTER TABLE ... ADD COLUMN IF NOT EXISTS), SHALL be non-NULL
+    on every row of the run -- an unmerged entity is its own canonical -- and SHALL
+    be chosen per connected component as the LONGEST name, ties broken by ascending
+    name, so the value does not depend on row order, dict order, or the order pairs
+    were discovered. No row and no surface form SHALL be deleted or rewritten: the
+    alias set of a canonical is exactly the rows carrying its canonical_id. The
+    embedding signal (model2vec, fixed threshold, deterministic) SHALL be reachable
+    only through an explicit flag defaulting to OFF, and where the model or the
+    dependency is absent it SHALL contribute no candidates rather than raise.
+
 ### 6.16 Export, live annotation, and the second-order term lane (2026-09-03)
 
 Article IX repair: these guards shipped in `export_neo4j.py` and `graph_tools.py`
@@ -1766,3 +1827,214 @@ W17 second_order_terms() SHALL apply the ladder as a gate-then-fallback chain,
     requirement. The v0 nomen pool is a df-band + stoplist floor (df in
     [min_df, max_df_frac*n], len > 2, not stoplisted); true PPMI demotion of
     the high-frequency band is LATER, once entities v0's ppmi table exists.
+
+### 6.17 Named graph metrics: the centrality lane (2026-09-03)
+
+Operator intent (book-adoption campaign): the graph has carried degree and DWPC and
+nothing else named. This adds the standard measures, each one named and pinned, so a
+later "which chunk actually matters" question is answered by a metric with parameters
+on the record rather than by whatever was convenient.
+
+**Node metrics (W18), whole-run, cached per run_id.** Betweenness — exact at or below
+2000 nodes, and the k-sample estimator with k=512 and seed=20260903 above it (mixed-
+full-dual is 10.8k nodes / 649k edges; exact is not affordable and an unseeded sample
+is not a measurement). PageRank — alpha 0.85, tol 1e-08, max_iter 200, weighted by
+edge strength. Triangles and the clustering coefficient — unweighted. Per-provenance
+degree split — sparse / dense / both, read from edge_sym's provenance column, summing
+to the node's degree. Betweenness and clustering are deliberately unweighted:
+networkx reads `weight` as a distance, and our strengths are similarities.
+
+**Community diagnostics (W19).** Per stored Louvain cid: density and conductance,
+same algebra as the walk-subgraph shape in §6.11 so the two are comparable — until
+now conductance existed only for the WALKED subgraph. Whole-run WCC count and sizes
+come with them, because a partition of a shattered graph is a number without a shape,
+and the run-wide summary is median and p90 (community sizes are heavy-tailed; a mean
+would report the tail).
+
+**Personalized PPR beside DWPC (W20).** pathways() gains a `ppr` column: personalized
+PageRank restarting on the walk's anchors (restart mass 0.15, tol 1e-10), per node and
+symmetrized per pair. It is ADDITIVE — DWPC still orders the pairs, every existing key
+keeps its name, and local_medoid's selection (W11) is untouched. Nothing consumes the
+new numbers yet; surfacing them in the digest, the mirror and the walker is T22, and
+any behaviour swap is a later measured decision, not a side effect of adding the
+measure.
+
+Guards: W18, W19, W20 in graph_tools. Guard bodies below are copied verbatim from the
+shipped docstrings -- spec text and docstring are the same bytes, the §6.15 convention.
+
+W18 node_metrics() SHALL compute the centrality lane over the WHOLE run and cache
+    it by (run_id, k, seed); `ords` filters the returned view, never the
+    computation, so two callers asking about different chunks get numbers off the
+    same graph. Betweenness is exact at or below BETWEENNESS_EXACT_MAX nodes and
+    the k-sample estimator above it, with k and seed PINNED as constants -- an
+    unseeded sample would make the number a coin flip and the cache a lie.
+    Betweenness and clustering are computed unweighted: networkx reads `weight`
+    as a DISTANCE and our strengths are similarities, so passing them would make
+    the strongest edges the longest. PageRank, where higher weight genuinely is
+    closer, uses strength, with alpha and tol pinned. Per-provenance degree
+    (sparse/dense/both) is read from edge_sym's provenance column and SHALL sum
+    to the node's degree.
+W19 community_metrics() SHALL score the STORED partition -- density and
+    conductance per cid read from community.members, never a re-partitioning of
+    an induced subgraph -- and SHALL report the whole-run WCC (component count
+    and sizes) beside it, because a modularity partition of a shattered graph is
+    a number without a shape. The run-wide summary is median and p90, not a mean:
+    community sizes are heavy-tailed and a mean reports the tail.
+W20 Personalized PageRank from the walk anchors is an ADDITIVE named column in
+    pathways(): every pair keeps its dwpc, the pair ordering stays DWPC's, and
+    `ppr` rides beside it. Two measures of connectedness, named separately, so a
+    later swap is a measured decision rather than a silent one. Nothing consumes
+    these metrics yet -- surfacing is T22's job.
+
+**Surfaced (T22, 2026-09-03).** The three consumers named above now read the metrics.
+render_digest() takes an optional `metrics` map ({cid: community row}) on the T11 resolver
+pattern -- absent, the digest is byte-identical; present, each communities row gains
+`|d=<density>|c=<conductance>` and the header says so. The pathways section switches to
+`dwpc/ppr` when the pairs carry W20's column, gated on the data rather than on a flag, so
+DWPC still orders the pairs and a pre-W20 caller renders unchanged. The mirror persists both:
+PATHWAY.ppr (X14) and CommunitySummary.density/.conductance (X15) -- on the community NODE,
+not on TOUCHED, since hits belongs to a walk and the partition metrics belong to the run. The
+walker enriches walk_state's `touched` rows once per run from community_metrics() and shows
+d/c in the community-map hovertext; PPR is not drawn there, because the walker draws chains
+and PPR is a pair quantity -- it reaches the operator through the digest and the mirror. No
+ordering, selection or weighting changed anywhere; the "behaviour swap is a later measured
+decision" clause above still stands unexercised.
+
+Campaign do-no-harm re-run (T23, 2026-09-03): frozen diagnostic 18/20 on mixed-full-dual, pass set unchanged (FAIL=[E3], KNOWN-FAIL=[A2]), B 48-52% intact.
+
+### 6.18 Ask the mirror: text2cypher at serve time (T20, 2026-09-03)
+
+The mirror (§6.16) is now rich enough that the interesting questions are not the ones
+render_digest was built to answer. T15 wrote those questions down as a cookbook --
+`cookbook/evidence_queries.cypher`, headers in operator English, bodies in Cypher --
+which is exactly the shape of a few-shot bank. So the cookbook becomes the prompt, and
+a model writes the seventh question's query.
+
+**The model generates queries, never graph content.** Rows come back from neo4j
+unedited; the query is shown beside them so any answer can be refuted by re-running it.
+Same posture as the draft labels (R5): model-authored, checkable, never an input to
+anything upstream. Narration over the rows is opt-in and marked draft; the module's
+deliverable is question -> (query, rows).
+
+**Read-only is enforced by parse, not by trust.** The generated string is normalized
+(string literals blanked, then comments stripped) and scanned for write clauses before
+it goes over the wire; a hit is a rejection, and the rejection text is fed back as a
+retry. A read-only *credential* would be the structural version of this and is the
+right eventual answer -- the compose file ships a single superuser, so the parse gate
+is what exists today, and it is stated here so the weaker guarantee is not mistaken
+for the stronger one.
+
+**The schema is a hand-written constant, not `apoc.meta.schema`.** Introspection
+describes whatever happens to be in the database -- a half-finished import, a stale
+run, a walk someone wrote by hand -- and makes the prompt a function of database
+state. The constant describes what export_neo4j's writers *guarantee*, which is the
+thing the query should be written against. The cost is that it must be amended when a
+writer's shape changes; that cost is named in Q3 so it lands in the same task that
+changes the writer (T22 adds CommunitySummary.density/conductance and PATHWAY.ppr --
+the constant moves with it).
+
+**Errors are the loop.** A failed query plus neo4j's own message go back into the next
+generation, at most three attempts, then an honest structured failure with every
+attempt kept. State is a plain dict through generate -> check -> execute -> retry; no
+framework, no agent loop, no new dependency. Transport is interpret._call (OpenRouter
+then Ollama, I5) and export_neo4j._tx (X9's wire), both injectable so the whole loop
+tests offline.
+
+GUARDS (EARS) -- copied verbatim from text2cypher.py's docstring, the §6.15 convention.
+
+Q1 A generated query SHALL be checked for write clauses and rejected BEFORE it is
+   posted. The check SHALL run on the query with string literals blanked and
+   comments stripped, so a write word inside a text literal is not a false
+   rejection and a write clause hidden behind a comment is not a false pass.
+   This module SHALL never construct a write statement of its own.
+Q2 Generation SHALL be capped at MAX_ATTEMPTS attempts. A failed attempt -- bad
+   JSON, a read-only rejection, or a neo4j error -- SHALL be recorded with its
+   query and its error and fed into the next attempt. Exhaustion SHALL return
+   ok=False with every attempt kept, and SHALL NOT raise (I4's posture).
+Q3 The schema SHALL be a hand-written constant mirroring export_neo4j's writers,
+   never apoc.meta introspection: the prompt must not be a function of database
+   state. WHERE a writer's node or relationship shape changes, the constant SHALL
+   be amended in the same task.
+Q4 The few-shot bank SHALL be parsed from cookbook/evidence_queries.cypher at call
+   time, never inlined as a copy. The cookbook is the one source of truth for what
+   a good query against this mirror looks like (T15).
+Q5 The model SHALL produce Cypher only. Rows SHALL be returned as the database
+   gave them; narration is opt-in, marked draft, and never edits a row.
+Q6 The schema text SHALL state that Chunk.id is a STRING. The CSV import runs
+   --id-type=STRING (X9), so a generated query comparing c.id to an integer
+   matches nothing and returns zero rows with no error -- a silent wrong answer,
+   which is the worst failure this module can have.
+Q7 Exactly ONE statement SHALL be executed per attempt. A generated string
+   carrying a second statement SHALL be rejected, not split.
+
+### 6.19 Alias-aware search: resolved entities expand the query (T21, 2026-09-03)
+
+T19 built entity resolution (E6-E8): a candidate pair passes a blocked string-similarity
+gate, then survives only where it also shares co-occurrence neighbors, and the merged
+component's canonical_id is the run's alias table. Nothing downstream read that table
+until now -- `search()` still tokenized the query and matched it against `entities.name`'s
+own vocabulary with no bridge between a surface form and its siblings.
+
+Expansion is opt-in (`expand_aliases`, default OFF) because it changes what a query
+matches, and a change to matching semantics is exactly the kind of thing that must be a
+measured decision, not a silent default. It is additive-never-displace: an alias-bearing
+token contributes its siblings as EXTRA OR-terms at full BM25 weight, and no original
+query term is ever dropped or discounted. The full-weight choice is deliberate --
+BM25 already prices a rarer alias down through idf and saturates its tf, so a
+hand-picked expansion discount would stack a second, unmeasured knob on top of the one
+the scorer already applies, and this campaign has three measured wins for
+additive-never-displace and none for re-weighting (see additive ring injection, S17/S18).
+
+GUARDS (EARS) -- copied verbatim from graph_tools.py's and sampler.py's docstrings,
+the §6.15 convention.
+
+W21 Alias expansion SHALL be opt-in (`expand_aliases`, default OFF) and ADDITIVE:
+    a query token that is itself an entity surface form SHALL contribute the other
+    names sharing its `canonical_id` as extra OR-terms at full BM25 weight, and NO
+    original query term SHALL be dropped or reweighted. Matching SHALL be exact
+    against `entities.name` -- `tokenize` and the entity vocabulary are the same
+    vocabulary, and a looser match reopens the false merges E7 exists to close.
+    WHERE resolution has not run for a run -- no `entities` table, no rows, or
+    `canonical_id` NULL -- the map SHALL read back empty and search SHALL be
+    byte-identical to the unexpanded call, never an error.
+
+S19 The sampler SHALL pass `expand_aliases` through the ANCHOR path only
+    (`ef_evidence` -> `ef_search` -> `anchor_hits` -> `gt.search`, and
+    `candidate_scores`'s legacy call), defaulting OFF, and SHALL record it in
+    `Bundle.params`. The S18 ring injection (`source_topk`) SHALL NOT expand: two
+    term sets changing in one measurement makes a diagnostic delta unattributable.
+
+MEASURED (2026-09-03) -- one no-op result and one real one, and why both are honest
+
+`entities` is populated for exactly one live run, `mixed-smoke` (23,925 entities,
+87,707 mentions, 596,283 entity_edges); `canonical_id` was NULL on every row there
+before this task (T19 resolved only planted fixtures). `mixed-full-dual` (10,830
+chunks) has no entities rows at all and cannot get them inside Article VII's bound:
+`entity_edges.pair_counts` enumerates every co-occurring term pair per chunk, which is
+2.47e9 pair slots at the default MIN_JOINT_CHUNKS=5 on this corpus, and raising the df
+floor barely helps -- 1.75e9 at df>=50, 1.45e9 at df>=100, 1.09e9 at df>=200. There is
+no floor that makes `build_entities` terminate here in minutes; a pair-enumeration path
+that scales to a 10.8k-chunk corpus is a follow-up for `entities.py`, on its own ledger
+row, not T21's.
+
+Diagnostic baseline (flag OFF, `mixed-full-dual`, frozen 20-row set): 18/20, FAIL=[E3],
+KNOWN-FAIL=[A2] -- the same pass set the ledger already records. Flag ON, same run: 18/20,
+byte-identical results row for row. This is the expected outcome from step 0's finding
+above (no entities table means the alias map reads back `{}` and W21's degrade-to-empty
+guard makes it a no-op) -- **it is recorded as unmeasured-vacuous, not measured-neutral,
+and the default stays False.** A no-op cannot be evidence for a flip.
+
+`resolve_entities` was run once against `mixed-smoke` (bounded invocation from `.tmp/`,
+`entities.py` untouched) to give the alias table real rows: the plain call completed in
+90.3s, well inside the 8-minute bound, over the full 23,925-entity population --
+{entities: 23925, candidates: 4995, merged_pairs: 505, clusters: 23426, aliases: 499}.
+`gt.alias_map` on that run now returns 905 entities carrying >= 1 alias, e.g. `aboard ->
+(board,)`, `according -> (accordingly,)`. The real behavioural evidence: query "aboard"
+(k=10) returns ords {610, 580, 584, 553, 11, 12, 558, 591, 628} unexpanded; with
+`expand_aliases=True` the same query returns {610, 3, 5, 6, 552, 12, 558, 591, 628, 601}
+-- 5 new ords (3, 5, 6, 552, 601) surfaced via the "board" sibling, and ord 610's own
+score rose from 4.501 to 5.770 as the alias term's postings stacked onto it. Expansion
+does something real where the alias table exists; the default stays False because the
+20-row diagnostic corpus is not that run.
+
+Campaign do-no-harm re-run (T23, 2026-09-03): frozen diagnostic 18/20 on mixed-full-dual, pass set unchanged (FAIL=[E3], KNOWN-FAIL=[A2]), B 48-52% intact.

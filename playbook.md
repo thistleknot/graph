@@ -470,3 +470,162 @@ first (ids resolvable), then demand grounding, then measure, then move the layer
   1528 NEXT_IN_CHAIN, 1189 chunks with salient, 11 CommunitySummary, 73 TOUCHED. Walker glue
   is best-effort inside the button (import inside the try; a down mirror = one warning, answer
   unaffected). test_walker_render 18/18.
+
+## Layer 6 -- parallel (book-adoption campaign, operator 2026-09-03 "architect it"; disjoint files, dispatch together, max 3)
+Basis: three-source mining review (docs/ companion code + Graph-Powered ML + KG+LLMs in Action),
+merged shortlist delivered 2026-09-03. Standing constraints: deterministic construction (no LLM,
+fixed seeds), do-no-harm = frozen diagnostic keeps 18/20 with the same pass set, spec before code.
+
+- [DONE] T18 Named graph metrics: centrality lane + community diagnostics in graph_tools
+  _Files:_ graph_tools.py, tests/test_graph_tools.py, .spec/specs/graph-explorer/design.md
+  _Verify:_ pytest tests/test_graph_tools.py -q
+  _Notes:_ One cohesive task, one file. (a) Node metrics: betweenness (k-sample approx above a
+  size floor), PageRank (fixed alpha/tol), triangles + clustering coefficient, per-provenance
+  degree splits (sparse/dense/both) -- cached via the existing _disk pattern, computed per run
+  from the live edge table. (b) Community diagnostics: per-Louvain-community density and
+  conductance (we have conductance per WALKED subgraph only, in pathways()), WCC sanity pass
+  (component count/sizes before trusting Louvain), run-wide distribution summary (median/p90).
+  (c) Personalized-PPR scores from walk anchors as a NAMED alternative beside DWPC in pathways()
+  output (additive column, does not replace DWPC). Do NOT change local_medoid's selection in this
+  task -- metrics land first, any behavior swap is a later measured decision. New W-guards.
+  All deterministic: no sampling without a fixed seed.
+  _Lessons:_ Pure/wrapper split held exactly (graph_metrics/partition_metrics/ppr are
+  conn-free, unit-tested on planted data; node_metrics/community_metrics are thin SQL +
+  cache wrappers). One test literally contradicted the algorithm: an endpoint-seeded PPR
+  on a path graph is NOT monotonically decreasing -- a degree-1 seed forwards its entire
+  mass onward every iteration (no self-loop), so its neighbour legitimately outscores it.
+  Verified byte-close against nx.pagerank(personalization=...) on the same graph before
+  concluding it was the test's premise at fault, not the implementation; re-seeded that
+  test at the path's center, where symmetry does guarantee monotonic decay outward.
+  105/105 in test_graph_tools.py (92 pre-existing + 13 new), 0 skips (DB was up). Consumer
+  smoke: test_export_neo4j.py 40/40, test_sampler.py + test_interpret.py 120/122 (2
+  pre-existing skips unrelated to this task) -- pathways()'s additive `ppr` key breaks
+  nothing downstream. Disk cache confirmed: key carries (run_id, k, seed), second call
+  hits disk in <10ms. Sprawl review: collapsed N / nothing to collapse -- extended
+  degrees(), full_adjacency(), pathways()'s shape block, and the _disk/_disk_put cache;
+  no new module, no new edge query beyond the one provenance GROUP BY.
+
+- [DONE] T19 Entity resolution v1: canonical ids from string + neighbor + embedding agreement
+  _Files:_ entities.py, tests/test_entities.py, .spec/specs/graph-explorer/design.md
+  _Verify:_ pytest tests/test_entities.py -q
+  _Notes:_ E-guard amendment first (entities.py docstring says v0 has no resolution -- this IS v1).
+  Deterministic ladder: (1) string-similarity edges over entity names (normalized token/char
+  similarity, threshold), (2) corroboration gate: merge only when the pair ALSO shares
+  high-PPMI/BM25 co-occurrence neighbors (two independent signals, fewer false merges),
+  (3) union-find/WCC over surviving edges -> canonical_id column, longest-name-as-canonical,
+  aliases retained, (4) optional third signal behind a flag: model2vec embedding agglomerative
+  clustering (fixed linkage/threshold = deterministic) -- flag off by default until measured.
+  Supersede-never-delete: canonical_id is additive; mention rows keep their surface forms.
+  _Lessons:_ pytest tests/test_entities.py -q -> 23 passed (13 incumbent + 10 new), 0
+  skipped with the DB up; DB-free half (15 tests) still green with the DSN unreachable.
+  Planted near-duplicate end-to-end: "co-occurrence"/"cooccurrence" co-present with
+  alpha/beta/delta on chunks 0-7 -> exactly 1 merged pair, canonical = the longer surface
+  form "co-occurrence", both entities/mentions rows survive untouched (supersede, never
+  delete). One real defect found and fixed mid-task: `ensure_schema`'s new
+  `ALTER TABLE ... ADD COLUMN IF NOT EXISTS canonical_id` takes an ACCESS EXCLUSIVE lock on
+  `entities` even when the column already exists (Postgres locks the relation before
+  checking) -- called on every build/resolve, it stalled behind this test file's own
+  long-lived run_a/run_b connections sitting idle-in-transaction after a bare SELECT.
+  Fixed by checking `information_schema.columns` first and skipping the ALTER once the
+  column is present, so only the very first build/resolve on a fresh DB pays that lock.
+  Not caught by the unit tests (small planted fixtures, low contention) -- found by running
+  the full suite twice back to back and inspecting `pg_stat_activity`. Live-run smoke on
+  `mixed-smoke` (633 chunks, vocab 23,925 terms) was NOT completed within budget: E6's
+  3-gram blocking at MAX_GRAM_BLOCK=2000 produces a large pair volume on real natural-
+  language vocabulary at that size -- flagged as OPEN, not a pytest failure, since the
+  spec's blocking bound is a design decision (E6), not something this task's brief covers
+  retuning.
+
+- [DONE] T20 Ask the mirror: text2cypher over neo4j with the cookbook as its few-shot bank
+  _Files:_ text2cypher.py, tests/test_text2cypher.py, .spec/specs/graph-explorer/design.md
+  _Verify:_ pytest tests/test_text2cypher.py -q
+  _Notes:_ No incumbent found -- new module (the one new file this campaign; justify in its
+  provenance header). Serve-time only: generates and runs read-only Cypher against the existing
+  mirror; construction path untouched, so the determinism commitment holds. Parts: (1) schema
+  string rendered from our OWN known schema (Chunk/Walk/PATHWAY/NEXT_IN_CHAIN/CommunitySummary +
+  properties), hand-written constant, not apoc.meta introspection; (2) few-shot bank parsed from
+  cookbook/evidence_queries.cypher (headers are already operator-English questions -- that was
+  T15's design); (3) generation via the interpret.py transport (_call) with ordered structured
+  output: relationships -> reasoning -> query (names edges before writing Cypher); (4) execute
+  via export_neo4j._tx with READ-ONLY enforcement (reject write clauses by parse before posting);
+  (5) error-capture retry loop: failed query + neo4j error text fed back, max 3 attempts, then
+  honest failure; (6) plain state dict through generate->execute->retry->narrate, no framework.
+  Offline tests with a fake transport + fake _tx; one live test skipping cleanly.
+  _Lessons:_ design.md's own 6.17 was already claimed by T18 (running in parallel) by the
+  time this landed -- filed as 6.18 instead, section body unchanged. Live test ran (not
+  skipped): this environment already had neo4j up and OPENROUTER_API_KEY set, so all 13
+  tests exercised for real -- example: "What did the walk anchor on, and where did the
+  anchors sit?" -> `MATCH (w:Walk {prompt: $prompt})-[:ANCHORS]->(c:Chunk) RETURN c.id,
+  c.source, c.salient, labels(c) AS communities` -> 8 rows, 1 attempt. Baseline
+  export_neo4j.py/interpret.py untouched (git diff --stat confirms); only the one new
+  module plus its test file were added. 12 offline + 1 live = 13 total collected (task
+  said "12 offline + 1 live"; the write-clause rejection test is parametrized over 9
+  cases, so the true count is 21 -- verified all green).
+
+## Layer 7 -- sequential (surfacing + measurement; each step eats the last)
+- [DONE] T21 Alias-aware search: resolved entities expand the query
+  _Files:_ graph_tools.py, tests/test_graph_tools.py, sampler.py, tests/test_sampler.py,
+  .spec/specs/graph-explorer/design.md, .tmp/resolve_smoke_aliases.py (scratch), .tmp/diag_rerun.py (scratch)
+  _Verify:_ pytest tests/test_graph_tools.py tests/test_sampler.py -q && PYTHONPATH=. python .tmp/diag_rerun.py mixed-full-dual
+  _Lessons:_ Added gt.expand_terms + gt.alias_map (W21) and threaded expand_aliases=False
+  through gt.search and the sampler's anchor path (anchor_hits/ef_search/ef_evidence/
+  candidate_scores, S19) -- NOT source_topk, kept separate per the subplan's do-not-conflate
+  ruling. 11 new tests (7 graph_tools + 4 sampler); full suite 188/188 green (was 177 before
+  this task's additions per git diff). Diagnostic baseline on mixed-full-dual: 18/20,
+  FAIL=[E3], KNOWN-FAIL=[A2] -- matches the ledger. Flag-ON same run: byte-identical 18/20,
+  the expected no-op (mixed-full-dual carries no entities table) -- recorded in design.md
+  §6.19 as unmeasured-vacuous, NOT measured-neutral; default left False. Real evidence came
+  from mixed-smoke instead: ran entities.resolve_entities via a bounded .tmp/ script (entities.py
+  untouched) -- plain call finished in 90.3s (well under the 8-min bound) over the full
+  23,925-entity population -> {candidates: 4995, merged_pairs: 505, clusters: 23426,
+  aliases: 499}. gt.alias_map on that run returns 905 aliased entities, e.g. aboard->(board,).
+  Caught and fixed during measurement: search() originally round-tripped `terms` through
+  expand_terms(..., {}) even on an empty alias map, which re-sorted the token list and
+  perturbed float BM25 summation order by ~1e-15 -- a real byte-identity break the test
+  suite caught. Fixed by skipping expand_terms entirely when alias_map is empty; re-verified
+  row-for-row against the frozen 20-row set (only the recorded `knobs` dict differs, every
+  score/mix/community/verdict field is exact).
+  Query "aboard" k=10: unexpanded ords {610,580,584,553,11,12,558,591,628}; expanded
+  {610,3,5,6,552,12,558,591,628,601} -- 5 new ords via the "board" sibling, ord 610's score
+  rose 4.501->5.770. Sprawl review: collapsed 0 / nothing to collapse -- two functions in
+  graph_tools.py plus one kwarg threaded through four existing sampler signatures, no new
+  module, no second BM25 loop. entities.py received zero edits from this task (T19's
+  own uncommitted diff there predates T21 and is untouched by it).
+
+- [DONE] T22 Surface the new metrics: digest, mirror, walker
+  _Files:_ interpret.py, tests/test_interpret.py, export_neo4j.py, tests/test_export_neo4j.py,
+  walker_app.py, tests/test_walker_render.py, .spec/specs/graph-explorer/design.md
+  _Verify:_ pytest tests/test_interpret.py tests/test_export_neo4j.py tests/test_walker_render.py -q
+  _Notes:_ Consumes T18: (a) digest communities rows gain density/conductance; pathways section
+  gains the PPR column beside dwpc; (b) write_digest persists them (CommunitySummary.density/
+  conductance, PATHWAY.ppr) -- extend X-guards; (c) walker hovertext/summary line shows them.
+  Additive everywhere; existing digest tests keep passing (resolver-style optional args pattern).
+  _Lessons:_ All additive, on the T11 resolver pattern (optional trailing arg, gate on data
+  presence not a flag) -- render_digest's metrics arg and pathways' ppr both degrade to
+  byte-identical output when absent, pinned by explicit tests. export_neo4j guards landed as
+  X14 (PATHWAY.ppr, null-on-absent) and X15 (CommunitySummary.density/.conductance on the NODE,
+  not TOUCHED). walker_app's walk_state does the single mutation (enrich touched in place from
+  gt.community_metrics()), so render_digest/write_digest/draw_communities need zero extra
+  plumbing. PPR intentionally not drawn on the walker map per the subplan's rejected-alternatives
+  note (walker draws chains, PPR is a pair quantity) -- it surfaces via digest + mirror only.
+  111 passed, 2 skipped (pre-existing, unrelated) on the full three-file verify. Sprawl review:
+  collapsed 0 / nothing to collapse -- every touch point was an incumbent function extended in
+  place, no new module or renderer.
+
+- [DONE] T23 Reconcile and measure: Article IX close for the adoption campaign
+  _Files:_ .spec/specs/graph-explorer/design.md, .spec/PIPELINE.md, .spec/specs/graph-explorer/playbook.md
+  _Verify:_ PYTHONPATH=. python .tmp/diag_rerun.py mixed-full-dual && pytest tests/ --ignore=tests/test_mixed_acceptance.py -q
+  _Notes:_ Frozen diagnostic must hold 18/20 with the SAME pass set (do-no-harm across the whole
+  campaign); record any deltas beside the guards; spec playbook rows flip with evidence;
+  PIPELINE.md picks up the metric lane + text2cypher; mirror re-backfilled (.tmp/neo4j_backfill.py)
+  so the 20 walks carry the new properties.
+  _Lessons:_ Diagnostic frozen at 18/20 on mixed-full-dual, pass set unchanged (FAIL=[E3],
+  KNOWN-FAIL=[A2], B 48-52%) — do-no-harm line added beside design.md §6.17 and §6.19. Backfill
+  (.tmp/neo4j_backfill.py mixed-full-dual) wrote all 20 walks successfully (per-row walk+digest
+  dicts printed, e.g. A1 n=88 edges=2184 density=0.57 conductance=0.80); the script's own
+  totals-tail then hit a pre-existing bug unrelated to the writers (`xn._tx` returns a list,
+  script does `res["results"]` as if it were a dict) — not patched, per scope. Spec playbook.md
+  gained a "book-adoption campaign" section flipping W18-W20/E6-E8/Q1-Q7/W21-S19 to [DONE] with
+  evidence, plus 2 new [OPEN] rows (E6 scale bound, alias-default-OFF rationale). PIPELINE.md
+  gained the named-metrics row, the ppr-beside-dwpc note, the entities/text2cypher periphery
+  paragraph, and Q in the guard-letter legend.

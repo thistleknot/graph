@@ -138,3 +138,27 @@ One line each. Status is the only thing that changes in this file.
 - [DONE] community term pool cached per run (9.2 s -> 0.4 s); index + pool pickled by run_id
 - [DONE] stoplist.py: NLTK english file read directly (import 11.6 s -> 0.5 s)
 - [DONE] reason() one-shot by default (4 calls -> 1); provider sort=throughput; 86 s -> 9 s total
+
+## book-adoption campaign (T18-T22, design 6.17-6.19, reconciled T23 2026-09-03)
+- [DONE] named metrics lane (W18-W20): betweenness/PageRank/triangles/per-provenance
+  degree, community density+conductance+WCC, PPR beside DWPC in pathways() -- additive,
+  local_medoid untouched; 105/105 test_graph_tools.py; surfaced into digest/mirror/walker (T22)
+- [DONE] entity resolution v1 (E6-E8): string-similarity + co-occurrence corroboration +
+  union-find -> canonical_id, supersede-never-delete; 23/23 test_entities.py
+- [DONE] text2cypher serve path (Q1-Q7): read-only Cypher over the mirror, cookbook as
+  few-shot bank, retry-on-error (max 3); 13 tests, live example "What did the walk anchor
+  on, and where did the anchors sit?" -> Cypher -> 8 rows, 1 attempt
+- [DONE] alias-aware search (W21/S19): opt-in expand_aliases (default OFF), additive
+  OR-terms at full BM25 weight, byte-identical when no entities table; 11 new tests,
+  smoke-scale evidence 905 alias groups, "aboard"->"board" surfaced 5 new chunks
+- [OPEN] E6 scale bound: full-vocab resolve on mixed-full-dual is out of Article VII's
+  budget -- entity_edges pair enumeration hits 2.47e9 candidate pairs at the default
+  MIN_JOINT_CHUNKS=5 floor (1.75e9 at df>=50, 1.45e9 at df>=100, 1.09e9 at df>=200; no
+  floor terminates in minutes on this corpus). Open spec question for entities.py, own
+  ledger row, not this campaign's.
+- [OPEN] alias expansion default stays OFF until full-dual entities are populated --
+  flag-ON on mixed-full-dual was vacuous (no entities table, map reads back {}, W21's
+  degrade guard makes it a no-op: 18/20 byte-identical, unmeasured-vacuous not
+  measured-neutral). Real behavior only demonstrated on mixed-smoke (905 alias groups,
+  "aboard"->"board" surfaced 5 new chunks) -- flip the default once mixed-full-dual (or
+  its successor) carries a resolved entities table.

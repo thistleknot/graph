@@ -1,7 +1,7 @@
 <!-- Spec: top-level e2e pipeline description. Sources: steering/{product,structure,tech}.md,
-     specs/graph-explorer/design.md 6.1-6.11, specs/graph-term-selection/requirements.md.
+     specs/graph-explorer/design.md 6.1-6.19, specs/graph-term-selection/requirements.md.
      Guard ids cited here live in module docstrings (R=chunkgraph, S=sampler, W=graph_tools,
-     I=interpret, X=export_neo4j, E=entities) and each is pinned by a test. Operator request 2026-08-31. -->
+     I=interpret, X=export_neo4j, E=entities, Q=text2cypher) and each is pinned by a test. Operator request 2026-08-31. -->
 
 # The pipeline, end to end
 
@@ -98,8 +98,9 @@ All computed on the Bundle, no model. `graph_tools.py`.
 | salient titling | a chunk is titled by its own salient terms: stoplist → BM25 vs corpus → log-normal gate keep ≥ min(median−1.4826·MAD, mean−sd) | W14 |
 | in between | retrieved chunks whose walked edges reach a different retrieved community — where the concepts meet | — |
 | shape | WCC count and sizes, largest-component share, density, conductance of the walk against the rest of the run (how leaky the neighbourhood is) | W15 |
-| pathways | idea-to-idea **DWPC**: enumerate simple paths ≤3 edges between anchor pairs, score each `Π strength × Π deg(node)^-0.4` (global degrees), sum per pair, keep the best chain for display. Hub correction is the point: many specific paths beat one path through a hub | W15, 6.11 |
+| pathways | idea-to-idea **DWPC**: enumerate simple paths ≤3 edges between anchor pairs, score each `Π strength × Π deg(node)^-0.4` (global degrees), sum per pair, keep the best chain for display. Hub correction is the point: many specific paths beat one path through a hub. `ppr` (personalized PageRank restarting on the walk's anchors) rides beside `dwpc` as an ADDITIVE named column — DWPC still orders the pairs | W15, W20, 6.11, 6.17 |
 | second-order terms | domain token ↔ semantic nomen affinity: Dunning-LLR gate → Schütze context-centroid cosine → Mann-Whitney AUC re-rank only when the skew diagnostic trips | W17 |
+| named metrics | whole-run **centrality lane**, cached per run_id: betweenness (exact ≤2000 nodes, k-sample above), PageRank, triangles/clustering, per-provenance degree split; per-community density/conductance plus whole-run WCC count/sizes (median/p90 summary) | W18, W19, 6.17 |
 
 ## Phase D — INTERPRET (the only model phase)
 
@@ -137,22 +138,33 @@ diagnostics only surface when a signal is genuinely degraded.
 
 ## Periphery
 
-`export_neo4j.py` (X1–X10) emits the 4-file neo4j-admin layout
+`export_neo4j.py` (X1–X15) emits the 4-file neo4j-admin layout
 (chunks/terms/contains/similar.csv) with provenance, a 256-dim embedding column
 plus `CREATE VECTOR INDEX`, and `C<cid>` community labels; it also writes walks
 back into a live neo4j as `(:Walk)-[:ANCHORS]->(:Chunk)` and
-`(:Chunk)-[:PATHWAY]->(:Chunk)`. `entities.py` (E1–E5) builds the run-scoped
-bipartite entity store from the existing salient/phrase vocabulary.
-`label_communities.py` drafts model-authored community labels — drafts over a
-frozen cluster, run-scoped, never a join key. `graph3d.py`/`render_graph.py`
-render outputs.
+`(:Chunk)-[:PATHWAY {dwpc, ppr}]->(:Chunk)`, plus the digest's dendrite chains
+(`NEXT_IN_CHAIN`) and community keywords (`CommunitySummary.density/.conductance`).
+`entities.py` (E1–E8) builds the run-scoped bipartite entity store from the
+existing salient/phrase vocabulary and **resolves** it: a candidate pair passes
+a blocked string-similarity gate, survives only where it also shares
+co-occurrence neighbors, and union-find over survivors writes an additive
+`canonical_id` column (longest-name-as-canonical, aliases retained,
+never a delete). `graph_tools.search()` can expand a query token to its
+`canonical_id` siblings as extra OR-terms, opt-in and off by default (W21/S19,
+6.19). `text2cypher.py` (Q1–Q7) is the serve-time "ask the mirror" path: a
+model writes read-only Cypher against the neo4j mirror, checked for write
+clauses before it is posted, few-shot bank parsed live from
+`cookbook/evidence_queries.cypher`, up to 3 retries against the database's own
+error text (6.18). `label_communities.py` drafts model-authored community
+labels — drafts over a frozen cluster, run-scoped, never a join key.
+`graph3d.py`/`render_graph.py` render outputs.
 
 ## Where the letters live
 
 R = `chunkgraph.py` build guards · S = `sampler.py` walk guards ·
 W = `graph_tools.py` tool-surface guards · I = `interpret.py` model-boundary
 guards · X = `export_neo4j.py` export guards · E = `entities.py` entity-store
-guards. Each guard is pinned by a test
+guards · Q = `text2cypher.py` mirror-query guards. Each guard is pinned by a test
 in `tests/`; §6.x references are `specs/graph-explorer/design.md`. This file
 describes; the guards govern. If they disagree, fix this file. R19–R21 govern
 multi-source ingest and are pinned in `tests/test_chunk.py` /
