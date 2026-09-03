@@ -331,19 +331,18 @@ def test_draw_layers3d_separates_planes_and_bridges_them(app):
     assert cross, "no cross-layer trace spanning both planes"
 
 
-def test_mirror_lives_under_map_with_partitions():
-    """T26 (amended): Mirror is a SECTION of the Map tab -- neovis over bolt
-    (the neo4j browser refuses iframes: X-Frame-Options DENY, measured), both
-    views stacked with no toggle, preceded by the dendrite-sorted Partitions
-    table. One input field: everything follows the Walk prompt."""
+def test_mirror_is_the_real_neo4j_browser_under_map():
+    """T26 (final): Mirror is the ACTUAL neo4j browser iframed inside the Map
+    tab -- possible because the container is launched with a CSP whose
+    frame-ancestors names http://localhost:8501 (stock image sends DENY).
+    Preceded by the dendrite-sorted Partitions table; one input field."""
     src = open("walker_app.py", encoding="utf-8").read()
     assert "tab_mirror" not in src                      # no third tab
     mirror = src.split("MIRROR (T26)")[1]
-    assert "neovis.js" in mirror and "bolt://localhost:7687" in mirror
-    assert 'st.session_state.get("q")' in mirror
+    assert "components.iframe" in mirror
+    assert "http://localhost:7474/browser/" in mirror
     assert 'selectbox("Walk"' not in mirror             # one input field
-    assert "st.radio" not in mirror                     # no toggle: both views
-    assert "NEXT_IN_CHAIN" in mirror and "PATHWAY" in mirror
+    assert "st.radio" not in mirror
     assert "Partitions (dendrite sort)" in mirror
     assert "dendrite_state" in mirror
     assert "neovis.js" in src and "bolt://localhost:7687" in src

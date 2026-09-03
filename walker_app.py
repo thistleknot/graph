@@ -1002,35 +1002,11 @@ with tab_map:
                         st.markdown("- `" + " > ".join(_tch) + "`")
 
     st.markdown("### Mirror")
-    st.caption("The neo4j mirror, live, for the prompt on the Walk tab. Drag "
-               "nodes; chunk captions are salient terms, color = source. Full "
-               "browser: http://localhost:7474 (neo4j/graphgraph).")
-    _wp = (st.session_state.get("q") or "").strip()
-    _mirrored = False
-    if _wp:
-        try:
-            import export_neo4j as _xn
-            _res = _xn._tx([{"statement":
-                             "MATCH (w:Walk {prompt: $p}) RETURN count(w)",
-                             "parameters": {"p": _wp}}])
-            _mirrored = _res[0]["data"][0]["row"][0] > 0
-        except Exception as e:                              # noqa: BLE001
-            st.warning(f"mirror unreachable: {e}")
-    if not _wp:
-        st.info("Type a prompt on the Walk tab -- its mirrored walk renders here.")
-    elif not _mirrored:
-        st.info(f"“{_wp}” is not in the mirror yet. Hit **Reason + judge "
-                "this walk** on the Walk tab; the walk lands here automatically.")
-    else:
-        import streamlit.components.v1 as _components
-        _p = json.dumps(_wp)
-        st.markdown(f"**{_wp}** -- anchors + pathways")
-        _components.html(_neovis_html(
-            f"MATCH (w:Walk {{prompt: {_p}}}) "
-            f"OPTIONAL MATCH p=(w)-[:ANCHORS]->(:Chunk) "
-            f"OPTIONAL MATCH q=(:Chunk)-[:PATHWAY {{of: {_p}}}]->(:Chunk) "
-            f"RETURN w, p, q"), height=540)
-        st.markdown("**chains** (dendrite order, dashed)")
-        _components.html(_neovis_html(
-            f"MATCH p=(:Chunk)-[:NEXT_IN_CHAIN {{of: {_p}}}]->(:Chunk) "
-            f"RETURN p"), height=540)
+    st.caption("The actual neo4j browser, logged-in session and all (connect "
+               "once with neo4j/graphgraph; the browser remembers it). The "
+               "container's CSP was re-issued with frame-ancestors "
+               "http://localhost:8501 -- the stock image sends DENY.")
+    import streamlit.components.v1 as _components
+    _components.iframe(
+        "http://localhost:7474/browser/?dbms=neo4j://neo4j@localhost:7687&db=neo4j",
+        height=760, scrolling=True)

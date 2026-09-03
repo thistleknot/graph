@@ -697,3 +697,12 @@ fixed seeds), do-no-harm = frozen diagnostic keeps 18/20 with the same pass set,
   carry-count (partitions comparable at a glance), plus the term chains as text. All
   driven by the ONE Walk prompt via cached walk/dendrite state. Verified live: Midway
   prompt shows the naval term chain swordfish>tirpitz>...>carrier_aircrews>philippine_sea.
+  _Lessons 4:_ Operator: the REAL neo4j browser, not a re-render. The blocker was never
+  absolute: X-Frame-Options DENY is overridden by CSP frame-ancestors in every modern
+  browser, and neo4j exposes the CSP as a static setting. Container recreated (data on
+  the named volume chunkgraph-neo4jdata survived, 24 walks intact) with
+  NEO4J_dbms_security_http__static__content__security__policy__header carrying
+  frame-ancestors 'self' http://localhost:8501. Mirror section is now
+  components.iframe of http://localhost:7474/browser/?dbms=neo4j://neo4j@localhost:7687
+  -- the actual logged-in console in-app (password once, localStorage persists).
+  Recreate command lives in this line for the next rebuild. neovis re-render removed.
