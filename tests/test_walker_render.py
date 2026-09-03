@@ -329,3 +329,12 @@ def test_draw_layers3d_separates_planes_and_bridges_them(app):
              if not tr.name and tr.z is not None
              and {v for v in tr.z if v is not None} == {0.0, 1.0}]
     assert cross, "no cross-layer trace spanning both planes"
+
+
+def test_mirror_tab_source_carries_neovis_and_bolt():
+    """T26: the Mirror tab renders the neo4j mirror in-app via neovis.js over
+    bolt (the neo4j browser refuses iframes: X-Frame-Options DENY, measured)."""
+    src = open("walker_app.py", encoding="utf-8").read()
+    assert '"Mirror"' in src and "tab_mirror" in src
+    assert "neovis.js" in src and "bolt://localhost:7687" in src
+    assert "__CYPHER__" in src and "initialCypher" in src

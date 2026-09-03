@@ -671,3 +671,17 @@ fixed seeds), do-no-harm = frozen diagnostic keeps 18/20 with the same pass set,
   vocabulary has no near-duplicate surface forms. Baseline and flag-ON both 18/20 identical
   row for row. Default stays False as a measured no-op; the lever is VOCAB_BOUND width
   (spec decision), not the mechanism (proven on mixed-smoke). No sampler code change needed.
+
+- [DONE] T26 Mirror tab: the neo4j graph rendered inside the walker
+  _Files:_ walker_app.py, tests/test_walker_render.py
+  _Verify:_ pytest tests/test_walker_render.py -q && :8501 health + operator eyeball
+  _Notes:_ Operator ask: the neo4j graph on its own Streamlit tab. The neo4j browser
+  sends X-Frame-Options: DENY + frame-ancestors 'none' (measured) so an iframe of
+  :7474 is impossible without weakening neo4j security config. Instead: neovis.js
+  in st.components.v1.html connects browser-side to bolt :7687 and renders the
+  selected Walk's subgraph (ANCHORS/PATHWAY/NEXT_IN_CHAIN, chunks captioned by
+  salient term, colored by source) interactively inside :8501.
+  _Lessons:_ Verified live via playwright: Mirror tab renders the neovis canvas with walk
+  selector + depth toggle; nodes captioned by salient term, ANCHORS in red. One cleanup
+  during build: collapsed a two-step cypher string injection into one substitution.
+  20/20 walker tests.

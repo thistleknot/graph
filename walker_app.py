@@ -478,7 +478,7 @@ def draw_global_map(comms, qrows, height=560):
     return fig
 
 
-tab_walk, tab_map = st.tabs(["Walk", "Map"])
+tab_walk, tab_map, tab_mirror = st.tabs(["Walk", "Map", "Mirror"])
 
 @st.cache_data(show_spinner=False, max_entries=32)
 def walk_for(run_id: str, q: str):
@@ -906,3 +906,72 @@ with tab_map:
           "edges": r["edges"],
           "avg strength": round(r["avg_strength"], 3)} for r in q],
         use_container_width=True, hide_index=True, height=300)
+
+# ================================================================ MIRROR (T26)
+with tab_mirror:
+    # The neo4j browser refuses iframes (X-Frame-Options: DENY, measured), so
+    # the mirror is rendered HERE: neovis.js connects browser-side to bolt
+    # :7687 and draws the selected Walk's subgraph inside this tab.
+    st.caption("The neo4j mirror, live. Pick a walk; drag nodes; chunk captions "
+               "are salient terms, color = source. Full browser: "
+               "http://localhost:7474 (neo4j/graphgraph).")
+    try:
+        import export_neo4j as _xn
+        _res = _xn._tx([{"statement":
+                         "MATCH (w:Walk) RETURN w.prompt ORDER BY w.prompt",
+                         "parameters": {}}])
+        _prompts = [r["row"][0] for r in _res[0]["data"]]
+    except Exception as e:                                  # noqa: BLE001
+        _prompts = []
+        st.warning(f"mirror unreachable: {e}")
+    if _prompts:
+        _wp = st.selectbox("Walk", _prompts, key="mirror_walk")
+        _depth = st.radio("Show", ["anchors + pathways", "+ chains"],
+                          horizontal=True, key="mirror_depth")
+        _rel = "ANCHORS|PATHWAY" if _depth == "anchors + pathways" \
+            else "ANCHORS|PATHWAY|NEXT_IN_CHAIN"
+        _cy = (f"MATCH (w:Walk {{prompt: $prompt}}) "
+               f"OPTIONAL MATCH p=(w)-[:ANCHORS]->(:Chunk) "
+               f"OPTIONAL MATCH q=(:Chunk)-[r:{_rel.replace('ANCHORS|','')} "
+               f"{{of: $prompt}}]->(:Chunk) RETURN w, p, q")
+        _html = """
+<div id="viz" style="width:100%;height:640px;border:1px solid #ddd"></div>
+<script src="https://unpkg.com/neovis.js@2.1.0"></script>
+<script>
+  const SRC_COLOR = {wiki:"#7f9fc4", quotes:"#e8843c", brown:"#5aa26b"};
+  const viz = new NeoVis.default({
+    containerId: "viz",
+    neo4j: {serverUrl: "bolt://localhost:7687",
+            serverUser: "neo4j", serverPassword: "graphgraph"},
+    visConfig: {physics: {stabilization: {iterations: 200}},
+                edges: {arrows: {to: {enabled: true, scaleFactor: 0.4}}}},
+    labels: {
+      Chunk: {label: "id", size: 12,
+        [NeoVis.NEOVIS_ADVANCED_CONFIG]: {function: {
+          label: (n) => (n.properties.salient || [n.properties.id])[0],
+          color: (n) => SRC_COLOR[n.properties.source] || "#bbbbbb",
+          title: (n) => `#${n.properties.id} ${n.properties.source || ""} ` +
+                        `${(n.properties.salient || []).join(", ")}`}}},
+      Walk: {label: "prompt", size: 28,
+        [NeoVis.NEOVIS_ADVANCED_CONFIG]: {static: {color: "#E45756",
+                                                   shape: "star"}}},
+    },
+    relationships: {
+      PATHWAY: {[NeoVis.NEOVIS_ADVANCED_CONFIG]: {function: {
+        value: (r) => r.properties.dwpc || 0.001,
+        title: (r) => `dwpc=${r.properties.dwpc}` +
+                      (r.properties.ppr ? ` ppr=${r.properties.ppr}` : "")}}},
+      NEXT_IN_CHAIN: {[NeoVis.NEOVIS_ADVANCED_CONFIG]: {static: {
+        color: "#bbbbbb", dashes: true}}},
+      ANCHORS: {[NeoVis.NEOVIS_ADVANCED_CONFIG]: {static: {color: "#E45756"}}},
+    },
+    initialCypher: __CYPHER__,
+  });
+  viz.render();
+</script>
+"""
+        # neovis takes the cypher as one literal string; inline the prompt value.
+        _html = _html.replace("__CYPHER__",
+                              json.dumps(_cy.replace("$prompt", json.dumps(_wp))))
+        import streamlit.components.v1 as _components
+        _components.html(_html, height=660)
