@@ -1297,6 +1297,104 @@ expected and means history preserved, not code shipped.
 [empirical:cited -- playbook.md T7/T7c _Blocked:_ and diagnostic-prompts.md's two
 2026-09-03 entries.]
 
+**Amended 2026-09-03 (T10, S18): the ring lane gets a query-side router and an
+additive injection.** T7c stopped the B lane at 8-29% with S17's anchor-mix ring
+share; a fourth probe round (`.tmp/steer_probe.py`, 4 rounds, 51 configs, run
+`bfa594df-1238-448f-8e2b-d05136e6307a`) found the missing piece is that the ring
+pool never *contains* the minority source's on-topic chunks, and that the
+allocation signal must come from the **query**, not from the corpus scores.
+
+The mechanism, three clauses, in this order:
+
+1. *Additive per-source injection.* Per-source BM25 top-k (k=24) over the same
+   `gt.corpus_index` postings and the same K1=1.5 / B=0.75 formula `gt.search` uses,
+   bucketed by source **before** the cut, UNIONed into the S17 ring pool. Scores are
+   rescaled to the walk pool's own range (`(score / global_max_injected) *
+   max_pool_score`) so an injected row cannot outrank the pool by BM25 magnitude; a row
+   already in the pool keeps `max(existing, injected)`; a row already in `W` is skipped.
+   Nothing is removed -- the walk is untouched, and `select_ring` still does the cutting.
+2. *LM log-odds router.* `w_s = softmax_tau( mean over query tokens of
+   log( p_s(t) / p_corpus(t) ) )`, `tau=0.2`, `p_s(t) = (occurrences of t in source s +
+   0.5) / (tokens in s + 0.5)`, `p_corpus(t) = (occurrences of t everywhere) / (tokens
+   everywhere)`, tokens counted from `corpus_index["dl"]`. Occurrences, not document
+   frequency: quotes chunks are ~15 tokens against wiki's ~200, so df makes a token look
+   rare in quotes purely because quotes documents are short.
+3. *eps floor, and the anchor mix is REPLACED.* Ring mix = `max(w_s, 0.05)`
+   renormalized, then scaled to integer counts for `select_ring`. The floor is a small
+   **constant**, never the anchor mix: the anchor-mix floor is the measured cap.
+
+Falsified alternatives -- one line each, with the killing number. All from the same
+probe json, same run, same frozen 20-row set (`quick` = 10 rows, `full` = 20). Every
+line is `[empirical:cited -- .tmp/steer_probe_results.json key <K>]`.
+
+| lever | config | killing number |
+|---|---|---|
+| Degree penalty on walk candidates (H1) | `alpha=1.0`, `alpha=2.0` | B moved 15-29% -> 21-52% but broke C1 **and** C3 (brown floors), 12/20 vs baseline 13/20 -- buys quotes by selling brown. Same at `alpha=2.0`; it is not a tuning miss. |
+| Relative degree penalty per source (R2 C2) | `rel_alpha=1.0` | B **4/58/27/2/2%** -- moves B1/B4/B5 the wrong way; 3/10 quick pass. |
+| Minority source boost (H2) | `beta=1.5`, `beta=2.5` | B **0/35/31/0/0%** at 1.5; at 2.5, 10/20 with A3, D3, E1, E3 all flipped to FAIL. A multiplier on minority edges starves the query's own register. |
+| Community-share cap (H3) | `cap_x=0.3`, `0.4` | B 17-38%, indistinguishable from baseline's 15-29%; `cap_x=0.3` additionally flips C1. Not a lever, a coin flip. |
+| Ring quotas from the walked set instead of the anchors (R2 C1) | `ring_walk_mix` | B1 54% but B2/B3 at 21%; C1 and C3 both FAIL. Same trade as H1. |
+| Brown-only floor (R2 C4) | `brown_boost=2.0` | Identical to C1's numbers -- the boost changes nothing the ring mix had not already decided. |
+| Injection with **no** re-quota (R3a) | `inject_k=24` alone | B **15/19/15/19/29%** -- baseline, to within one chunk. Injection alone is inert: the rows enter the pool and `select_ring` cuts them straight back out. This is the load-bearing negative result -- injection and router only work as a pair. |
+| Corpus-score quota, linear (R3b) | `inject_quota` | B 19-25%. Mean BM25 barely separates the sources. |
+| Corpus-score quota, sharpened (R3e) | `quota_power=8`, `16` | B1 40% -> 48% while B2-B5 **fall** to 4-8%, and C1 flips. Sharpening amplifies a signal that is flat. |
+| Lift quota -- per-source top-k mean over that source's own baseline (R3f) | `quota_lift` | B **6/8/6/6/6%**, worse than baseline at every power. The sign is wrong: wiki chunks are long and title-rich, so lift ranks the corpus the query is *not* about. |
+| Dense centroid router, global-centroid-centered (R4 S1) | `router=dense_c, tau=0.1` | B **10-19%**, below baseline. Cosine to a corpus centroid ranks generic-ness, not topic. |
+| Per-source **df** router (R4 S2) | `router=terms` | Length-confounded by construction -- superseded by the LM variant before a full row; the LM router is the same log-odds shape with occurrences in place of df. |
+| LM router **floored at the anchor mix** (R4) | `router_floor=True, tau=0.1` | B **31-38%**, still under the 40% gate -- with the same router, dropping the anchor floor gives 52-56%. This is the direct measurement that **the anchor-mix floor is the cap**, and the reason S18's floor is a constant. |
+| tau sweep | 0.1 / 0.2 / 0.5 / 1.0 | 0.1, 0.2 and 0.5 all reach 48-56%; 1.0 flattens to 44-46%. tau=0.2 chosen mid-plateau, not at an edge. |
+| eps sweep | 0.0 / 0.05 / 0.1 | 0.0 gives 52-56%, 0.05 gives 48-52%, 0.1 gives 44-48%. 0.05 chosen: the ~3-point cost buys a hard "no source is ever starved to zero" guarantee. |
+
+The measured result. `R4_PROMOTE_lm_t0.2_eps0.05_FULL`, full 20-row set, run
+`bfa594df-1238-448f-8e2b-d05136e6307a`, 20.5 s:
+- **18/20 PASS** (baseline 13/20). A2 stays KNOWN-FAIL (expected, not this fix's target).
+- **B1-B5 48-52%** quotes_all (B1 47.9, B2 52.1, B3 50.0, B4 52.1, B5 50.0), against the
+  >=40% gate -- first time the gate is cleared. quotes_walk 4-13%; ring origin carries
+  **22/24** slots on every B row. The B lane is won entirely in the ring, exactly where
+  T7's evidence said it would be.
+- **Zero regressions:** A1, A3, A4, A5, C1-C4, D1-D3, E1, E2 all PASS. The oracle row
+  (`R3_oracle_quotes_ring_full`, whole ring budget handed to quotes) scores 52-56% and
+  18/20 -- S18 is within ~4 points of the ceiling the ring lane can ever reach, and hits
+  the same pass count.
+- **E3 is OUT OF SCOPE and stays FAIL** (combined brown+political-wiki share 12.5% vs the
+  >=50% expectation). It fails at baseline too, under every one of the 51 probe configs,
+  and its miss is brown-side: E3 wants brown prose promoted on a query whose tokens are
+  wiki-shaped, which is a different mechanism from the register routing S18 ships.
+  Recorded as an open finding, not a regression, and not a reason to tune S18.
+
+Acceptance (a) is extended with the S18 clause: on a run reporting >= 2 source labels,
+`ef_evidence` ring members are chosen from the S17 pool UNIONed with the per-source BM25
+top-24, allocated by the eps-floored router mix; on a run reporting one source label the
+ring fill is byte-identical to today, element for element and in order. Pinned by
+`pytest tests/test_sampler.py -q` and by the frozen-set re-run.
+
+"Guards:" is extended below to "S15, S16, S17, S18".
+
+S18 (new 2026-09-03; promotes the probe-validated ring router. Trigger: T7c stopped
+    the B lane at 8-29% with S17's anchor-mix share, and a 4-round steering probe
+    measured that the ring POOL never contains the minority register's on-topic
+    chunks, while every corpus-score allocation signal is flat or sign-wrong.)
+    WHERE the run reports more than one source label, the S13/S17 ring candidate
+    pool SHALL be UNIONed with a per-source BM25 top-INJECT_K, scored by the same
+    formula and postings gt.search uses and bucketed by source BEFORE the cut,
+    rescaled into the walk pool's own score range so an injected row never enters
+    above the pool's strongest member. Injection is ADDITIVE: no pooled candidate is
+    removed, no member of W is re-entered, and select_ring still performs the cut.
+    The ring allocation SHALL come from the QUERY, not from the corpus scores:
+    w_s = softmax_ROUTER_TAU( mean over query tokens t of
+    log( p_s(t) / p_corpus(t) ) ), with p_s(t) = (occ_s(t) + 0.5) / (tokens_s + 0.5)
+    counted in OCCURRENCES per token of corpus, never in document frequency -- df is
+    length-confounded across registers. The mix passed to select_ring SHALL be
+    max(w_s, ROUTER_EPS) renormalized, REPLACING the anchor mix: the anchor-mix
+    floor is MEASURED as the cap (same router, anchor floor on -> B 31-38%, floor
+    off -> B 52-56%), so it SHALL NOT be applied. WHERE the query shares no token
+    with the run's postings the router SHALL return no weights and the ring SHALL
+    fall back to S17's anchor mix unchanged. WHERE the run reports one source label
+    -- including R19's literal "default" and a pre-R20 run carrying no labels -- the
+    router degenerates to a single weight of 1.0, injection is SKIPPED, and the ring
+    fill SHALL be identical to today's, element for element and in order, reached by
+    the same early return.
+
 **B. `title` joins the node payload (R22, extending R20).**
 
 R20 fixed the law: parse at the boundary, store explicitly, never make a consumer scan
@@ -1397,7 +1495,7 @@ PMI for chunk-term weighting) must be a column choice at read time, never a rebu
     `smallint` -- 32k entities is inside reach on a full wiki run and the spec named no
     width. Rationale recorded rather than reverted.
 
-Guards: S15, S16, S17 in `sampler.py`; R22 in `chunkgraph.py` (with `ingest_mixed.py`,
+Guards: S15, S16, S17, S18 in `sampler.py`; R22 in `chunkgraph.py` (with `ingest_mixed.py`,
 `pg_store.py` and the display consumers honouring it); E1-E5 in `entities.py`. Bodies below
 are ASCII and are pasted into those docstrings unchanged -- spec text and docstring are the
 same bytes by construction, so there is nothing to transliterate and nothing to re-diff.
@@ -1439,6 +1537,31 @@ S17 (new 2026-09-03; promotes the queued source-aware ring share. Trigger: T7's
     order, so the walk never shrinks. WHERE every anchor shares one source -- or
     the run reports one label -- allocation SHALL be skipped and the ring fill
     SHALL be identical to today's, element for element and in order.
+
+S18 (new 2026-09-03; promotes the probe-validated ring router. Trigger: T7c stopped
+    the B lane at 8-29% with S17's anchor-mix share, and a 4-round steering probe
+    measured that the ring POOL never contains the minority register's on-topic
+    chunks, while every corpus-score allocation signal is flat or sign-wrong.)
+    WHERE the run reports more than one source label, the S13/S17 ring candidate
+    pool SHALL be UNIONed with a per-source BM25 top-INJECT_K, scored by the same
+    formula and postings gt.search uses and bucketed by source BEFORE the cut,
+    rescaled into the walk pool's own score range so an injected row never enters
+    above the pool's strongest member. Injection is ADDITIVE: no pooled candidate is
+    removed, no member of W is re-entered, and select_ring still performs the cut.
+    The ring allocation SHALL come from the QUERY, not from the corpus scores:
+    w_s = softmax_ROUTER_TAU( mean over query tokens t of
+    log( p_s(t) / p_corpus(t) ) ), with p_s(t) = (occ_s(t) + 0.5) / (tokens_s + 0.5)
+    counted in OCCURRENCES per token of corpus, never in document frequency -- df is
+    length-confounded across registers. The mix passed to select_ring SHALL be
+    max(w_s, ROUTER_EPS) renormalized, REPLACING the anchor mix: the anchor-mix
+    floor is MEASURED as the cap (same router, anchor floor on -> B 31-38%, floor
+    off -> B 52-56%), so it SHALL NOT be applied. WHERE the query shares no token
+    with the run's postings the router SHALL return no weights and the ring SHALL
+    fall back to S17's anchor mix unchanged. WHERE the run reports one source label
+    -- including R19's literal "default" and a pre-R20 run carrying no labels -- the
+    router degenerates to a single weight of 1.0, injection is SKIPPED, and the ring
+    fill SHALL be identical to today's, element for element and in order, reached by
+    the same early return.
 
 R22 WHEN a document carries a parsed title, every chunk of that document SHALL carry
     `title` in its persisted node payload beside `doc_id` and `source`, and the title

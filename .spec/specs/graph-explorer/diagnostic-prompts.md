@@ -75,7 +75,7 @@ to edit.
 | A3 | wiki 81/81, storm community | PASS |
 | A4 | wiki 46/46, boat_race community | PASS |
 | A5 | wiki 75/75 | PASS |
-| B1–B5 | quotes 6–31% at ef24 on the DUAL run; 40–53% on the SPARSE mixed-full run, same prompts and knobs | **KNOWN-FAIL (finding), recalibrated:** target = quotes ≥ 40% of the ef24 walk — achieved by the sparse run, so attainable; dense expansion dilutes register-targeted retrieval 2–4x. THE tuning target. sqrt anchors (run bfa594df, 2026-09-03): before 6–31% -> after 2–25%; still KNOWN-FAIL. T7a+T7b additive anchors + S17 ring share (run bfa594df-1238-448f-8e2b-d05136e6307a, 2026-09-03): quotes_all 8–29% (B1 15% B2 19% B3 8% B4 19% B5 29%), quotes_walk 4–12% (B1 4% B2 12% B3 8% B4 12% B5 8%), ring fill 6/24 6/24 2/24 6/24 12/24; still KNOWN-FAIL, under the 40% gate. |
+| B1–B5 | quotes 6–31% at ef24 on the DUAL run; 40–53% on the SPARSE mixed-full run, same prompts and knobs | **KNOWN-FAIL (finding), recalibrated:** target = quotes ≥ 40% of the ef24 walk — achieved by the sparse run, so attainable; dense expansion dilutes register-targeted retrieval 2–4x. THE tuning target. sqrt anchors (run bfa594df, 2026-09-03): before 6–31% -> after 2–25%; still KNOWN-FAIL. T7a+T7b additive anchors + S17 ring share (run bfa594df-1238-448f-8e2b-d05136e6307a, 2026-09-03): quotes_all 8–29% (B1 15% B2 19% B3 8% B4 19% B5 29%), quotes_walk 4–12% (B1 4% B2 12% B3 8% B4 12% B5 8%), ring fill 6/24 6/24 2/24 6/24 12/24; still KNOWN-FAIL, under the 40% gate. S18 LM router + ring injection (run bfa594df-1238-448f-8e2b-d05136e6307a, 2026-09-03): quotes_all 48-52% (B1 48% B2 52% B3 50% B4 52% B5 50%), ring origin 22/24 on every row -- **PASSES the >=40% gate**; the KNOWN-FAIL is CLEARED. |
 | C1 | brown 26/86 (30%) | PASS |
 | C2 | brown 23/88, brown anchors | PASS |
 | C3 | brown 26/88 | PASS |
@@ -121,3 +121,16 @@ did not clear it. Per-origin quotes counts (ring/24 total ring slots): B1
 6/24, B2 6/24, B3 2/24, B4 6/24, B5 12/24. T7c ladder law: this is the
 second fable-tier scope of the B fix and E3 do-no-harm is not restored
 either — campaign STOPS here; T7c is BLOCKED, handed to the operator.
+
+2026-09-03 re-run, T10 (run bfa594df-1238-448f-8e2b-d05136e6307a, S18 LM source
+router + additive ring injection promoted from a 4-round steering probe, same knobs):
+**18/20 pass**, up from 13/20. B history in one line: pre-campaign global k=3
+**6-31%** -> sqrt allocation **2-25%** -> additive anchors + S17 ring share
+**8-29%** -> S18 router + injection **48-52%**. B1-B5 all clear the >=40% gate, ring
+origin carrying 22/24 slots per row, so the B lane is won in the ring exactly where
+T7's evidence pointed. Zero regressions: A1/A3/A4/A5, C1-C4, D1-D3, E1, E2 all still
+PASS; A2 stays KNOWN-FAIL (not this fix's target). E3 remains FAIL (brown+political-wiki
+combined 12.5%): it fails at baseline and under all 51 probe configs, and its miss is
+brown-side -- a query whose tokens are wiki-shaped wanting brown prose promoted -- which
+is a different mechanism from register routing. E3 is the open finding this campaign
+hands forward; it was NOT tuned for.

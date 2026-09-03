@@ -737,3 +737,100 @@ def test_s17_live_steering_invariant(live):
         quota = int(budget * n_s / A)  # floor; largest-remainder can only add
         held = pool_counts.get(s, 0)
         assert chosen_counts.get(s, 0) >= min(quota, held) or held < quota
+
+
+# ---- S18 router + injection
+# no DB for router_mix; the live tests reuse `live` and `_multi`
+
+def test_s18_eps_floor_is_honored():
+    mix = sp.router_mix({"wiki", "quotes", "brown"}, {"wiki": 3},
+                        {"wiki": 0.99, "quotes": 0.01})
+    assert all(v >= 1 for v in mix.values())
+    total = sum(mix.values())
+    assert mix["brown"] / total == pytest.approx(0.05 / (0.99 + 0.05 + 0.05), abs=1e-3)
+
+
+def test_s18_router_mix_replaces_the_anchor_mix():
+    """The clause the whole B result rests on: the router's weights win over
+    the anchor mix, even when the anchor mix favours the other source."""
+    mix = sp.router_mix({"wiki", "quotes"}, {"wiki": 3, "quotes": 1},
+                        {"quotes": 0.9, "wiki": 0.1})
+    assert mix["quotes"] > mix["wiki"]
+
+
+def test_s18_router_mix_is_order_independent():
+    pool_a = {"wiki", "quotes", "brown"}
+    pool_b = {"brown", "wiki", "quotes"}
+    weights = {"quotes": 0.6, "wiki": 0.3, "brown": 0.1}
+    a = sp.router_mix(pool_a, {"wiki": 2, "quotes": 1}, weights)
+    b = sp.router_mix(pool_b, {"quotes": 1, "wiki": 2}, weights)
+    assert a == b
+
+
+def test_s18_router_mix_degenerate():
+    """One source in the pool, no anchor mix -> a single key, and select_ring
+    on it fills identically to a global strength fill."""
+    mix = sp.router_mix({"wiki"}, {}, {"wiki": 1.0})
+    assert set(mix) == {"wiki"}
+    pool = [_rrow(i, 100.0 - i, "wiki") for i in range(10)]
+    chosen = sp.select_ring(pool, mix, budget=5)
+    global_fill = sorted(pool, key=lambda r: (-r["score"], r["ord"]))[:5]
+    assert chosen == global_fill
+
+
+def test_s18_router_routes_a_quote_query_to_quotes(live):
+    conn, run = _multi(live)
+    w = sp.router_weights(conn, run, "a quote about courage")
+    assert w, "fallback branch taken -- nt must be > 0 on this query"
+    assert max(w, key=w.get) == "quotes"
+
+
+def test_s18_router_routes_a_wiki_query_to_wiki(live):
+    conn, run = _multi(live)
+    w = sp.router_weights(conn, run, "how did aircraft carriers decide the battle of midway")
+    assert w, "fallback branch taken -- nt must be > 0 on this query"
+    assert max(w, key=w.get) == "wiki"
+
+
+def test_s18_injection_is_additive(live):
+    conn, run = _multi(live)
+    W, _ = sp.ef_search(conn, run, Q, ef=24, T=0.0)
+    parents = sorted(W, key=lambda o: (-W[o], o))[:sp.DEFAULT_RING_TOP]
+    unsteered_pool_ords = set()
+    for p in parents:
+        for nb in gt.neighbors(conn, run, p, limit=sp.DEFAULT_RING_PER * 3):
+            o = nb["ord"]
+            if o not in W:
+                unsteered_pool_ords.add(o)
+
+    steered = sp.ring(conn, run, W, top=sp.DEFAULT_RING_TOP, per=sp.DEFAULT_RING_PER,
+                      query=Q)
+    assert unsteered_pool_ords <= (unsteered_pool_ords | set(steered))
+    assert not (set(steered) & set(W))
+    inj = sp.source_topk(conn, run, Q)
+    injected_ords = {o for lst in inj.values() for o, _ in lst}
+    assert injected_ords - unsteered_pool_ords, "no genuinely new candidate was injected"
+
+
+def test_s18_single_source_ring_is_byte_identical(live):
+    conn, run = _dual(live)
+    if len(gt.run_sources(conn, run)) >= 2:
+        pytest.skip("brown-500-dual reports >= 2 source labels")
+    W, _ = sp.ef_search(conn, run, Q, ef=24, T=0.0)
+    a = sp.ring(conn, run, W, top=3, per=8, mix={"wiki": 3}, query=Q)
+    b = sp.ring(conn, run, W, top=3, per=8)
+    assert a == b
+    assert list(a) == list(b)
+
+
+def test_s18_unmatchable_query_falls_back_to_the_anchor_mix(live):
+    conn, run = _multi(live)
+    junk = "zzzqqq xxwwvv qqzzxx vvbbnn"
+    assert sp.router_weights(conn, run, junk) == {}
+    W, tele = sp.ef_search(conn, run, Q, ef=24, T=0.0)
+    mix = tele.get("anchor_mix") or {}
+    if len(mix) < 2:
+        pytest.skip("no probe query yielded an anchor mix >= 2")
+    a = sp.ring(conn, run, W, top=3, per=8, mix=mix, query=junk)
+    b = sp.ring(conn, run, W, top=3, per=8, mix=mix)
+    assert a == b

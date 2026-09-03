@@ -99,6 +99,31 @@ S17 (new 2026-09-03; promotes the queued source-aware ring share. Trigger: T7's
     the run reports one label -- allocation SHALL be skipped and the ring fill
     SHALL be identical to today's, element for element and in order.
 
+S18 (new 2026-09-03; promotes the probe-validated ring router. Trigger: T7c stopped
+    the B lane at 8-29% with S17's anchor-mix share, and a 4-round steering probe
+    measured that the ring POOL never contains the minority register's on-topic
+    chunks, while every corpus-score allocation signal is flat or sign-wrong.)
+    WHERE the run reports more than one source label, the S13/S17 ring candidate
+    pool SHALL be UNIONed with a per-source BM25 top-INJECT_K, scored by the same
+    formula and postings gt.search uses and bucketed by source BEFORE the cut,
+    rescaled into the walk pool's own score range so an injected row never enters
+    above the pool's strongest member. Injection is ADDITIVE: no pooled candidate is
+    removed, no member of W is re-entered, and select_ring still performs the cut.
+    The ring allocation SHALL come from the QUERY, not from the corpus scores:
+    w_s = softmax_ROUTER_TAU( mean over query tokens t of
+    log( p_s(t) / p_corpus(t) ) ), with p_s(t) = (occ_s(t) + 0.5) / (tokens_s + 0.5)
+    counted in OCCURRENCES per token of corpus, never in document frequency -- df is
+    length-confounded across registers. The mix passed to select_ring SHALL be
+    max(w_s, ROUTER_EPS) renormalized, REPLACING the anchor mix: the anchor-mix
+    floor is MEASURED as the cap (same router, anchor floor on -> B 31-38%, floor
+    off -> B 52-56%), so it SHALL NOT be applied. WHERE the query shares no token
+    with the run's postings the router SHALL return no weights and the ring SHALL
+    fall back to S17's anchor mix unchanged. WHERE the run reports one source label
+    -- including R19's literal "default" and a pre-R20 run carrying no labels -- the
+    router degenerates to a single weight of 1.0, injection is SKIPPED, and the ring
+    fill SHALL be identical to today's, element for element and in order, reached by
+    the same early return.
+
 MEASURED (brown-50, 6 queries, 2026-08-26) -- the sampling premise did not hold
 ------------------------------------------------------------------------------
 Stability (mean pairwise Jaccard of top-3 community sets across seeds) is NOT
@@ -184,6 +209,18 @@ DEFAULT_RING_PER = 8       # S13: strongest 8 new neighbours per parent
 DEFAULT_BRIDGE_PAIRS = 3   # S14: best whole-graph path between the top-3 chunks, pairwise
 MAX_BRIDGE = 8             # S14: cap on discovered bridge chunks per walk
 DEFAULT_CAP = 150          # R4.4 neighbourhood bound, 2-hop p99 is 111
+INJECT_K    = 24           # S18: per-source BM25 top-k UNIONed into the ring
+                           # pool. MEASURED (probe R3a): injection alone, with
+                           # no router re-quota, is INERT -- B unchanged from
+                           # baseline -- it works only paired with the router.
+ROUTER_TAU  = 0.2          # S18: softmax temperature on the LM log-odds.
+                           # MEASURED: 0.1/0.2/0.5 all plateau at B 48-56%;
+                           # 1.0 flattens to 44-46%. 0.2 chosen mid-plateau.
+ROUTER_EPS  = 0.05         # S18: constant floor per source -- NOT the anchor
+                           # mix (the anchor-mix floor is the measured cap).
+                           # MEASURED: eps 0.0 -> B 52-56%, 0.05 -> 48-52%,
+                           # 0.1 -> 44-48%. 0.05 buys the no-starvation
+                           # guarantee for ~3 points.
 
 
 @dataclass(frozen=True)
@@ -529,8 +566,147 @@ def select_ring(cands: list, mix: dict, budget: int) -> list:
     return chosen[:budget]
 
 
+_LM_CACHE: dict = {}    # run_id -> (ntok, post, smap), S18 query-side router
+_INJ_CACHE: dict = {}   # (run_id, query, k) -> {source: [(ord, score), ...]}
+
+
+def source_lm_stats(conn, run: gt.RunHandle) -> tuple[dict, dict, dict]:
+    """S18: per-source unigram language model stats -- (ntok, post, smap).
+
+    Require:  run has a persisted corpus_index (gt.corpus_index).
+    Guarantee: pure per run; sum(ntok.values()) > 0 on any non-empty run;
+               the keys of ntok are the source labels actually PERSISTED on
+               nodes, never gt.run_sources's keys -- a labelled node with no
+               tf rows must not mint a zero-token source.
+
+    Cached in-process by run_id, one indexed `node` scan. Deliberately NOT
+    persisted via gt._disk: corpus_index is already disk-cached and the only
+    added cost here is one cheap query per process, so a second disk cache
+    would be a speculative abstraction (Article II) for a cost that does not
+    exist yet.
+    """
+    key = str(run.run_id)
+    if key in _LM_CACHE:
+        return _LM_CACHE[key]
+    with conn.cursor() as cur:
+        cur.execute("SELECT ord, attrs->>'source' AS s FROM node "
+                    "WHERE run_id=%s", (run.run_id,))
+        smap = {r["ord"]: r["s"] for r in cur.fetchall()}
+    ix = gt.corpus_index(conn, run)
+    ntok: dict = {}
+    for o, dl in ix["dl"].items():
+        s = smap.get(o)
+        if s is not None:
+            ntok[s] = ntok.get(s, 0.0) + float(dl)
+    _LM_CACHE[key] = (ntok, ix["post"], smap)
+    return _LM_CACHE[key]
+
+
+def router_weights(conn, run: gt.RunHandle, query: str, tau: float = ROUTER_TAU) -> dict:
+    """S18: query-side source router, w_s = softmax_tau(mean over query
+    tokens of log(p_s(t) / p_corpus(t))), p_s and p_corpus counted in
+    OCCURRENCES of `corpus_index["post"]` (tf), never document frequency --
+    df is length-confounded across registers (a 15-token quotes chunk vs a
+    200-token wiki chunk).
+
+    Require:  run has a persisted corpus_index.
+    Guarantee: returns a softmax distribution over ntok's sources, or {}
+               when the query shares no token with the run's postings (S18's
+               deliberate fallback: the ring then falls back to S17's anchor
+               mix rather than a uniform ring).
+    """
+    import math
+    ntok, post, smap = source_lm_stats(conn, run)
+    tot = sum(ntok.values()) or 1.0
+    lo = {s: 0.0 for s in ntok}
+    nt = 0
+    for t in set(gt.tokenize(query)):
+        p = post.get(t)
+        if not p:
+            continue
+        occ: dict = {}
+        for o, f in p.items():
+            s = smap.get(o)
+            if s is not None:
+                occ[s] = occ.get(s, 0.0) + float(f)
+        gtot = sum(occ.values()) or 1.0
+        pg = gtot / tot
+        for s in ntok:
+            ps = (occ.get(s, 0.0) + 0.5) / (ntok[s] + 0.5)
+            lo[s] += math.log(ps / max(pg, 1e-12))
+        nt += 1
+    if nt == 0:
+        return {}
+    lo = {s: v / nt for s, v in lo.items()}
+    if not lo:
+        return {}
+    mx = max(lo.values())
+    e = {s: math.exp((v - mx) / max(tau, 1e-6)) for s, v in lo.items()}
+    z = sum(e.values()) or 1.0
+    return {s: v / z for s, v in e.items()}
+
+
+def source_topk(conn, run: gt.RunHandle, query: str, k: int = INJECT_K) -> dict:
+    """S18: source-bucketed BM25 top-k. No incumbent: gt.search takes its
+    top-k GLOBALLY, before source is known, so a minority corpus can never be
+    observed through it; gt.search is load-bearing for S15/S16 byte-identity
+    and is deliberately not parameterized. This is the same scorer's formula
+    (same postings, same K1=1.5/B=0.75, same idf) with two cut points instead
+    of one -- bucketed by source BEFORE the cut.
+
+    Returns {source: [(ord, score), ...]}, each list sorted (-score, ord) and
+    cut at k; None-source rows are dropped.
+    """
+    import math
+    ck = (str(run.run_id), query, k)
+    if ck in _INJ_CACHE:
+        return _INJ_CACHE[ck]
+    if len(_INJ_CACHE) > 256:
+        _INJ_CACHE.clear()
+    terms = gt.tokenize(query)
+    ix = gt.corpus_index(conn, run)
+    N, avgdl = ix["n"], ix["avgdl"]
+    score: dict = {}
+    for t in set(terms):
+        post = ix["post"].get(t)
+        if not post:
+            continue
+        d = len(post)
+        idf = math.log(1 + (N - d + 0.5) / (d + 0.5))
+        for o, f in post.items():
+            dl = ix["dl"].get(o, 1.0)
+            score[o] = score.get(o, 0.0) + idf * f * (1.5 + 1) / (
+                f + 1.5 * (1 - 0.75 + 0.75 * dl / avgdl))
+    _, _, smap = source_lm_stats(conn, run)
+    buckets: dict = {}
+    for o, sc in score.items():
+        buckets.setdefault(smap.get(o), []).append((o, sc))
+    out = {s: sorted(v, key=lambda p: (-p[1], p[0]))[:k]
+           for s, v in buckets.items() if s is not None}
+    _INJ_CACHE[ck] = out
+    return out
+
+
+def router_mix(pool_sources, anchor_mix: dict | None, weights: dict) -> dict:
+    """S18: pure mix builder -- eps-floors `weights`, REPLACING the anchor
+    mix (the anchor-mix floor is the measured cap). No DB; the piece the unit
+    tests pin without a live run.
+
+    Require:  `weights` a non-empty dict when a router mix is wanted.
+    Guarantee: every key gets a count >= 1; output is a pure function of its
+               three arguments, independent of dict insertion order.
+    """
+    use_mix = dict(anchor_mix) if anchor_mix and len(anchor_mix) >= 2 \
+        else {s: 1 for s in pool_sources if s}
+    keys = {s for s in pool_sources if s} | set(use_mix)
+    w = {s: max(weights.get(s, 0.0), ROUTER_EPS) for s in keys}
+    tot = sum(w.values()) or 1.0
+    return {s: max(int(round(1000 * v / tot)), 1) for s, v in w.items()}
+
+
 def ring(conn, run: gt.RunHandle, W: dict, top: int = DEFAULT_RING_TOP,
-         per: int = DEFAULT_RING_PER, mix: dict | None = None) -> dict:
+         per: int = DEFAULT_RING_PER, mix: dict | None = None,
+         query: str | None = None) -> dict:
     """S13: one degree out from the strongest `top` members of W, without a
     walk. Each parent's strongest `per` edges not already in W enter at
     score = parent score x edge strength (never above the parent). Edge table
@@ -540,8 +716,54 @@ def ring(conn, run: gt.RunHandle, W: dict, top: int = DEFAULT_RING_TOP,
     top*per budget is allocated across sources by select_ring instead of
     filled per-parent. WHERE mix is absent or spans < 1 source, this is
     today's loop, unmoved, reached by an early return -- byte-identical dict,
-    not a re-derivation that happens to agree."""
-    if not mix or len(mix) < 2:
+    not a re-derivation that happens to agree.
+
+    S18: WHERE `query` is given AND the run reports >= 2 source labels, the
+    S17 pool is UNIONed with a per-source BM25 top-INJECT_K (source_topk) and
+    allocated by the query-side router (router_weights/router_mix) instead of
+    the anchor mix. WHERE `query` is None, behaviour is UNCHANGED from S17 --
+    this is the S17 contract, preserved verbatim. WHERE the run reports fewer
+    than 2 source labels, the ring fill is identical to today's even with a
+    query present (the S16-era invariant, checked at the run level rather
+    than via `len(mix)` so a query-only call still degenerates correctly)."""
+    if query is None:
+        if not mix or len(mix) < 2:
+            out = {}
+            parents = sorted(W, key=lambda o: (-W[o], o))[:max(top, 0)]
+            for p in parents:
+                added = 0
+                for nb in gt.neighbors(conn, run, p, limit=per * 3):
+                    o = nb["ord"]
+                    if o in W or o in out:
+                        continue
+                    out[o] = W[p] * max(min(nb["strength"], 1.0), 0.0)
+                    added += 1
+                    if added >= per:
+                        break
+            return out
+
+        # S17 allocated path. Pool fetch is S13's unchanged limit=per*3 per
+        # parent; the per-parent `added >= per` early break is NOT carried
+        # here -- that was a *fill* rule, not the pool, and keeping it would
+        # cap the pool at the same rows today's fill already picks, leaving
+        # allocation nothing to steer with.
+        budget = max(top, 0) * max(per, 0)
+        pool: dict = {}
+        parents = sorted(W, key=lambda o: (-W[o], o))[:max(top, 0)]
+        for p in parents:
+            for nb in gt.neighbors(conn, run, p, limit=per * 3):
+                o = nb["ord"]
+                if o in W or o in pool:
+                    continue
+                pool[o] = {"ord": o, "score": W[p] * max(min(nb["strength"], 1.0), 0.0),
+                           "source": gt.source_of(nb)}
+
+        chosen = select_ring(list(pool.values()), mix, budget)
+        return {r["ord"]: r["score"] for r in chosen}
+
+    # query is not None: run-level single-source check, S16-era invariant.
+    elig = {s: n for s, n in gt.run_sources(conn, run).items() if n > 0}
+    if len(elig) < 2:
         out = {}
         parents = sorted(W, key=lambda o: (-W[o], o))[:max(top, 0)]
         for p in parents:
@@ -556,11 +778,8 @@ def ring(conn, run: gt.RunHandle, W: dict, top: int = DEFAULT_RING_TOP,
                     break
         return out
 
-    # S17 allocated path. Pool fetch is S13's unchanged limit=per*3 per parent;
-    # the per-parent `added >= per` early break is NOT carried here -- that was
-    # a *fill* rule, not the pool, and keeping it would cap the pool at the
-    # same rows today's fill already picks, leaving allocation nothing to
-    # steer with.
+    # S18: build the S17 pool (same fetch, same skip rule, no per-parent cap),
+    # then UNION in the per-source injection and allocate by the router.
     budget = max(top, 0) * max(per, 0)
     pool: dict = {}
     parents = sorted(W, key=lambda o: (-W[o], o))[:max(top, 0)]
@@ -572,7 +791,24 @@ def ring(conn, run: gt.RunHandle, W: dict, top: int = DEFAULT_RING_TOP,
             pool[o] = {"ord": o, "score": W[p] * max(min(nb["strength"], 1.0), 0.0),
                        "source": gt.source_of(nb)}
 
-    chosen = select_ring(list(pool.values()), mix, budget)
+    inj = source_topk(conn, run, query)
+    gmax = max((sc for lst in inj.values() for _, sc in lst), default=1.0) or 1.0
+    scale = max((r["score"] for r in pool.values()), default=1.0) or 1.0
+    for s, lst in inj.items():
+        for o, sc in lst:
+            if o in W:
+                continue
+            ns = (sc / gmax) * scale
+            if o in pool:
+                pool[o]["score"] = max(pool[o]["score"], ns)
+            else:
+                pool[o] = {"ord": o, "score": ns, "source": s}
+
+    pool_srcs = {r["source"] for r in pool.values()}
+    w = router_weights(conn, run, query)
+    use_mix = router_mix(pool_srcs, mix, w) if w else (mix or {s: 1 for s in pool_srcs if s})
+
+    chosen = select_ring(list(pool.values()), use_mix, budget)
     return {r["ord"]: r["score"] for r in chosen}
 
 
@@ -621,9 +857,12 @@ def ef_evidence(conn, run: gt.RunHandle, query: str, ef: int = DEFAULT_EF,
     W, tele = ef_search(conn, run, query, ef=ef, T=T, m=m,
                         k_anchor=k_anchor, seed=seed)
     anchors = list(tele.get("anchors", []))
-    extra = (ring(conn, run, W, top=ring_top, per=ring_per, mix=tele.get("anchor_mix"))
+    extra = (ring(conn, run, W, top=ring_top, per=ring_per, mix=tele.get("anchor_mix"),
+                  query=query)
              if W and ring_top else {})
     tele["ring"] = len(extra)                                   # S13
+    if W and len({s: n for s, n in gt.run_sources(conn, run).items() if n > 0}) >= 2:
+        tele["router_mix"] = router_weights(conn, run, query)   # S18 telemetry
     br, br_paths = (bridges(conn, run, W, pairs=bridge_pairs)
                     if W and bridge_pairs else ({}, []))
     br = {o: sc for o, sc in br.items() if o not in extra}
