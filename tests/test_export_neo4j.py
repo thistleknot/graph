@@ -448,6 +448,12 @@ def _capturing_post():
                 n = len(params["ids"])
             elif "MATCH (s:Chunk {id: r.a})" in cypher:
                 n = len(params["rows"])
+            elif "NEXT_IN_CHAIN" in cypher and "rows" in params:
+                n = len(params["rows"])
+            elif "c.salient" in cypher and "rows" in params:
+                n = len(params["rows"])
+            elif "CommunitySummary" in cypher and "rows" in params:
+                n = len(params["rows"])
             else:
                 n = 0
             results.append({"columns": ["n"], "data": [{"row": [n]}]})
@@ -628,5 +634,197 @@ def test_write_walk_round_trips_against_live_neo4j(neo4j_up):
             {"statement": "MATCH (w:Walk {prompt:$p}) DETACH DELETE w",
              "parameters": {"p": prompt}},
             {"statement": "MATCH ()-[p:PATHWAY {of:$p}]->() DELETE p",
+             "parameters": {"p": prompt}},
+        ])
+
+
+# ---------------------------------------------- live digest writer (T14)
+
+
+_DIGEST = {
+    "chunks": {"chains": [[1, 2, 3], [10, 20]]},
+    "kept": [1, 2, 3, 10, 20],
+    "sal": {
+        1: {"top": ["alpha", "beta"]},
+        2: {"top": []},
+        3: {"top": ["gamma"]},
+        10: {"top": ["delta"]},
+        20: {"top": []},
+    },
+}
+
+_TOUCHED = [
+    {"cid": 7, "size": 12, "keywords": ["x", "y"], "hits": 3},
+    {"cid": 8, "size": 5, "keywords": ["z"], "hits": 1},
+]
+
+
+def test_next_in_chain_is_directional_and_keyed_on_chain_pos():
+    post = _capturing_post()
+    export_neo4j.write_digest(_FakeBundle(), _DIGEST, _TOUCHED, post=post)
+    stmts = post.captured[-1]
+    chain_stmt = next(s for s in stmts if "NEXT_IN_CHAIN" in s["statement"]
+                       and "MERGE" in s["statement"])
+    assert "MERGE (s)-[c:NEXT_IN_CHAIN {of: $prompt, chain: r.chain, " \
+           "pos: r.pos}]->(d)" in chain_stmt["statement"]
+    rows = chain_stmt["parameters"]["rows"]
+    assert len(rows) == 3          # (1,2),(2,3) chain 0 + (10,20) chain 1
+    for r in rows:
+        assert isinstance(r["src"], str) and isinstance(r["dst"], str)
+    first = next(r for r in rows if r["chain"] == 0 and r["pos"] == 0)
+    assert first["src"] == "1" and first["dst"] == "2"
+
+
+def test_stale_chains_are_deleted_before_rewrite():
+    post = _capturing_post()
+    export_neo4j.write_digest(_FakeBundle(), _DIGEST, _TOUCHED, post=post)
+    stmts = post.captured[-1]
+    delete_idx = next(i for i, s in enumerate(stmts)
+                       if "DELETE c" in s["statement"] and "of: $prompt" in s["statement"])
+    merge_idx = next(i for i, s in enumerate(stmts)
+                      if "NEXT_IN_CHAIN" in s["statement"] and "MERGE" in s["statement"])
+    assert delete_idx < merge_idx
+
+
+def test_salient_is_set_only_for_walked_chunks_with_terms():
+    post = _capturing_post()
+    export_neo4j.write_digest(_FakeBundle(), _DIGEST, _TOUCHED, post=post)
+    stmts = post.captured[-1]
+    sal_stmt = next(s for s in stmts if "c.salient" in s["statement"])
+    assert "SET c.salient = r.top" in sal_stmt["statement"]
+    rows = sal_stmt["parameters"]["rows"]
+    ids = {r["id"] for r in rows}
+    assert ids == {"1", "3", "10"}          # ords 2 and 20 have empty top
+
+
+def test_community_touched_merges_keywords_and_hits():
+    post = _capturing_post()
+    export_neo4j.write_digest(_FakeBundle(), _DIGEST, _TOUCHED, post=post)
+    stmts = post.captured[-1]
+    comm_stmt = next(s for s in stmts if "CommunitySummary" in s["statement"])
+    assert "MERGE (cs:CommunitySummary {cid: r.cid})" in comm_stmt["statement"]
+    assert "SET cs.keywords = r.keywords, cs.size = r.size" in comm_stmt["statement"]
+    assert "MERGE (w)-[t:TOUCHED]->(cs)" in comm_stmt["statement"]
+    assert "t.hits = r.hits" in comm_stmt["statement"]
+    rows = comm_stmt["parameters"]["rows"]
+    # cid:int convention (export() writes cid:int in chunks.csv) -- CommunitySummary
+    # is a new node kind, not subject to X9's Chunk-STRING-id rule, so cid stays int.
+    for r in rows:
+        assert isinstance(r["cid"], int)
+
+
+def test_two_writes_of_digest_emit_identical_statement_shape_and_final_counts():
+    post1 = _capturing_post()
+    stats1 = export_neo4j.write_digest(_FakeBundle(), _DIGEST, _TOUCHED, post=post1)
+    post2 = _capturing_post()
+    stats2 = export_neo4j.write_digest(_FakeBundle(), _DIGEST, _TOUCHED, post=post2)
+    # Not byte-identical (the delete makes both runs converge on the same set,
+    # but that convergence -- not raw equality -- is the point under test):
+    assert stats1["chains"] == stats2["chains"]
+    assert stats1["salient"] == stats2["salient"]
+    assert stats1["touched"] == stats2["touched"]
+    chain_rows1 = next(s for s in post1.captured[-1]
+                        if "NEXT_IN_CHAIN" in s["statement"] and "MERGE" in s["statement"]
+                        )["parameters"]["rows"]
+    chain_rows2 = next(s for s in post2.captured[-1]
+                        if "NEXT_IN_CHAIN" in s["statement"] and "MERGE" in s["statement"]
+                        )["parameters"]["rows"]
+    assert len(chain_rows1) == len(chain_rows2)
+
+
+def test_digest_transport_errors_raise(monkeypatch):
+    class _FakeResponse:
+        def __init__(self, body):
+            self._body = body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return self._body
+
+    body = json.dumps({
+        "results": [],
+        "errors": [{"code": "Neo.ClientError.Schema.ConstraintValidationFailed",
+                     "message": "boom"}],
+    }).encode("utf-8")
+
+    def fake_urlopen(req, timeout=None):
+        return _FakeResponse(body)
+
+    monkeypatch.setattr(export_neo4j.urllib.request, "urlopen", fake_urlopen)
+    with pytest.raises(RuntimeError, match="ConstraintValidationFailed"):
+        export_neo4j.write_digest(_FakeBundle(), _DIGEST, _TOUCHED)
+
+
+def test_write_digest_round_trips_against_live_neo4j(neo4j_up):
+    picked = export_neo4j._tx(
+        [{"statement": "MATCH (c:Chunk) RETURN c.id AS id LIMIT 3",
+          "parameters": {}}])
+    ids = [row["row"][0] for row in picked[0]["data"]]
+    if len(ids) < 3:
+        pytest.skip("fewer than 3 Chunk nodes imported")
+
+    prompt = "__t14_selftest__"
+    a, b, c = ids[0], ids[1], ids[2]
+    digest = {
+        "chunks": {"chains": [[int(a), int(b), int(c)]]},
+        "kept": [int(a), int(b), int(c)],
+        "sal": {int(a): {"top": ["one"]}, int(b): {"top": ["two"]},
+                int(c): {"top": []}},
+    }
+    touched = [{"cid": 999999, "size": 1, "keywords": ["fake"], "hits": 1}]
+    bundle = _FakeBundle(query=prompt, run_id="t14-selftest")
+
+    try:
+        # write_digest requires a (:Walk {prompt}) node for TOUCHED -- create
+        # a throwaway one directly, same as write_walk would.
+        export_neo4j._tx([{
+            "statement": "MERGE (w:Walk {prompt: $p})",
+            "parameters": {"p": prompt},
+        }])
+
+        export_neo4j.write_digest(bundle, digest, touched, prompt=prompt)
+        r1 = export_neo4j._tx([
+            {"statement": "MATCH ()-[c:NEXT_IN_CHAIN {of:$p}]->() RETURN count(c) AS n",
+             "parameters": {"p": prompt}},
+        ])
+        n1 = r1[0]["data"][0]["row"][0]
+        assert n1 == 2
+
+        export_neo4j.write_digest(bundle, digest, touched, prompt=prompt)     # X11
+        r2 = export_neo4j._tx([
+            {"statement": "MATCH ()-[c:NEXT_IN_CHAIN {of:$p}]->() RETURN count(c) AS n",
+             "parameters": {"p": prompt}},
+        ])
+        n2 = r2[0]["data"][0]["row"][0]
+        assert n2 == n1 == 2
+
+        sal_check = export_neo4j._tx([{
+            "statement": "MATCH (c:Chunk {id:$id}) RETURN c.salient AS s",
+            "parameters": {"id": a},
+        }])
+        assert sal_check[0]["data"][0]["row"][0] == ["one"]
+
+        comm_check = export_neo4j._tx([{
+            "statement": "MATCH (cs:CommunitySummary {cid:999999})<-[:TOUCHED]-"
+                          "(w:Walk {prompt:$p}) RETURN cs.keywords AS k",
+            "parameters": {"p": prompt},
+        }])
+        assert comm_check[0]["data"][0]["row"][0] == ["fake"]
+    finally:
+        export_neo4j._tx([
+            {"statement": "MATCH ()-[c:NEXT_IN_CHAIN {of:$p}]->() DELETE c",
+             "parameters": {"p": prompt}},
+            {"statement": "MATCH (c:Chunk {id:$id}) REMOVE c.salient",
+             "parameters": {"id": a}},
+            {"statement": "MATCH (c:Chunk {id:$id}) REMOVE c.salient",
+             "parameters": {"id": b}},
+            {"statement": "MATCH (cs:CommunitySummary {cid:999999}) DETACH DELETE cs",
+             "parameters": {}},
+            {"statement": "MATCH (w:Walk {prompt:$p}) DETACH DELETE w",
              "parameters": {"p": prompt}},
         ])

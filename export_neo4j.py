@@ -31,6 +31,9 @@ Guarantee: chunks.csv + terms.csv + contains.csv + similar.csv + import.sh in
 Maintain:  no writes; no re-partitioning; cid is read, never recomputed.
            `write_walk` additionally guarantees one (:Walk) per prompt with
            its ANCHORS and PATHWAY edges written, or an exception.
+           `write_digest` additionally guarantees NEXT_IN_CHAIN, Chunk.salient
+           and CommunitySummary/TOUCHED are written for an existing (:Walk),
+           or an exception (X11-X13).
 
 GUARDS (EARS)
 X1 Chunk ids and Term ids SHALL occupy SEPARATE neo4j id-spaces. A term whose
@@ -61,6 +64,17 @@ X10 A walk SHALL be re-writable: (:Walk) is keyed on `prompt`, (:PATHWAY) on
     (src, dst, of) with the ordinal pair normalized low->high, so a second write of
     the same walk updates in place instead of duplicating. Any transport or MATCH
     shortfall SHALL raise; there is no partial-write fallback.
+X11 A digest re-write SHALL NOT leave stale NEXT_IN_CHAIN edges: unlike PATHWAY
+    (X10), the chain set is a function of the current dendrite cut and can
+    shrink or reorder between writes, so the writer SHALL delete all
+    NEXT_IN_CHAIN edges for `of=prompt` before re-merging the current set, in
+    the same transaction.
+X12 Chunk.salient SHALL be written only for chunks present in the digest's
+    walked set with a nonempty top-term list; a chunk never walked SHALL NOT
+    acquire a salient property from this writer.
+X13 CommunitySummary SHALL be keyed on `cid` alone (one mirror per run), and
+    TOUCHED SHALL be re-writable: a second write of the same walk updates
+    `hits` in place rather than duplicating the relationship.
 
 Usage:
     python export_neo4j.py brown-50-dual out/          # both edge kinds
@@ -348,6 +362,102 @@ def write_walk(bundle, paths: dict, *, prompt: str | None = None,
             "statements": len(statements),
             **{k: paths[k] for k in
                ("n", "edges", "components", "density", "conductance")}}
+
+
+def write_digest(bundle, digest: dict, touched: list, *, prompt: str | None = None,
+                  url: str = NEO4J_HTTP, auth: tuple = NEO4J_AUTH,
+                  db: str = NEO4J_DB, batch: int = TX_BATCH,
+                  post=_tx) -> dict:
+    """Require: an existing (:Walk {prompt}) node (write_walk already ran).
+    Guarantee: NEXT_IN_CHAIN edges keyed on (src, dst, of, chain, pos) with
+               stale of-scoped edges deleted first (X11); Chunk.salient set
+               only for walked chunks with a nonempty top list (X12);
+               CommunitySummary keyed on cid with TOUCHED re-writable (X13).
+    Maintain:  no node creation in the Chunk id-space; chunks are MATCHed only
+               (X9). Any transport or count-shortfall raises; no partial-write
+               fallback."""
+    prompt = prompt if prompt is not None else bundle.query
+
+    chain_rows = []
+    for ci, chain in enumerate(digest.get("chunks", {}).get("chains", [])):
+        for pos, (a, b) in enumerate(zip(chain, chain[1:])):
+            chain_rows.append({"src": str(a), "dst": str(b), "chain": ci, "pos": pos})
+
+    sal = digest.get("sal", {})
+    kept = digest.get("kept", list(sal.keys()))
+    sal_rows = [{"id": str(o), "top": sal[o]["top"]}
+                for o in kept if o in sal and sal[o].get("top")]
+
+    touched_rows = [{"cid": t["cid"], "keywords": t["keywords"],
+                      "size": t["size"], "hits": t["hits"]} for t in touched]
+
+    # Schema modification cannot share a transaction with writes (same
+    # constraint as write_walk's walk_prompt).
+    post([{
+        "statement": "CREATE CONSTRAINT community_summary_cid IF NOT EXISTS "
+                      "FOR (cs:CommunitySummary) REQUIRE cs.cid IS UNIQUE",
+        "parameters": {},
+    }], url=url, auth=auth, db=db)
+
+    statements = [{
+        "statement": "MATCH ()-[c:NEXT_IN_CHAIN {of: $prompt}]->() DELETE c",  # X11
+        "parameters": {"prompt": prompt},
+    }]
+
+    chain_stmt_idx = []
+    for i in range(0, len(chain_rows), batch):
+        chain_stmt_idx.append(len(statements))
+        statements.append({
+            "statement": ("UNWIND $rows AS r\n"
+                          "MATCH (s:Chunk {id: r.src}), (d:Chunk {id: r.dst})\n"    # X9
+                          "MERGE (s)-[c:NEXT_IN_CHAIN {of: $prompt, chain: r.chain, "
+                          "pos: r.pos}]->(d)\n"
+                          "RETURN count(c) AS merged"),
+            "parameters": {"prompt": prompt, "rows": chain_rows[i:i + batch]},
+        })
+
+    sal_stmt_idx = []
+    for i in range(0, len(sal_rows), batch):
+        sal_stmt_idx.append(len(statements))
+        statements.append({
+            "statement": ("UNWIND $rows AS r\n"
+                          "MATCH (c:Chunk {id: r.id})\n"                          # X9, X12
+                          "SET c.salient = r.top\n"
+                          "RETURN count(c) AS matched"),
+            "parameters": {"rows": sal_rows[i:i + batch]},
+        })
+
+    touched_stmt_idx = []
+    for i in range(0, len(touched_rows), batch):
+        touched_stmt_idx.append(len(statements))
+        statements.append({
+            "statement": ("UNWIND $rows AS r\n"
+                          "MERGE (cs:CommunitySummary {cid: r.cid})\n"             # X13
+                          "SET cs.keywords = r.keywords, cs.size = r.size\n"
+                          "WITH cs, r\n"
+                          "MATCH (w:Walk {prompt: $prompt})\n"
+                          "MERGE (w)-[t:TOUCHED]->(cs)\n"
+                          "SET t.hits = r.hits\n"
+                          "RETURN count(t) AS merged"),
+            "parameters": {"prompt": prompt, "rows": touched_rows[i:i + batch]},
+        })
+
+    results = post(statements, url=url, auth=auth, db=db)
+
+    merged_chains = sum(results[idx]["data"][0]["row"][0] for idx in chain_stmt_idx)
+    if merged_chains != len(chain_rows):
+        raise ValueError(f"chains: merged {merged_chains} of {len(chain_rows)}")
+
+    matched_sal = sum(results[idx]["data"][0]["row"][0] for idx in sal_stmt_idx)
+    if matched_sal != len(sal_rows):
+        raise ValueError(f"salient: matched {matched_sal} of {len(sal_rows)}")
+
+    merged_touched = sum(results[idx]["data"][0]["row"][0] for idx in touched_stmt_idx)
+    if merged_touched != len(touched_rows):
+        raise ValueError(f"touched: merged {merged_touched} of {len(touched_rows)}")
+
+    return {"prompt": prompt, "chains": len(chain_rows), "salient": len(sal_rows),
+            "touched": len(touched_rows), "statements": len(statements)}
 
 
 def main(argv=None):
