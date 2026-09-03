@@ -363,7 +363,8 @@ def _dendrite_state(bnd, members):
     oix = {o: i for i, o in enumerate(kept)}
     cross = [(o, t, float(X[oix[o], tix[t]])) for t in tm["names"]
              for o in (members.get(t) or []) if o in set(kept)]
-    return {"chunks": plane(ch), "terms": plane(tm), "kept": kept, "cross": cross}
+    return {"chunks": plane(ch), "terms": plane(tm), "kept": kept, "cross": cross,
+            "sal": sal}
 
 
 def draw_layers3d(state, cid_of, src_of, height=700):
@@ -555,9 +556,19 @@ with tab_walk:
                         ws_ = sorted(w for _, _, w in ds_["cross"]) or [0.0]
                         q3 = ws_[int(0.75 * (len(ws_) - 1))]
                         strong = [b for b in ds_["cross"] if b[2] >= q3]
+                        # I12 amendment (2026-09-03): resolve bare chunk ordinals
+                        # to "source:top_term" so the model can cite digest ids
+                        # (interpret.reason cited 0 on B3 with bare ordinals).
+                        # ds_["sal"] is the salient-term lookup _dendrite_state
+                        # already computed over ds_["kept"] -- reused as-is,
+                        # zero additional chunk_salient calls.
+                        sal_ = ds_["sal"]
+                        resolver = {o: f"{gt.source_of(gt.node(conn, run, o)) or 'unlabelled'}:"
+                                       f"{(sal_.get(o, {}).get('top') or ['?'])[0]}"
+                                    for o in ds_["kept"]}
                         digest = interpret.render_digest(
                             touched, kw, src_counts, ds_["chunks"]["chains"],
-                            ds_["terms"]["chains"], cset, uset, strong, pw)
+                            ds_["terms"]["chains"], cset, uset, strong, pw, resolver)
                     st.session_state["assess"] = (q, interpret.reason(
                         conn, run, bnd, terms, concept, embed=embed,
                         judge=True, pw=pw, digest=digest))

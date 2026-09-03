@@ -787,7 +787,7 @@ def test_i12_walk_image_is_deterministic_with_term_labels(live, walk):
 def test_render_digest_is_deterministic_and_carries_every_partition():
     """I12 extension: the digest serializes communities, dendrite chains
     (chunk ids elided past 20), tri-state term sets, bindings, pathways --
-    same inputs, same string."""
+    same inputs, same string. (no resolver -> bare ordinals, unchanged)."""
     import interpret
     touched = [{"cid": 8, "hits": 74, "size": 962}]
     kw = {8: ["ship", "aircraft", "navy"]}
@@ -807,3 +807,64 @@ def test_render_digest_is_deterministic_and_carries_every_partition():
         and "global_only=navy" in d1
     assert "1|carrier,midway" in d1                  # bindings sorted by weight
     assert "1<->2 0.500|1>9>2" in d1
+
+
+def test_render_digest_resolves_ids_with_resolver():
+    """I12 amendment: chunk_chains/pathways/bindings rows carry ord=src:term
+    when a resolver is supplied; determinism holds with resolver present."""
+    import interpret
+    touched = [{"cid": 8, "hits": 74, "size": 962}]
+    kw = {8: ["ship", "aircraft", "navy"]}
+    src = {8: {"wiki": 70, "brown": 4}}
+    resolver = {1: "brown:carrier", 2: "wiki:midway", 9: "wiki:navy"}
+    args = (touched, kw, src, [[1, 2]], [["carrier", "torpedo", "midway"]],
+            {"carrier", "midway"}, {"carrier", "navy"},
+            [(1, "carrier", 2.0), (1, "midway", 1.0), (2, "navy", 0.5)],
+            {"pairs": [{"a": 1, "b": 2, "dwpc": 0.5, "path": [1, 9, 2]}]})
+    d1 = interpret.render_digest(*args, resolver=resolver)
+    assert d1 == interpret.render_digest(*args, resolver=resolver)   # determinism
+    assert "1=brown:carrier" in d1                    # chunk_chains resolved
+    assert "1=brown:carrier<->2=wiki:midway" in d1     # pathways header resolved
+    assert "1=brown:carrier>9=wiki:navy>2=wiki:midway" in d1  # pathways chain resolved
+    assert "1=brown:carrier|carrier,midway" in d1      # bindings resolved
+
+
+def test_grounding_instruction_present_for_prem_and_one_shot():
+    """The prompt must tell the model the digest is citable -- measured basis:
+    reason(judge=True, digest=...) cited 0 digest ids before this instruction
+    existed (0 of the premises had a non-empty ids list on prompt B3)."""
+    for sysmsg in (interpret.PREM_SYSTEM, interpret.ONE_SHOT_SYSTEM):
+        assert "DIGEST" in sysmsg and "citable" in sysmsg
+        assert "empty ids list" in sysmsg or "empty list" in sysmsg
+
+
+def test_digest_only_id_is_accepted_not_foreign_without_judge(live, walk, monkeypatch):
+    """I13 amendment: a premise citing an id that appears only in the digest
+    (not in any brief's local/global/evidence set) must be accepted, not
+    dropped as foreign -- digest ids are always a bundle.sampled subset."""
+    import json as _json
+    conn, run = live
+    b, terms, concept = walk
+    briefs = interpret.community_briefs(conn, run, b, terms, concept)
+    brief_ids = {m["ord"] for br in briefs
+                 for m in [br["local"], br["global"]] + list(br.get("evidence", []))}
+    try:
+        digest_only = next(o for o in b.sampled if o not in brief_ids)
+    except StopIteration:
+        pytest.skip("brief ids cover the full walk on this fixture")
+
+    def fake_call(system, user, timeout, images=None, max_tokens=None):
+        reply = {"hypotheses": ["H"], "chosen": 0, "why": "w",
+                 "premises": [{"text": "P", "ids": [digest_only]}],
+                 "evaluations": [{"index": 0, "verdict": "supports", "why": "ok"}],
+                 "answer": f"A #{digest_only}."}
+        return _json.dumps(reply), "test-backend"
+
+    monkeypatch.setattr(interpret, "_call", fake_call)
+    fake_digest = f"== DIGEST (computed, not model-authored; ids are citable)\n{digest_only}=src:term"
+    rr = interpret.reason(conn, run, b, terms, concept, judge=False,
+                          structure="text", digest=fake_digest)
+    assert rr["ok"], rr["error"]
+    assert digest_only not in rr["foreign"], "digest-only id must not be foreign"
+    assert rr["premises"][0]["ids"] == [digest_only]
+    assert rr["premises"][0]["verdict"] == "supports"

@@ -621,8 +621,12 @@ PREM_SYSTEM = (
     "Given the PROMPT, the COMMUNITY BRIEFS and a HYPOTHESIS, list the salient "
     "premises the hypothesis needs to be true. For each premise name the brief "
     "ids ([id=<n>], copied exactly) whose excerpts would support it; use an empty "
-    "list if none would. Three to six premises. Reply with ONE JSON object and "
-    'nothing else: {"premises": [{"text": "<premise>", "ids": [<id>, ...]}, ...]}'
+    "list if none would. If a DIGEST section is present, its chunk ids are "
+    "citable too -- cite the NUMBER before \"=\" when an id is shown as "
+    "\"n=source:term\". A premise that cannot be grounded in any cited id must "
+    "still be listed, with an empty ids list. Three to six premises. Reply with "
+    "ONE JSON object and nothing else: "
+    '{"premises": [{"text": "<premise>", "ids": [<id>, ...]}, ...]}'
 )
 EVAL_SYSTEM = 'For each PREMISE, read ONLY the excerpts cited for it and decide: supports = an excerpt states, about the SAME subject as the premise, information that makes it true or partly true; contradicts = an excerpt states information against it; insufficient = the excerpts do not bear on it. An analogy, an implication drawn from a different subject, or a general statement that could apply to anything is INSUFFICIENT, not supports. Reply with ONE JSON object and nothing else: {"evaluations": [{"index": <premise index>, "verdict": "supports"|"contradicts"|"insufficient", "why": "<=12 words"}, ...]}'
 FINAL_SYSTEM = (
@@ -632,7 +636,27 @@ FINAL_SYSTEM = (
 )
 
 
-ONE_SHOT_SYSTEM = 'You are reasoning over COMMUNITY BRIEFS: groups of related documents from a corpus, each with its characteristic terms and representative excerpts tagged [id=<n>]. Do all of the following in ONE reply. (1) Propose up to three candidate answers to the PROMPT as falsifiable statements and choose one, saying why in one line. (2) List three to six premises the chosen statement needs, each STATED IN YOUR OWN WORDS (never a pasted quote), naming the excerpt ids (copied exactly) that would support it, or an empty list. (3) Evaluate each premise against ONLY its cited excerpts: supports = an excerpt states, about the SAME subject, information that makes it true or partly true; contradicts = states information against it; insufficient = does not bear on it. Analogy or implication from a different subject is insufficient. (4) Answer the PROMPT using ONLY premises judged supports, citing #<id> after each claim. Reply with ONE JSON object and nothing else: {"hypotheses": ["<statement>", ...], "chosen": <index>, "why": "<one line>", "premises": [{"text": "<premise>", "ids": [<id>, ...]}, ...], "evaluations": [{"index": <premise index>, "verdict": "supports"|"contradicts"|"insufficient", "why": "<=12 words"}, ...], "answer": "<text with #id citations, or empty>"}'
+ONE_SHOT_SYSTEM = (
+    'You are reasoning over COMMUNITY BRIEFS: groups of related documents from a corpus, '
+    'each with its characteristic terms and representative excerpts tagged [id=<n>]. Do '
+    'all of the following in ONE reply. (1) Propose up to three candidate answers to the '
+    'PROMPT as falsifiable statements and choose one, saying why in one line. (2) List '
+    'three to six premises the chosen statement needs, each STATED IN YOUR OWN WORDS '
+    '(never a pasted quote), naming the excerpt ids (copied exactly) that would support '
+    'it, or an empty list. If a DIGEST section is present, its chunk ids are citable too '
+    '-- cite the NUMBER before "=" when an id is shown as "n=source:term". A premise '
+    'that cannot be grounded in any cited id must still be listed, with an empty ids '
+    'list. (3) Evaluate each premise against ONLY its cited excerpts: supports = an '
+    'excerpt states, about the SAME subject, information that makes it true or partly '
+    'true; contradicts = states information against it; insufficient = does not bear on '
+    'it. Analogy or implication from a different subject is insufficient. (4) Answer the '
+    'PROMPT using ONLY premises judged supports, citing #<id> after each claim. Reply '
+    'with ONE JSON object and nothing else: {"hypotheses": ["<statement>", ...], '
+    '"chosen": <index>, "why": "<one line>", "premises": [{"text": "<premise>", "ids": '
+    '[<id>, ...]}, ...], "evaluations": [{"index": <premise index>, "verdict": '
+    '"supports"|"contradicts"|"insufficient", "why": "<=12 words"}, ...], "answer": '
+    '"<text with #id citations, or empty>"}'
+)
 
 
 # ------------------------------- 6.12 structural evidence + combined call (I12/I13)
@@ -674,7 +698,7 @@ def render_structure(conn, run, bundle, pw: dict) -> str:
 
 
 def render_digest(touched, keywords, src_counts, chunk_chains, term_chains,
-                  term_cond, term_unsup, bindings, pw) -> str:
+                  term_cond, term_unsup, bindings, pw, resolver: dict | None = None) -> str:
     """I12 extension (operator, 2026-09-02): the partitions the pictures draw,
     serialized as compact pregrouped text so the model reasons over structure
     directly, never over pixels. Deterministic: same inputs, same string.
@@ -686,7 +710,14 @@ def render_digest(touched, keywords, src_counts, chunk_chains, term_chains,
       term_sets    both / walk_only / global_only (tri-state membership)
       bindings     chunk|its strongest terms (top-quartile tf*idf)
       pathways     a<->b dwpc|best chain
+      resolver     ord -> 'source:top_term'; when given, chunk ids in
+                   chunk_chains/pathways/bindings render as 'ord=source:term'
+                   instead of bare ordinals (I12 amendment 2026-09-03);
+                   omitted, output is unchanged.
     """
+    def _id(o):
+        return f"{o}={resolver[o]}" if resolver and o in resolver else str(o)
+
     L = ["== DIGEST (computed, not model-authored; ids are citable)"]
     L.append(f"communities[{len(touched)}]: cid|hits/size|sources|keywords")
     for t in touched:
@@ -697,7 +728,7 @@ def render_digest(touched, keywords, src_counts, chunk_chains, term_chains,
                  + ",".join((keywords.get(c) or [])[:5]))
     L.append(f"chunk_chains[{len(chunk_chains)}]: len|ids (correlation-sorted)")
     for ch in chunk_chains:
-        ids = [str(o) for o in ch]
+        ids = [_id(o) for o in ch]
         row = ">".join(ids) if len(ids) <= 20 else \
             ">".join(ids[:10]) + f"..({len(ids) - 15})>" + ">".join(ids[-5:])
         L.append(f"  {len(ch)}|{row}")
@@ -714,11 +745,11 @@ def render_digest(touched, keywords, src_counts, chunk_chains, term_chains,
     L.append(f"bindings[{len(by_chunk)}]: chunk|strongest terms")
     for o in sorted(by_chunk):
         ts = [t for w, t in sorted(by_chunk[o], reverse=True)[:4]]
-        L.append(f"  {o}|{','.join(ts)}")
+        L.append(f"  {_id(o)}|{','.join(ts)}")
     L.append(f"pathways[{min(len(pw.get('pairs', [])), 8)}]: a<->b dwpc|best chain")
     for p in pw.get("pairs", [])[:8]:
-        L.append(f"  {p['a']}<->{p['b']} {p['dwpc']:.3f}|"
-                 + ">".join(str(o) for o in p["path"]))
+        L.append(f"  {_id(p['a'])}<->{_id(p['b'])} {p['dwpc']:.3f}|"
+                 + ">".join(_id(o) for o in p["path"]))
     return "\n".join(L)
 
 
@@ -971,6 +1002,13 @@ def reason(conn, run, bundle, terms: dict, concept: dict, embed=None,
             # the model reasons over structure, never over pixels.
             out["structure"] += "\n\n" + digest
             text += "\n\n" + digest
+            # I13 amendment (2026-09-03): digest chunk ids are always a
+            # subset of bundle.sampled (walker_app builds the digest from
+            # dendrite_state over bnd.sampled) -- widen valid here so a
+            # premise citing a digest-only id is accepted even when judge is
+            # off (judge=True already unions valid with bundle.sampled below;
+            # this covers the digest-without-judge gap at zero extra cost).
+            valid = valid | set(bundle.sampled)
         if structure == "image":
             try:
                 images = [render_walk_image(conn, run, bundle, pw)]

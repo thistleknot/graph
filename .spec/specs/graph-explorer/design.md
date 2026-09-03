@@ -981,6 +981,78 @@ max_tokens raised to 8192 for the combined reply. The walker's two buttons
 collapsed into one "Reason + judge this walk"; the disagreement note now
 compares the two channels of a single result.
 
+Digest ids resolve to text (I12 amendment, 2026-09-03). Measured basis:
+interpret.reason cited 0 digest ids on prompt B3 ("a quote about books and
+reading") when chunk_chains/pathways/bindings rows carried bare ordinals --
+the model had no text to anchor a citation to. render_digest now accepts an
+optional `resolver: dict[int, str] | None` (ord -> "source:top_term") from the
+caller; when supplied, every place a bare chunk ordinal appears in
+chunk_chains, pathways, and bindings rows is rendered as "id=src:term" instead
+of the bare int. term_chains is unaffected (already textual). Absent a
+resolver, output is byte-identical to pre-amendment (bare ordinals) -- old
+callers do not break. walker_app._dendrite_state already computes
+chunk_salient(kept, k=3) for every kept chunk (chunk plane term pool, line
+~333); the walk_state cid_of/source_of lookups already exist at the call site
+(walker_app.py ~line 545-560). The resolver is built there, once, from data
+already in memory -- no second salient pass, no new DB round-trip.
+
+Premises must cite the digest or say so (I13 amendment, 2026-09-03). Measured
+basis: reason(judge=True, digest=...) returned every premise with ids:[] ("no
+evidence cited") on prompt B3 even though the digest was appended to the same
+prompt text -- the grounding contract (I9: cite ids, empty list if none apply)
+already existed, the model was simply never told the digest counts as citable
+evidence. ONE_SHOT_SYSTEM/PREM_SYSTEM now name the digest explicitly: a
+citable id is any brief [id=<n>], any chunk id appearing in the digest's
+chunk_chains/pathways/bindings rows (cite the NUMBER before "=" when the
+resolver form "n=source:term" is shown), or a judge-shown chunk id when
+judge=True. A premise that cannot be grounded in any of those must return an
+empty ids list -- the existing parse already renders that as verdict
+"unsupported" / why "no evidence cited" (I9), so no parse change is needed for
+that half of the contract. No new model call, no new JSON field, no second
+button.
+
+Post-fix measurement (T13, 2026-09-03, run mixed-full-dual, backend
+openrouter:qwen/qwen3.5-9b, .tmp/reason_digest_test.py): SPLIT verdict, and
+the split is the finding. E3 ("the senator fought a losing battle over the tax
+bill" -- a propositional prompt) went from nothing to fully grounded: one
+premise citing id 7 (brown, pfaff/barnett/sales_tax -- the same chunk the DWPC
+pathway layer ranks #1 for this walk), verdict supports, non-empty answer with
+a #7 citation, 87 judge verdicts. B3 ("a quote about books and reading" -- a
+retrieval request, not a proposition) still cites 0 ids: the model decomposes
+the REQUEST into meta-criteria ("there exists a text containing a direct
+quotation") which it then correctly reports as ungrounded; evaluation null,
+answer empty, judge unaffected (49 verdicts, within +-10% of the pre-fix 49).
+Acceptance (>=3 distinct ids on BOTH rows) NOT met. The failure moved: before
+the amendments the digest was ignored wholesale; now grounding works exactly
+when the hypothesis stage produces a falsifiable proposition, and B-class
+prompts defeat the hypothesis stage itself (the "hypothesis" degenerates to
+the prompt verbatim). Next lever, if opened: hypothesis formation for
+retrieval-shaped prompts (e.g. instruct that for "find me X" prompts the
+hypotheses are candidate X's drawn from the evidence, cited by id) -- an I-lane
+prompt change, not a digest or parse change. Recorded per T13's
+no-retuning law; the 9b model's instruction-following is a confound a stronger
+INTERPRET_MODEL would isolate.
+
+Community references (c<cid>) and pathway pairs named in the digest describe
+structure, not a single citable excerpt, and stay outside the numeric `ids`
+schema -- widening `ids` to accept them would need a second id namespace with
+no consumer (I11's foreign-id bookkeeping, the answer's #<id> citation check,
+and the UI's [id=<n>] rendering all assume one flat integer ord space).
+Digest-cited CHUNK ids, by contrast, are already ordinals in that same space,
+so they need no new schema -- only the valid-id set has to include them
+(below).
+
+Valid-id decision: no widening required in the judge=True path -- digest chunk
+ids are always drawn from ds_["kept"], a subset of bundle.sampled (walker_app
+builds the digest from dendrite_state(_bnd=bnd) over bnd.sampled), and
+judge=True already unions `valid` with the full judge_shown = bundle.sampled
+(existing behaviour, pinned by test_i13_combined_call_is_one_call_with_both_
+channels). The one gap is digest passed WITHOUT judge (judge=False, digest
+set): reason() now also unions `valid` with bundle.sampled whenever digest is
+non-empty, regardless of judge, so a premise citing a legitimate digest-only
+id is never silently dropped as foreign in that path either. Cost: one set
+union, no extra call.
+
 
 ### 6.13 Bridge discovery: the whole graph may complete a pathway (2026-08-31)
 
