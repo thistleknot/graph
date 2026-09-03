@@ -239,3 +239,49 @@ def test_draw_global_map_labels_communities_by_keywords(app):
     kw = [c for c in comms if c["keywords"]]
     assert kw and any(" / ".join(c["keywords"][:3]) in texts for c in kw)
     assert app.draw_global_map([], []) is None
+
+
+def test_draw_term_graph_tristate_membership_and_cooccurrence(app):
+    """Term graph (operator, 2026-09-02): terms are nodes; colour groups carry
+    the tri-state provenance (walk-only / global-only / both); edges need >=2
+    shared walked chunks."""
+    cond = {0: ["carrier", "torpedo"], 1: ["midway"]}
+    unsup = {0: ["carrier", "aircraft"], 1: ["navy"]}
+    members = {"carrier": {1, 2, 3}, "torpedo": {2, 3}, "midway": {3},
+               "aircraft": {1, 2}, "navy": {9}}
+    fig = app.draw_term_graph(cond, unsup, members)
+    assert fig is not None
+    named = {tr.name: list(tr.text) for tr in fig.data if tr.name}
+    assert named["both sets"] == ["carrier"]
+    assert "torpedo" in named["walk (prompt-conditioned BM25)"]
+    assert "midway" in named["walk (prompt-conditioned BM25)"]
+    assert named["global concept"] == ["aircraft", "navy"]
+    edge_traces = [tr for tr in fig.data if not tr.name]
+    # carrier-torpedo share {2,3}, carrier-aircraft share {1,2}, torpedo-aircraft {2}
+    assert len(edge_traces) == 2
+    assert app.draw_term_graph({}, {}, {}) is None
+
+
+def test_draw_layers3d_separates_planes_and_bridges_them(app):
+    """3D layers view: chunk markers all at z=0, term markers all at z=1,
+    cross-layer membership lines spanning 0->1, chain backbones present."""
+    state = {
+        "chunks": {"pos": {1: (0.0, 0.0), 2: (1.0, 0.0), 3: (0.5, 1.0)},
+                   "backbone": [(1, 2)], "sig": [(1, 2, 0.9), (2, 3, 0.5)],
+                   "chain_of": {1: 0, 2: 0, 3: 1}, "chains": [[1, 2], [3]]},
+        "terms": {"pos": {"war": (0.0, 0.5), "navy": (0.8, 0.2)},
+                  "backbone": [("war", "navy")], "sig": [("war", "navy", 0.7)],
+                  "chain_of": {"war": 0, "navy": 0}, "chains": [["war", "navy"]]},
+        "kept": [1, 2, 3],
+        "cross": [(1, "war"), (2, "navy"), (3, "war")],
+    }
+    fig = app.draw_layers3d(state, {1: 0, 2: 0, 3: 1},
+                            {1: "wiki", 2: "brown", 3: None})
+    named = {tr.name: tr for tr in fig.data if tr.name}
+    assert set(named) == {"chunks", "terms"}
+    assert set(named["chunks"].z) == {0.0}
+    assert set(named["terms"].z) == {1.0}
+    cross = [tr for tr in fig.data
+             if not tr.name and tr.z is not None
+             and {v for v in tr.z if v is not None} == {0.0, 1.0}]
+    assert cross, "no cross-layer trace spanning both planes"

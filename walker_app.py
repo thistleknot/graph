@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import os
+from collections import Counter
 from pathlib import Path
 
 import networkx as nx
@@ -253,6 +254,174 @@ def draw_communities(touched, terms, xedges, height=520):
     return fig
 
 
+def draw_term_graph(terms_cond: dict, terms_unsup: dict, members: dict, height=560):
+    """TERM graph of the walk (operator, 2026-09-02): nodes are TERMS, not
+    chunks. Membership is provenance, the repo's tri-state applied to
+    vocabulary -- a term can belong to the subgraph's prompt-conditioned BM25
+    set (walk), the unsupervised global concept set (global), or both.
+    Edges = co-occurrence within the walked chunks (>=2 shared chunks).
+    Deterministic: spring seed 7 over co-occurrence weights."""
+    cond = {t for ts in terms_cond.values() for t in ts}
+    unsup = {t for ts in terms_unsup.values() for t in ts}
+    drawn = sorted((cond | unsup) & set(members))
+    if not drawn:
+        return None
+    G = nx.Graph()
+    G.add_nodes_from(drawn)
+    for i, a in enumerate(drawn):
+        for b in drawn[i + 1:]:
+            w = len(members[a] & members[b])
+            if w >= 2:
+                G.add_edge(a, b, weight=w)
+    pos = nx.spring_layout(G, weight="weight", seed=7, k=1.2)
+    wmax = max((d["weight"] for _, _, d in G.edges(data=True)), default=1)
+    fig = go.Figure()
+    for a, b, d in G.edges(data=True):
+        fig.add_trace(go.Scatter(
+            x=[pos[a][0], pos[b][0]], y=[pos[a][1], pos[b][1]], mode="lines",
+            line=dict(color="#bbb", width=0.6 + 3.5 * d["weight"] / wmax),
+            hoverinfo="none", showlegend=False))
+    groups = (("both sets", [t for t in drawn if t in cond and t in unsup], "#B279A2"),
+              ("walk (prompt-conditioned BM25)", [t for t in drawn if t in cond and t not in unsup], "#E45756"),
+              ("global concept", [t for t in drawn if t in unsup and t not in cond], "#4C78A8"))
+    dfmax = max((len(members[t]) for t in drawn), default=1)
+    for name, ts, color in groups:
+        if not ts:
+            continue
+        fig.add_trace(go.Scatter(
+            x=[pos[t][0] for t in ts], y=[pos[t][1] for t in ts],
+            mode="markers+text", name=name,
+            text=ts, textposition="top center", textfont=dict(size=11),
+            marker=dict(size=[10 + 26 * len(members[t]) / dfmax for t in ts],
+                        color=color, line=dict(color="#333", width=1)),
+            hovertext=[f"{t} · in {len(members[t])} walked chunks" for t in ts],
+            hoverinfo="text", showlegend=True))
+    fig.update_layout(height=height, margin=dict(l=10, r=10, t=10, b=10),
+                      xaxis=dict(visible=False), yaxis=dict(visible=False),
+                      plot_bgcolor="white",
+                      legend=dict(orientation="h", y=-0.02))
+    return fig
+
+
+@st.cache_data(show_spinner=False, max_entries=16)
+def dendrite_state(run_id: str, q: str, _bnd=None, _members=None):
+    """See _dendrite_state; cache wrapper keyed by (run, prompt)."""
+    return _dendrite_state(_bnd, _members)
+
+
+def _dendrite_state(bnd, members):
+    """Both planes of the 3D layers view, dendrite-sorted (correlation
+    sorting.md; design: two 2D slices in 3D space, like two NN layers).
+
+    Chunk plane: each walked chunk's variable is its dense-cosine profile
+    against every other walked chunk; Pearson over those profiles with
+    n = #chunks gives the significance-gated correlation graph and chains.
+    Term plane: each drawn term's variable is its tf*idf column over the
+    walked chunks (the SAME term-document matrix, read from the other end).
+    Layouts are per-plane spring over |r| of significant links, seed 7."""
+    import numpy as np
+    ords = list(bnd.sampled)
+    E, kept = gt.subgraph_embeddings(conn, run, ords)
+    if len(kept) < 5:
+        return None
+    S = E @ E.T
+    ch = gt.dendrite_sort(S, kept)
+    # term pool: the walked chunks' OWN salient vocabulary (top-3 each) plus
+    # the community-drawn sets -- the subgraph on its own terms.
+    sal = gt.chunk_salient(conn, run, kept, k=3)
+    pool = sorted({t for o in kept for t in (sal.get(o, {}).get("top") or [])}
+                  | set(members))
+    counts = {o: Counter(gt.tokenize(gt.node(conn, run, o)["body"])) for o in kept}
+    def present(t, o):
+        return all(p in counts[o] for p in t.split("_"))
+    mem = {t: {o for o in kept if present(t, o)} for t in pool}
+    dfs = {t: len(mem[t]) for t in pool}
+    # tf of a phrase term = min part count (all parts must co-occur)
+    X = np.array([[min(counts[o].get(p, 0) for p in t.split("_")) *
+                   (np.log(len(kept) / dfs[t]) if dfs[t] else 0.0)
+                   for t in pool] for o in kept])
+    tm = gt.dendrite_sort(X, pool, min_support=4)
+    members = mem
+
+    def plane(out):
+        G = nx.Graph()
+        G.add_nodes_from(out["names"])
+        idx = {n_: i for i, n_ in enumerate(out["names"])}
+        for a in out["names"]:
+            for b in out["names"]:
+                if a < b and out["sig"][idx[a], idx[b]]:
+                    G.add_edge(a, b, weight=abs(out["r"][idx[a], idx[b]]))
+        pos = nx.spring_layout(G, weight="weight", seed=7, k=1.3)
+        backbone = [(c[i], c[i + 1]) for c in out["chains"] for i in range(len(c) - 1)]
+        sig_edges = [(a, b, G[a][b]["weight"]) for a, b in G.edges()]
+        chain_of = {n_: ci for ci, c in enumerate(out["chains"]) for n_ in c}
+        return {"pos": pos, "backbone": backbone, "sig": sig_edges,
+                "chain_of": chain_of, "chains": out["chains"]}
+    cross = [(o, t) for t in tm["names"] for o in (members.get(t) or [])
+             if o in set(kept)]
+    return {"chunks": plane(ch), "terms": plane(tm), "kept": kept, "cross": cross}
+
+
+def draw_layers3d(state, cid_of, src_of, height=700):
+    """The two planes drawn as flat slices at z=0 (chunks) and z=1 (terms),
+    cross-layer membership edges falling wherever each plane's spring layout
+    landed its endpoint. Deterministic."""
+    cp, tp = state["chunks"], state["terms"]
+    fig = go.Figure()
+    def seg3(pairs, pos, z, color, width):
+        xs, ys, zs = [], [], []
+        for a, b in pairs:
+            if a in pos and b in pos:
+                xs += [pos[a][0], pos[b][0], None]
+                ys += [pos[a][1], pos[b][1], None]
+                zs += [z, z, None]
+        if xs:
+            fig.add_trace(go.Scatter3d(x=xs, y=ys, z=zs, mode="lines",
+                                       line=dict(color=color, width=width),
+                                       hoverinfo="none", showlegend=False))
+    seg3([(a, b) for a, b, _ in cp["sig"]], cp["pos"], 0.0, "rgba(150,150,150,0.25)", 1)
+    seg3(cp["backbone"], cp["pos"], 0.0, "#E45756", 5)
+    seg3([(a, b) for a, b, _ in tp["sig"]], tp["pos"], 1.0, "rgba(150,150,150,0.25)", 1)
+    seg3(tp["backbone"], tp["pos"], 1.0, "#4C78A8", 5)
+    xs, ys, zs = [], [], []
+    for o, t in state["cross"]:
+        if o in cp["pos"] and t in tp["pos"]:
+            xs += [cp["pos"][o][0], tp["pos"][t][0], None]
+            ys += [cp["pos"][o][1], tp["pos"][t][1], None]
+            zs += [0.0, 1.0, None]
+    if xs:
+        fig.add_trace(go.Scatter3d(x=xs, y=ys, z=zs, mode="lines",
+                                   line=dict(color="rgba(120,120,180,0.14)", width=1),
+                                   hoverinfo="none", showlegend=False))
+    sym = {"brown": "square", "quotes": "diamond", "wiki": "circle", None: "circle"}
+    ords = [o for o in state["kept"] if o in cp["pos"]]
+    fig.add_trace(go.Scatter3d(
+        x=[cp["pos"][o][0] for o in ords], y=[cp["pos"][o][1] for o in ords],
+        z=[0.0] * len(ords), mode="markers", name="chunks",
+        marker=dict(size=5, color=[cid_color(cid_of.get(o, 0)) for o in ords],
+                    symbol=[sym.get(src_of.get(o)) or "circle" for o in ords],
+                    line=dict(color="#222", width=1)),
+        hovertext=[f"#{o} · c{cid_of.get(o)} · {src_of.get(o) or 'unlabelled'}"
+                   for o in ords],
+        hoverinfo="text"))
+    ts = [t for t in tp["pos"]]
+    fig.add_trace(go.Scatter3d(
+        x=[tp["pos"][t][0] for t in ts], y=[tp["pos"][t][1] for t in ts],
+        z=[1.0] * len(ts), mode="markers+text", name="terms", text=ts,
+        textfont=dict(size=9),
+        marker=dict(size=4, color=["#B279A2" for _ in ts],
+                    line=dict(color="#222", width=1)),
+        hovertext=[f"{t} · chain {tp['chain_of'].get(t)}" for t in ts],
+        hoverinfo="text"))
+    fig.update_layout(height=height, margin=dict(l=0, r=0, t=10, b=0),
+                      scene=dict(xaxis=dict(visible=False), yaxis=dict(visible=False),
+                                 zaxis=dict(visible=False, range=[-0.2, 1.3]),
+                                 aspectmode="manual",
+                                 aspectratio=dict(x=1.4, y=1.4, z=0.9)),
+                      legend=dict(orientation="h", y=0.02))
+    return fig
+
+
 def draw_global_map(comms, qrows, height=560):
     """Whole-run community map for the Map tab: every community, sized by
     member count, LABELLED BY ITS KEYWORDS, edges weighted by inter-community
@@ -322,9 +491,18 @@ def walk_state(run_id: str, q: str, _bnd=None, _embed=None):
     medoids = {c: (gt.local_medoid(conn, run, in_cid[c], weights=bnd.scores),
                    gt.community(conn, run, c)["medoid"]) for c in cids}
     med_ords = sorted({o for pair in medoids.values() for o in pair})
+    # term graph data (W10 extension): where each drawn term lives among the
+    # walked chunks, so terms can be graphed by co-occurrence. A phrase term
+    # counts as present when all its parts are in the chunk's token set.
+    drawn = sorted({t for ts in terms.values() for t in ts}
+                   | {t for ts in concept.values() for t in ts})
+    toks = {o: set(gt.tokenize(gt.node(conn, run, o)["body"])) for o in bnd.sampled}
+    term_members = {t: {o for o, s in toks.items()
+                        if all(p in s for p in t.split("_"))} for t in drawn}
     return {"touched": touched, "cids": cids, "concept": concept, "terms": terms,
             "cid_of": cid_of, "in_cid": in_cid, "xedges": xedges, "medoids": medoids,
-            "salient": gt.chunk_salient(conn, run, med_ords, k=3)}
+            "salient": gt.chunk_salient(conn, run, med_ords, k=3),
+            "term_members": term_members}
 
 
 # ================================================================ WALK
@@ -472,10 +650,43 @@ with tab_walk:
                            "ring.")
                 def _mark(o):
                     return f"**#{o}**" if org.get(o) == "bridge" else f"#{o}"
-                t_walk, t_glob = st.tabs(["This walk", "Global map"])
+                t_walk, t_terms, t_3d, t_glob = st.tabs(
+                    ["This walk", "Term graph", "3D layers", "Global map"])
                 with t_walk:
                     fig = draw_communities(touched, terms, xedges)
                     st.plotly_chart(fig, use_container_width=True)
+                with t_terms:
+                    st.caption("Terms as nodes; colour = which set claims the term "
+                               "(the walk's prompt-conditioned BM25 vocabulary vs the "
+                               "global unsupervised concept, both = purple). Edges = "
+                               "co-occurrence within the walked chunks.")
+                    tfig = draw_term_graph(terms, concept, ws["term_members"])
+                    if tfig is not None:
+                        st.plotly_chart(tfig, use_container_width=True)
+                    else:
+                        st.info("No drawn terms co-occur in this walk.")
+                with t_3d:
+                    st.caption("Two planes, like two layers of a network: chunks below "
+                               "(community colour, source shape), terms above, each "
+                               "spring-settled in its own slice; red/blue = dendrite "
+                               "chain backbones (correlation sorting, significance-gated "
+                               "with n = walked chunks); faint verticals = membership. "
+                               "Short vertical edges mean the two Louvain worlds agree.")
+                    ds = dendrite_state(str(run.run_id), q, _bnd=bnd,
+                                        _members=ws["term_members"])
+                    if ds is None:
+                        st.info("Walk too small (or no stored embeddings) for the "
+                                "layered view.")
+                    else:
+                        src_of = {o: gt.source_of(gt.node(conn, run, o))
+                                  for o in ds["kept"]}
+                        st.plotly_chart(draw_layers3d(ds, cid_of, src_of),
+                                        use_container_width=True)
+                        ct, tt = ds["chunks"]["chains"], ds["terms"]["chains"]
+                        st.caption(f"chunk chains: {len(ct)} "
+                                   f"(longest {max(map(len, ct)) if ct else 0}) · "
+                                   f"term chains: {len(tt)} "
+                                   f"(longest {max(map(len, tt)) if tt else 0})")
                 with t_glob:
                     st.caption("Every community in the run; filled = reached by this "
                                "walk. The same map the model sees.")

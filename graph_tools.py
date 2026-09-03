@@ -914,3 +914,101 @@ def best_path(conn, run: RunHandle, a: int, b: int, damp: float = 0.4):
         path.append(prev[path[-1]])
     path.reverse()
     return path, math.exp(-dist[b])
+
+
+# ---------------------------------------------------------------- dendrites
+def dendrite_sort(M, names, alpha: float = 0.05, min_support: int = 0):
+    """Correlation-chain decomposition -- the operator's 'dendrite sorting'
+    (correlation sorting.md, 2026-09-02). Columns of M are the variables;
+    rows are the observations (n for significance).
+
+    Require: M is (n_obs, n_var) float array-like; names labels the columns.
+    Guarantee: every kept variable lands in exactly ONE chain; chains are
+      internally collinear threads (each hop is the tail's strongest
+      significant unassigned partner), mutually decollinear groups (a new
+      chain opens at the unassigned variable with the highest MEAN significant
+      correlation -- the most connected remaining feature); a chain terminates
+      WHEN no significant unassigned candidate remains. Deterministic:
+      ties break by name order.
+    Maintain: preprocessing per column is signed log1p -> Yeo-Johnson ->
+      median/MAD z, so heavy-tailed, zero-heavy profiles (BM25 columns)
+      correlate on rank-like scales. Columns with fewer than `min_support`
+      nonzero observations are dropped before sorting (Pearson has nothing
+      to grip on a near-empty profile).
+
+    Returns {"chains": [[name,...],...], "r": (v,v) ndarray, "sig": bool
+    ndarray, "names": kept names, "dropped": [...]} -- r/sig are aligned to
+    the kept-name order.
+    """
+    import numpy as np
+    from scipy.stats import t as _t, yeojohnson
+
+    M = np.asarray(M, dtype=float)
+    n_obs = M.shape[0]
+    keep = [j for j in range(M.shape[1])
+            if np.count_nonzero(M[:, j]) >= min_support and np.ptp(M[:, j]) > 0]
+    dropped = [names[j] for j in range(M.shape[1]) if j not in set(keep)]
+    names = [names[j] for j in keep]
+    M = M[:, keep]
+    v = len(names)
+    if v == 0 or n_obs < 5:
+        return {"chains": [], "r": np.zeros((0, 0)), "sig": np.zeros((0, 0), bool),
+                "names": [], "dropped": dropped}
+
+    P = np.empty_like(M)
+    for j in range(v):
+        x = np.sign(M[:, j]) * np.log1p(np.abs(M[:, j]))
+        try:
+            x = yeojohnson(x)[0]
+        except Exception:
+            pass                                     # degenerate: keep log scale
+        med = np.median(x)
+        mad = np.median(np.abs(x - med))
+        P[:, j] = (x - med) / (mad if mad else 1.0)
+
+    R = np.atleast_2d(np.corrcoef(P, rowvar=False)) if v > 1 else np.zeros((1, 1))
+    R = np.nan_to_num(R, nan=0.0)
+    np.fill_diagonal(R, 0.0)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        tt = np.abs(R) * np.sqrt((n_obs - 2) / np.maximum(1e-12, 1 - R ** 2))
+    p = 2 * _t.sf(tt, df=n_obs - 2)
+    sig = (p < alpha) & (R > 0)                       # chains ride positive links
+    np.fill_diagonal(sig, False)
+
+    def mean_sig(j, pool):
+        vals = [R[j, k] for k in pool if k != j and sig[j, k]]
+        return float(np.mean(vals)) if vals else 0.0
+
+    unassigned = set(range(v))
+    chains = []
+    while unassigned:
+        master = max(sorted(unassigned), key=lambda j: (mean_sig(j, unassigned), -j))
+        chain = [master]
+        unassigned.remove(master)
+        tail = master
+        while True:
+            cands = [k for k in sorted(unassigned) if sig[tail, k]]
+            if not cands:
+                break                                 # the chain terminates here
+            tail = max(cands, key=lambda k: (R[tail, k], -k))
+            chain.append(tail)
+            unassigned.remove(tail)
+        chains.append([names[j] for j in chain])
+    return {"chains": chains, "r": R, "sig": sig, "names": names,
+            "dropped": dropped}
+
+
+def subgraph_embeddings(conn, run: RunHandle, ords: list[int]):
+    """Stored dense embeddings for a set of ords, L2-normalized, as
+    (ndarray, kept_ords). Ords without a stored embedding are omitted."""
+    import numpy as np
+    with conn.cursor() as cur:
+        cur.execute("""SELECT ord, embedding::text AS e FROM node_embedding
+                        WHERE run_id = %s AND ord = ANY(%s) ORDER BY ord""",
+                    (run.run_id, list(ords)))
+        rows = cur.fetchall()
+    if not rows:
+        return np.zeros((0, 0)), []
+    E = np.array([np.fromstring(r["e"].strip("[]"), sep=",") for r in rows])
+    E /= np.maximum(np.linalg.norm(E, axis=1, keepdims=True), 1e-12)
+    return E, [r["ord"] for r in rows]

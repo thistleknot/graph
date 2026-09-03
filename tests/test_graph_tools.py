@@ -737,3 +737,52 @@ def test_communities_touched_sources_empty_on_pre_r20_run(conn, run):
 
 def test_run_sources_empty_on_pre_r20_run(conn, run):
     assert gt.run_sources(conn, run) == {}
+
+
+# ---------------------------------------------------------------- dendrites
+def test_dendrite_sort_recovers_planted_chains():
+    """Two planted collinear families and one independent variable: the sort
+    must thread each family into one chain and leave the loner alone
+    (correlation sorting.md semantics)."""
+    import numpy as np
+    rng = np.random.default_rng(7)
+    n = 120
+    a = rng.normal(size=n)
+    b = a + rng.normal(scale=0.3, size=n)
+    c = b + rng.normal(scale=0.3, size=n)
+    p = rng.normal(size=n)
+    q = p + rng.normal(scale=0.3, size=n)
+    lone = rng.normal(size=n)
+    M = np.column_stack([a, b, c, p, q, lone])
+    out = gt.dendrite_sort(M, ["a", "b", "c", "p", "q", "lone"])
+    fam = {frozenset(ch) for ch in out["chains"]}
+    assert frozenset(["a", "b", "c"]) in fam
+    assert frozenset(["p", "q"]) in fam
+    assert frozenset(["lone"]) in fam
+    # every variable in exactly one chain
+    flat = [x for ch in out["chains"] for x in ch]
+    assert sorted(flat) == ["a", "b", "c", "lone", "p", "q"]
+
+
+def test_dendrite_sort_significance_uses_n():
+    """The same r that chains at n=120 must NOT chain at n=8 -- significance
+    is a function of observation count, not correlation alone."""
+    import numpy as np
+    rng = np.random.default_rng(11)
+    a = rng.normal(size=8)
+    b = a + rng.normal(scale=0.9, size=8)     # modest r, tiny n
+    M = np.column_stack([a, b])
+    out = gt.dendrite_sort(M, ["a", "b"])
+    assert all(len(ch) == 1 for ch in out["chains"])
+
+
+def test_dendrite_sort_floors_support_and_degenerates():
+    import numpy as np
+    rng = np.random.default_rng(3)
+    x = rng.normal(size=60)
+    sparse = np.zeros(60); sparse[:2] = 1.0    # 2 nonzero < min_support
+    flat = np.ones(60)                          # zero variance
+    M = np.column_stack([x, sparse, flat])
+    out = gt.dendrite_sort(M, ["x", "sparse", "flat"], min_support=4)
+    assert out["names"] == ["x"]
+    assert set(out["dropped"]) == {"sparse", "flat"}
