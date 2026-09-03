@@ -357,8 +357,10 @@ def _dendrite_state(bnd, members):
         chain_of = {n_: ci for ci, c in enumerate(out["chains"]) for n_ in c}
         return {"pos": pos, "backbone": backbone, "sig": sig_edges,
                 "chain_of": chain_of, "chains": out["chains"]}
-    cross = [(o, t) for t in tm["names"] for o in (members.get(t) or [])
-             if o in set(kept)]
+    tix = {t: j for j, t in enumerate(pool)}
+    oix = {o: i for i, o in enumerate(kept)}
+    cross = [(o, t, float(X[oix[o], tix[t]])) for t in tm["names"]
+             for o in (members.get(t) or []) if o in set(kept)]
     return {"chunks": plane(ch), "terms": plane(tm), "kept": kept, "cross": cross}
 
 
@@ -380,19 +382,23 @@ def draw_layers3d(state, cid_of, src_of, height=700):
                                        line=dict(color=color, width=width),
                                        hoverinfo="none", showlegend=False))
     seg3([(a, b) for a, b, _ in cp["sig"]], cp["pos"], 0.0, "rgba(150,150,150,0.25)", 1)
-    seg3(cp["backbone"], cp["pos"], 0.0, "#E45756", 5)
+    seg3(cp["backbone"], cp["pos"], 0.0, "rgba(228,87,86,0.75)", 3)
     seg3([(a, b) for a, b, _ in tp["sig"]], tp["pos"], 1.0, "rgba(150,150,150,0.25)", 1)
-    seg3(tp["backbone"], tp["pos"], 1.0, "#4C78A8", 5)
-    xs, ys, zs = [], [], []
-    for o, t in state["cross"]:
-        if o in cp["pos"] and t in tp["pos"]:
-            xs += [cp["pos"][o][0], tp["pos"][t][0], None]
-            ys += [cp["pos"][o][1], tp["pos"][t][1], None]
-            zs += [0.0, 1.0, None]
-    if xs:
-        fig.add_trace(go.Scatter3d(x=xs, y=ys, z=zs, mode="lines",
-                                   line=dict(color="rgba(120,120,180,0.14)", width=1),
-                                   hoverinfo="none", showlegend=False))
+    seg3(tp["backbone"], tp["pos"], 1.0, "rgba(76,120,168,0.85)", 3)
+    ws_ = sorted(w for _, _, w in state["cross"]) or [0.0]
+    q3 = ws_[int(0.75 * (len(ws_) - 1))]
+    for strong, color, width in ((True, "rgba(90,90,160,0.55)", 2.5),
+                                 (False, "rgba(120,120,170,0.10)", 1)):
+        xs, ys, zs = [], [], []
+        for o, t, w in state["cross"]:
+            if (w >= q3) is strong and o in cp["pos"] and t in tp["pos"]:
+                xs += [cp["pos"][o][0], tp["pos"][t][0], None]
+                ys += [cp["pos"][o][1], tp["pos"][t][1], None]
+                zs += [0.0, 1.0, None]
+        if xs:
+            fig.add_trace(go.Scatter3d(x=xs, y=ys, z=zs, mode="lines",
+                                       line=dict(color=color, width=width),
+                                       hoverinfo="none", showlegend=False))
     sym = {"brown": "square", "quotes": "diamond", "wiki": "circle", None: "circle"}
     ords = [o for o in state["kept"] if o in cp["pos"]]
     fig.add_trace(go.Scatter3d(
@@ -415,9 +421,9 @@ def draw_layers3d(state, cid_of, src_of, height=700):
         hoverinfo="text"))
     fig.update_layout(height=height, margin=dict(l=0, r=0, t=10, b=0),
                       scene=dict(xaxis=dict(visible=False), yaxis=dict(visible=False),
-                                 zaxis=dict(visible=False, range=[-0.2, 1.3]),
+                                 zaxis=dict(visible=False, range=[-0.15, 1.2]),
                                  aspectmode="manual",
-                                 aspectratio=dict(x=1.4, y=1.4, z=0.9)),
+                                 aspectratio=dict(x=1.5, y=1.5, z=0.65)),
                       legend=dict(orientation="h", y=0.02))
     return fig
 

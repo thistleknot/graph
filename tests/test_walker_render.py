@@ -273,7 +273,7 @@ def test_draw_layers3d_separates_planes_and_bridges_them(app):
                   "backbone": [("war", "navy")], "sig": [("war", "navy", 0.7)],
                   "chain_of": {"war": 0, "navy": 0}, "chains": [["war", "navy"]]},
         "kept": [1, 2, 3],
-        "cross": [(1, "war"), (2, "navy"), (3, "war")],
+        "cross": [(1, "war", 2.0), (2, "navy", 0.4), (3, "war", 1.1)],
     }
     fig = app.draw_layers3d(state, {1: 0, 2: 0, 3: 1},
                             {1: "wiki", 2: "brown", 3: None})
