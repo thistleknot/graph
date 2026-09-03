@@ -2,8 +2,8 @@
 graph, built over the run's EXISTING salient vocabulary (node.attrs->'tf'),
 plus resolution v1: deterministic canonical ids over that population (E6-E8).
 
-Spec: .spec/specs/graph-explorer/design.md §6.15 blocks C + D, guards E1-E8
-Task: playbook.md T4 (v0), T19 (resolution v1)
+Spec: .spec/specs/graph-explorer/design.md §6.15 blocks C + D, guards E1-E9
+Task: playbook.md T4 (v0), T19 (resolution v1), T24 (E9 scale bound)
 
 E1  Entities v0 SHALL be populated from the run's EXISTING salient/phrase vocabulary
     (the terms already persisted in node.attrs->'tf'), typed "term_v0", by
@@ -65,6 +65,32 @@ E8  Resolution SHALL be additive and idempotent. canonical_id SHALL be added by
     only through an explicit flag defaulting to OFF, and where the model or the
     dependency is absent it SHALL contribute no candidates rather than raise.
 
+E9  WHERE the run's df-eligible pool (E4's floor) exceeds VOCAB_BOUND terms, pair
+    enumeration SHALL restrict further to the top-VOCAB_BOUND terms of that pool BY
+    DOCUMENT FREQUENCY, ties broken by ascending term name -- a deterministic cut
+    on the pool's cardinality, never a sample. Measured motivation: unbounded
+    pair_counts on mixed-full-dual (10,830 chunks) enumerated 2.47e9 pair slots,
+    and raising MIN_JOINT_CHUNKS barely helps (1.75e9 at df>=50, 1.09e9 at df>=200)
+    because the explosion concentrates in the highest-df terms themselves, which a
+    floor cannot remove -- only a cap on how MANY are eligible bounds it.
+    VOCAB_BOUND (= 65, halved once from 130 after the first bounded live build
+    still overran the 10-minute budget) keeps the worst case at
+    n_chunks * C(VOCAB_BOUND, 2) ~ 2.3e7 slots on this corpus size. Scoped to
+    entity_edges candidate generation
+    only: entities and mentions still cover the FULL vocabulary (E1, E2
+    unchanged). WHERE the pool is at or below VOCAB_BOUND the cut SHALL be a
+    no-op, byte-identical to today's enumeration.
+    (amended 2026-09-03.) The bound covers pair enumeration but NOT resolution:
+    string_candidates enumerates over every entity NAME, and the first bounded
+    live mixed-full-dual build committed (275,328 entities / 5,813,717 mentions
+    / 2,080 entity_edges) then hung in resolve_entities, killed at 23 min.
+    resolve_entities SHALL therefore restrict its CANDIDATE population to the
+    entities appearing in entity_edges for the run (either endpoint) -- 275,328
+    names down to 65 here, 22.9 s -- while canonical_id assignment stays over the FULL
+    population (E8 unchanged). Lossless by E7, not a behavior change: a merge
+    needs MIN_SHARED_NEIGHBORS shared entity_edges neighbors, so an edge-less
+    entity can never merge and its candidate pairs are only ever discarded.
+
 Require:  a live run exists for the given label (graph_tools.get_run).
 Guarantee: build_entities() is read-only against node/edge/community and
           idempotent per run -- a rebuild replaces exactly that run's three
@@ -104,6 +130,16 @@ GRAM_N = 3                  # E6: blocking key width
 MAX_GRAM_BLOCK = 2000       # E6: a 3-gram in more blocks than this is a stopword-
                             # grade key and is skipped; declared lossy, bounded
 EMB_THRESHOLD = 0.85        # E8: cosine floor for the OFF-by-default third signal
+VOCAB_BOUND = 65            # E9: cap on the df-eligible pool's cardinality before pair
+                            # enumeration. Measured: unbounded pair_counts on
+                            # mixed-full-dual (10,830 chunks) hit 2.47e9 pair slots, and
+                            # raising MIN_JOINT_CHUNKS barely helped (design.md §6.19) --
+                            # a cap on eligible COUNT (not on df value) is what bounds
+                            # the worst case, at n_chunks * C(N, 2) ~ 9.1e7 slots at 130.
+                            # 130 still ran past the 10-minute budget live on
+                            # mixed-full-dual (Article VII), so halved once per plan to
+                            # 65 (~2.3e7 worst-case slots) -- Article VI: the pure-Python
+                            # per-chunk loop, not the DB write, is the live bottleneck.
 
 _DDL = (
     """CREATE TABLE IF NOT EXISTS entities (
@@ -226,7 +262,8 @@ def pair_bm25(a, b, joint_ords: list, tf_by_ord: dict, df: dict, dl: dict,
     return total
 
 
-def pair_counts(tf_by_ord: dict, df: dict, min_joint: int = MIN_JOINT_CHUNKS) -> dict:
+def pair_counts(tf_by_ord: dict, df: dict, min_joint: int = MIN_JOINT_CHUNKS,
+                vocab_bound: int | None = VOCAB_BOUND) -> dict:
     """Maps canonical (a, b), a < b -> list of joint ords, floor already
     applied (E4, inclusive boundary at min_joint).
 
@@ -234,8 +271,17 @@ def pair_counts(tf_by_ord: dict, df: dict, min_joint: int = MIN_JOINT_CHUNKS) ->
     joint(a, b) <= min(df(a), df(b)) -- a term below the floor can never
     reach it, so dropping it first is the only reason the O(V^2) pair
     enumeration stays bounded per chunk.
+
+    E9: WHERE that floor-eligible pool still exceeds vocab_bound terms, cut
+    further to the top-vocab_bound BY DOCUMENT FREQUENCY, ties broken by
+    ascending term name -- deterministic, a cap on pool cardinality rather
+    than on df value (a floor cannot bound the worst case; §6.19 measured
+    that raising MIN_JOINT_CHUNKS barely moves the pair count). A no-op
+    when the pool is already at or below the bound.
     """
     floor_ok = {t for t, d in df.items() if d >= min_joint}
+    if vocab_bound is not None and len(floor_ok) > vocab_bound:
+        floor_ok = set(sorted(floor_ok, key=lambda t: (-df[t], t))[:vocab_bound])
     pairs: dict = {}
     for ord_, terms in tf_by_ord.items():
         present = sorted(t for t in terms if t in floor_ok)
@@ -413,13 +459,31 @@ def resolve_entities(conn, run, threshold: float = SIM_THRESHOLD,
                      model_dir: str | None = None) -> dict:
     """The only writer of canonical_id (E8). Deterministic: every
     intermediate is sorted, so two runs over the same rows return an equal
-    dict."""
+    dict.
+
+    E9 (amended): candidate generation runs over the EDGE-BEARING entities
+    only -- lossless, because E7 needs >= min_shared shared entity_edges
+    neighbors and an entity with no entity_edges row has none. canonical_id is
+    still assigned over the full population.
+    """
     ensure_schema(conn)
     rid = run.run_id
 
     with conn.cursor(row_factory=_tuple_row) as cur:
         cur.execute("SELECT entity_id, name FROM entities WHERE run_id = %s", (rid,))
         names_by_id = {row[0]: row[1] for row in cur.fetchall()}
+
+        # E9 (amended): the candidate population is the edge-bearing entities
+        # only. Lossless via E7 -- no entity_edges row means no shared
+        # neighbor, so such a pair could never survive corroboration anyway.
+        cur.execute("""
+            SELECT e.entity_id, e.name FROM entities e
+             WHERE e.run_id = %(rid)s
+               AND EXISTS (SELECT 1 FROM entity_edges x
+                            WHERE x.run_id = %(rid)s
+                              AND (x.a = e.entity_id OR x.b = e.entity_id))
+        """, {"rid": rid})
+        cand_names = {row[0]: row[1] for row in cur.fetchall()}
 
         cur.execute("""
             WITH und AS (
@@ -434,9 +498,9 @@ def resolve_entities(conn, run, threshold: float = SIM_THRESHOLD,
         """, {"rid": rid, "k": top_k})
         edge_rows = cur.fetchall()
 
-    candidates = string_candidates(names_by_id, threshold=threshold)
+    candidates = string_candidates(cand_names, threshold=threshold)
     if use_embeddings:
-        emb = embedding_candidates(names_by_id, model_dir=model_dir)
+        emb = embedding_candidates(cand_names, model_dir=model_dir)
         candidates = sorted(set(candidates) | set(emb))
     neighbors = neighbor_sets(edge_rows, top_k=top_k)
     merged_pairs = corroborated(candidates, neighbors, min_shared=min_shared)

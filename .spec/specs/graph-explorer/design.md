@@ -1620,7 +1620,7 @@ Every row gets a non-NULL `canonical_id`: a singleton's canonical is itself, so 
 consumer joins on `canonical_id` unconditionally and never has to branch on NULL.
 
 Guards: S15, S16, S17, S18 in `sampler.py`; R22 in `chunkgraph.py` (with `ingest_mixed.py`,
-`pg_store.py` and the display consumers honouring it); E1-E8 in `entities.py`. Bodies below
+`pg_store.py` and the display consumers honouring it); E1-E9 in `entities.py`. Bodies below
 are ASCII and are pasted into those docstrings unchanged -- spec text and docstring are the
 same bytes by construction, so there is nothing to transliterate and nothing to re-diff.
 
@@ -1757,6 +1757,45 @@ E8  Resolution SHALL be additive and idempotent. canonical_id SHALL be added by
     embedding signal (model2vec, fixed threshold, deterministic) SHALL be reachable
     only through an explicit flag defaulting to OFF, and where the model or the
     dependency is absent it SHALL contribute no candidates rather than raise.
+
+E9  (new 2026-09-03; closes the scale-bound row §6.19 MEASURED left open.) WHERE
+    the run's df-eligible pool (E4's `df >= MIN_JOINT_CHUNKS` floor, E1's nomen
+    pool) exceeds VOCAB_BOUND terms, pair enumeration SHALL restrict further to
+    the top-VOCAB_BOUND terms of that pool BY DOCUMENT FREQUENCY, ties broken by
+    ascending term name -- a deterministic cut on the pool's cardinality, never a
+    sample. Measured motivation: unbounded `pair_counts` on `mixed-full-dual`
+    (10,830 chunks) enumerated 2.47e9 pair slots at the default floor, and §6.19
+    already measured that RAISING the floor barely helps (1.75e9 at df>=50, 1.09e9
+    at df>=200) because the explosion is concentrated in the highest-df terms
+    themselves, which a floor cannot remove -- only a cap on how MANY of them are
+    eligible bounds the enumeration. VOCAB_BOUND (= 130 initially, ~9.1e7 worst
+    case) still overran the 10-minute Article VII budget live -- the pure-Python
+    per-chunk enumeration, not the DB write, is the bottleneck -- so it was halved
+    once per plan to 65, keeping the worst case at n_chunks * C(VOCAB_BOUND, 2) ~
+    2.3e7 slots on this corpus size, regardless of how many chunks any one term
+    appears in. The cut is scoped to `entity_edges`
+    candidate generation only: `entities` and `mentions` still cover the FULL
+    vocabulary (E1, E2 unchanged) -- an entity outside the bound simply carries no
+    entity_edges rows, and so cannot reach resolution (E7) via the
+    neighbor-corroboration path. WHERE the pool is at or below VOCAB_BOUND, the
+    cut SHALL be a no-op and enumeration SHALL be byte-identical to today's.
+
+    (amended 2026-09-03, second live measurement.) The bound above covers pair
+    enumeration but NOT `resolve_entities`, whose `string_candidates` pass
+    enumerates over every entity NAME in the run. Measured: the first bounded
+    live `mixed-full-dual` build committed correctly (275,328 entities,
+    5,813,717 mentions, 2,080 entity_edges) and then hung in resolution, killed
+    at 23 min -- the blocked-gram pass is near-quadratic in the name count and
+    T19 already measured 17.9 s at 9,100 names. Therefore: `resolve_entities`
+    SHALL restrict its CANDIDATE population to the entities appearing in
+    `entity_edges` for the run (either endpoint), leaving `canonical_id`
+    assignment over the FULL population unchanged (E8: non-NULL on every row,
+    an unmerged entity is its own canonical). This is lossless by E7, not a
+    behavior change: merging requires >= MIN_SHARED_NEIGHBORS shared
+    `entity_edges` neighbors, so an entity with no `entity_edges` row can never
+    be merged and its candidate pairs can only ever be discarded. On this run
+    the restriction takes the resolution population from 275,328 names to 65
+    (= VOCAB_BOUND), and the whole resolve pass then runs in 22.9 s.
 
 ### 6.16 Export, live annotation, and the second-order term lane (2026-09-03)
 
@@ -2023,6 +2062,17 @@ byte-identical results row for row. This is the expected outcome from step 0's f
 above (no entities table means the alias map reads back `{}` and W21's degrade-to-empty
 guard makes it a no-op) -- **it is recorded as unmeasured-vacuous, not measured-neutral,
 and the default stays False.** A no-op cannot be evidence for a flip.
+
+MEASURED (T25, 2026-09-03, after T24/E9 populated mixed-full-dual): with the entities
+table present (275,328 entities, resolution restricted losslessly to the 65 edge-bearing
+terms per E9's amendment), resolution finds 0 merged pairs and 0 alias groups on this run
+-- the E9-bounded pool is the highest-df common vocabulary, which carries no
+near-duplicate surface forms. Diagnostic baseline and flag-ON are both 18/20, FAIL=[E3],
+identical row for row. This is now a REAL measurement of the shipped configuration:
+alias expansion is a measured no-op on mixed-full-dual at the current E9 bound, and the
+default stays False. The lever that would change this is widening E9's VOCAB_BOUND (a
+spec decision with a build-cost trade-off), not the expansion mechanism, whose behavior
+is proven on mixed-smoke (905 alias groups; "aboard"->"board" surfaced 5 new chunks).
 
 `resolve_entities` was run once against `mixed-smoke` (bounded invocation from `.tmp/`,
 `entities.py` untouched) to give the alias table real rows: the plain call completed in

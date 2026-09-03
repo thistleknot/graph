@@ -89,6 +89,46 @@ def test_floor_drops_pairs_below_five_joint_chunks():
     assert len(pairs[(2, 3)]) == 5
 
 
+def test_vocab_bound_is_noop_below_threshold():
+    # 6 terms, all above min_joint, all co-occurring in chunks 0-4 -> 15 pairs
+    # unbounded. vocab_bound (10) exceeds the pool (6), so nothing is cut.
+    terms = [f"t{i}" for i in range(6)]
+    tf_by_ord = {c: {t: 1 for t in terms} for c in range(5)}
+    df = {t: 10 - i for i, t in enumerate(terms)}   # t0=10 ... t5=5, all >= 5
+    unbounded = ent.pair_counts(tf_by_ord, df, min_joint=5, vocab_bound=None)
+    bounded = ent.pair_counts(tf_by_ord, df, min_joint=5, vocab_bound=10)
+    assert bounded == unbounded
+    assert len(bounded) == 15   # C(6, 2)
+
+
+def test_vocab_bound_caps_the_pool_above_threshold_by_document_frequency():
+    terms = [f"t{i}" for i in range(6)]
+    tf_by_ord = {c: {t: 1 for t in terms} for c in range(5)}
+    df = {t: 10 - i for i, t in enumerate(terms)}   # t0=10 (highest) ... t5=5
+    pairs = ent.pair_counts(tf_by_ord, df, min_joint=5, vocab_bound=3)
+    # only the top-3 by df (t0, t1, t2) survive the cut
+    assert set(pairs) == {("t0", "t1"), ("t0", "t2"), ("t1", "t2")}
+    for a, b in pairs:
+        assert a not in ("t3", "t4", "t5")
+        assert b not in ("t3", "t4", "t5")
+
+
+def test_vocab_bound_cut_ties_broken_by_ascending_term_name():
+    # three terms tied on df; vocab_bound=2 keeps the two lexicographically
+    # smallest names, not an arbitrary two.
+    terms = ["zz", "mm", "aa"]
+    tf_by_ord = {c: {t: 1 for t in terms} for c in range(5)}
+    df = {t: 5 for t in terms}
+    pairs = ent.pair_counts(tf_by_ord, df, min_joint=5, vocab_bound=2)
+    assert set(pairs) == {("aa", "mm")}
+
+    # order of dict construction must not matter (determinism)
+    tf_by_ord_2 = {c: {t: 1 for t in reversed(terms)} for c in range(5)}
+    df_2 = {t: 5 for t in reversed(terms)}
+    pairs_2 = ent.pair_counts(tf_by_ord_2, df_2, min_joint=5, vocab_bound=2)
+    assert pairs_2.keys() == pairs.keys()
+
+
 def test_pairs_are_canonical_a_lt_b():
     tf_by_ord = {c: {3: 1, 1: 1, 2: 1} for c in range(6)}
     df = {1: 6, 2: 6, 3: 6}
@@ -507,3 +547,45 @@ def test_a_planted_near_duplicate_merges_end_to_end(db):
 
     assert result["resolution"]["merged_pairs"] == 1
     assert result["resolution"]["aliases"] == 1
+
+
+# ------------------------------------------- E9 amended: resolution population
+# Spec: .spec/specs/graph-explorer/design.md E9 (amended 2026-09-03) - Task: playbook.md T24
+
+
+def test_an_edgeless_entity_is_not_a_resolution_candidate(db, run_a):
+    """E9 (amended): the candidate population is the edge-bearing entities only.
+    'alphaa' is planted with no entity_edges row, so it never reaches
+    string_candidates -- even though it scores >= SIM_THRESHOLD against
+    'alpha', which does have edges. Lossless by E7: with no neighbors it could
+    never have cleared corroboration anyway, so it stays its own canonical."""
+    conn, run, _ = run_a
+    ent.build_entities(conn, run)
+
+    with conn.cursor(row_factory=ent._tuple_row) as cur:
+        cur.execute("SELECT max(entity_id) FROM entities WHERE run_id=%s", (run.run_id,))
+        new_id = cur.fetchone()[0] + 1
+    with conn.cursor() as cur:
+        cur.execute("INSERT INTO entities (run_id, entity_id, name, type, canonical_id) "
+                   "VALUES (%s, %s, 'alphaa', %s, %s)",
+                   (run.run_id, new_id, ent.ENTITY_TYPE, new_id))
+    conn.commit()
+
+    # the pair IS a string match -- the cut is the population, not the scorer
+    assert ent.name_similarity("alpha", "alphaa") >= ent.SIM_THRESHOLD
+    assert ("alpha", "alphaa") in [
+        (a, b) for a, b in ent.string_candidates({"alpha": "alpha", "alphaa": "alphaa"})]
+
+    result = ent.resolve_entities(conn, run)
+    assert result["candidates"] == 0          # alphaa never entered the pool
+    assert result["merged_pairs"] == 0
+    assert result["aliases"] == 0
+
+    with conn.cursor(row_factory=ent._tuple_row) as cur:
+        cur.execute("SELECT canonical_id FROM entities WHERE run_id=%s AND entity_id=%s",
+                   (run.run_id, new_id))
+        assert cur.fetchone()[0] == new_id    # E8 still assigns over the FULL population
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM entities WHERE run_id=%s AND entity_id=%s",
+                   (run.run_id, new_id))
+    conn.commit()
