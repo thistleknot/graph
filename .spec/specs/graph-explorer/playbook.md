@@ -156,7 +156,13 @@ One line each. Status is the only thing that changes in this file.
   MIN_JOINT_CHUNKS=5 floor (1.75e9 at df>=50, 1.45e9 at df>=100, 1.09e9 at df>=200; no
   floor terminates in minutes on this corpus). Open spec question for entities.py, own
   ledger row, not this campaign's.
-- [OPEN] alias expansion default stays OFF until full-dual entities are populated --
+- [DONE 2026-09-03] alias default measured for real (T25): full-dual entities populated
+  via T24/E9 (275,328 entities; resolution losslessly restricted to the 65 edge-bearing
+  terms); 0 alias groups on this run -- highest-df vocabulary has no near-duplicate
+  surface forms. Baseline and flag-ON both 18/20 identical. Default stays False as a
+  MEASURED no-op at the current E9 bound; the remaining lever is widening VOCAB_BOUND
+  (spec decision, build-cost trade-off). Mechanism itself proven on mixed-smoke.
+  Superseded text: alias expansion default stays OFF until full-dual entities are populated --
   flag-ON on mixed-full-dual was vacuous (no entities table, map reads back {}, W21's
   degrade guard makes it a no-op: 18/20 byte-identical, unmeasured-vacuous not
   measured-neutral). Real behavior only demonstrated on mixed-smoke (905 alias groups,

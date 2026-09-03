@@ -629,3 +629,45 @@ fixed seeds), do-no-harm = frozen diagnostic keeps 18/20 with the same pass set,
   evidence, plus 2 new [OPEN] rows (E6 scale bound, alias-default-OFF rationale). PIPELINE.md
   gained the named-metrics row, the ppr-beside-dwpc note, the entities/text2cypher periphery
   paragraph, and Q in the guard-letter legend.
+
+## Layer 8 -- sequential (close the campaign's own open rows: E6 scale bound, then the alias default)
+- [DONE] T24 Bound the entity build so mixed-full-dual fits the budget (E9)
+  _Files:_ entities.py, tests/test_entities.py, .spec/specs/graph-explorer/design.md
+  _Verify:_ pytest tests/test_entities.py -q && PYTHONPATH=. python entities.py mixed-full-dual (bounded, < 10 min)
+  _Notes:_ Spec first (E9): WHERE the run's vocabulary exceeds a size bound, the pair
+  enumeration SHALL restrict to the top-N terms by document frequency within a df band
+  (the E1 nomen pool made explicit and capped) -- a deterministic eligibility cut, not a
+  sampling. Default N sized so pair_counts stays under ~1e8 slots on the 10.8k-chunk run.
+  Then populate entities + resolve on mixed-full-dual within the bound and report
+  entities/edges/aliases counts. Amend E6's note with the measured before/after.
+  _Lessons:_ VOCAB_BOUND 130 -> 65 bounded the BUILD, and the build did commit on
+  mixed-full-dual (275,328 entities / 5,813,717 mentions / 2,080 entity_edges, run
+  bfa594df) -- but the 23-min kill was in resolve_entities, not the build: E9 capped
+  pair enumeration and left string_candidates enumerating all 275k NAMES (near
+  quadratic; T19 measured 17.9 s at 9.1k). Fix is a derived optimization, not a
+  behavior change: resolution's CANDIDATE population is now the edge-bearing
+  entities only (SQL EXISTS against entity_edges), lossless by E7 -- a merge needs
+  >= 2 shared entity_edges neighbors, so an edge-less entity can never merge.
+  Population 275,328 -> 65; whole resolve pass 22.9 s, 0 candidates, 0 merged pairs,
+  0 alias groups, 0 NULL canonical_id. E9 amended in both design.md and the module
+  docstring with that measurement. 27/27 pytest green incl. a new test that an
+  edge-less near-duplicate never enters the pool. Trap: a killed run leaves an
+  idle-in-transaction backend holding the entities lock -- the DB test module hangs
+  until it is pg_terminate_backend'd, which looks exactly like a code hang.
+  Hands T25 a live but EMPTY alias table: 0 aliases means expand_aliases has nothing
+  to expand on this run, so T25's measurement is vacuous unless the resolution
+  population is widened (that would be a new spec decision, not a T25 edit).
+
+- [DONE] T25 Measure the alias flag for real, decide the default (S19 disposition)
+  _Files:_ .spec/specs/graph-explorer/design.md, sampler.py, tests/test_sampler.py
+  _Verify:_ PYTHONPATH=. python .tmp/diag_rerun.py mixed-full-dual (baseline + --expand-aliases)
+  _Notes:_ Consumes T24's populated table. Baseline must equal 18/20 same pass set; then
+  flag-ON. Flip expand_aliases default ONLY on same-pass-set-or-better (S19 amendment +
+  docstring + tests updated with the measurement); otherwise record measured-neutral/harm
+  and leave off. Either way the vacuous-ON note in the spec playbook is replaced by the
+  real measurement.
+  _Lessons:_ Measured for real this time: T24 populated full-dual (275,328 entities), E9's
+  lossless edge-bearing restriction leaves 65 resolution candidates, 0 aliases -- top-df
+  vocabulary has no near-duplicate surface forms. Baseline and flag-ON both 18/20 identical
+  row for row. Default stays False as a measured no-op; the lever is VOCAB_BOUND width
+  (spec decision), not the mechanism (proven on mixed-smoke). No sampler code change needed.
