@@ -238,6 +238,13 @@ def draw_communities(touched, terms, xedges, height=520):
                                  line=dict(color="#bbb", width=1.2),
                                  hoverinfo="none", showlegend=False))
     mx = max(t["hits"] for t in touched)
+
+    def _hover(t):
+        s = f"c{t['cid']} · {t['hits']} of {t['size']}"
+        if t.get("density") is not None:
+            s += f" · d={t['density']:.3f} c={t['conductance']:.3f}"
+        return s
+
     fig.add_trace(go.Scatter(
         x=[pos[t["cid"]][0] for t in touched],
         y=[pos[t["cid"]][1] for t in touched],
@@ -248,7 +255,7 @@ def draw_communities(touched, terms, xedges, height=520):
         marker=dict(size=[14 + 40 * t["hits"] / mx for t in touched],
                     color=[cid_color(t["cid"]) for t in touched],
                     line=dict(color="#333", width=1)),
-        hovertext=[f"c{t['cid']} · {t['hits']} of {t['size']}" for t in touched],
+        hovertext=[_hover(t) for t in touched],
         hoverinfo="text", showlegend=False))
     fig.update_layout(height=height, margin=dict(l=10, r=10, t=10, b=10),
                       xaxis=dict(visible=False), yaxis=dict(visible=False),
@@ -486,6 +493,11 @@ def walk_state(run_id: str, q: str, _bnd=None, _embed=None):
     (run, prompt); the underscore args are inputs Streamlit must not hash."""
     bnd = _bnd
     touched = gt.communities_touched(conn, run, bnd.sampled)
+    cm = {c["cid"]: c for c in gt.community_metrics(conn, run)["communities"]}
+    for t in touched:
+        m = cm.get(t["cid"])
+        if m:
+            t["density"], t["conductance"] = m["density"], m["conductance"]
     cids = [t["cid"] for t in touched]
     concept = gt.community_terms(conn, run, cids, k=3)
     terms = gt.query_terms(conn, run, cids, q, k=3, embed=_embed)
@@ -568,7 +580,8 @@ with tab_walk:
                                     for o in ds_["kept"]}
                         digest = interpret.render_digest(
                             touched, kw, src_counts, ds_["chunks"]["chains"],
-                            ds_["terms"]["chains"], cset, uset, strong, pw, resolver)
+                            ds_["terms"]["chains"], cset, uset, strong, pw, resolver,
+                            metrics={t["cid"]: t for t in touched if "density" in t})
                     st.session_state["assess"] = (q, interpret.reason(
                         conn, run, bnd, terms, concept, embed=embed,
                         judge=True, pw=pw, digest=digest))
@@ -585,7 +598,9 @@ with tab_walk:
                                      "kept": ds_["kept"]},
                                     [{"cid": t["cid"],
                                       "keywords": kw.get(t["cid"], []),
-                                      "size": t["size"], "hits": t["hits"]}
+                                      "size": t["size"], "hits": t["hits"],
+                                      "density": t.get("density"),
+                                      "conductance": t.get("conductance")}
                                      for t in touched],
                                     prompt=q)
                         except Exception as e:              # noqa: BLE001

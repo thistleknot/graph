@@ -192,6 +192,21 @@ def test_draw_communities_labels_nodes_with_terms(app):
     labels = [tr for tr in fig.data if tr.mode and "text" in tr.mode][0].text
     assert list(labels) == ["jury / trial / verdict", "congo / belgian"]
     assert app.draw_communities([], {}, {}) is None
+    node_trace = fig.data[-1]
+    assert "d=" not in node_trace.hovertext[0]         # T22: absent case degrades cleanly
+
+
+def test_community_hovertext_shows_density_and_conductance(app):
+    """design.md §6.17 T22: the community map hovertext gains d=/c= when the
+    touched rows carry density/conductance (walk_state's merge); the map is
+    the sole display surface -- PPR is not drawn here."""
+    touched = [{"cid": 1, "hits": 5, "size": 20, "density": 0.036, "conductance": 0.87},
+               {"cid": 2, "hits": 2, "size": 9}]
+    terms = {1: ["jury", "trial", "verdict"], 2: ["congo", "belgian"]}
+    fig = app.draw_communities(touched, terms, {(1, 2): 3})
+    node_trace = fig.data[-1]
+    assert "d=0.036" in node_trace.hovertext[0] and "c=0.870" in node_trace.hovertext[0]
+    assert "d=" not in node_trace.hovertext[1]         # cid 2 has no metrics
 
 
 # ------------------------------------------------ labels are run-scoped

@@ -706,34 +706,52 @@ def render_structure(conn, run, bundle, pw: dict) -> str:
 
 
 def render_digest(touched, keywords, src_counts, chunk_chains, term_chains,
-                  term_cond, term_unsup, bindings, pw, resolver: dict | None = None) -> str:
+                  term_cond, term_unsup, bindings, pw, resolver: dict | None = None,
+                  metrics: dict | None = None) -> str:
     """I12 extension (operator, 2026-09-02): the partitions the pictures draw,
     serialized as compact pregrouped text so the model reasons over structure
     directly, never over pixels. Deterministic: same inputs, same string.
 
     Sections (one row per item, pipe-packed):
-      communities  cid|hits/size|sources|keywords
+      communities  cid|hits/size|sources|keywords; gains a trailing
+                   '|d=<density>|c=<conductance>' per row, and the header
+                   grows '|d=density|c=conductance', when `metrics` is
+                   supplied (design.md §6.17 W19/W20, T22, 2026-09-03);
+                   omitted or empty, the row and header are unchanged.
       chunk_chains len|ids (dendrite order; >20 ids elided head..tail)
       term_chains  len|terms (dendrite order, full)
       term_sets    both / walk_only / global_only (tri-state membership)
       bindings     chunk|its strongest terms (top-quartile tf*idf)
-      pathways     a<->b dwpc|best chain
+      pathways     a<->b dwpc|best chain; becomes 'dwpc/ppr' when the pairs
+                   carry W20's `ppr` column (design.md §6.17, T22,
+                   2026-09-03) -- gated on the data, not a flag, so pairs
+                   without it render exactly as before.
       resolver     ord -> 'source:top_term'; when given, chunk ids in
                    chunk_chains/pathways/bindings render as 'ord=source:term'
                    instead of bare ordinals (I12 amendment 2026-09-03);
                    omitted, output is unchanged.
+      metrics      {cid: community row} from gt.community_metrics(); the
+                   caller builds it (T11 resolver posture) -- this function
+                   only reads row['density']/row['conductance'].
     """
     def _id(o):
         return f"{o}={resolver[o]}" if resolver and o in resolver else str(o)
 
     L = ["== DIGEST (computed, not model-authored; ids are citable)"]
-    L.append(f"communities[{len(touched)}]: cid|hits/size|sources|keywords")
+    head = "cid|hits/size|sources|keywords" + ("|d=density|c=conductance" if metrics else "")
+    L.append(f"communities[{len(touched)}]: {head}")
     for t in touched:
         c = t["cid"]
         mix = ",".join(f"{s}:{n}" for s, n in sorted((src_counts.get(c) or {}).items(),
                                                      key=lambda kv: -kv[1])) or "-"
+        suffix = ""
+        if metrics:
+            m = metrics.get(c) or {}
+            d, cnd = m.get("density"), m.get("conductance")
+            suffix = ("|d=" + (f"{d:.3f}" if d is not None else "-")
+                      + "|c=" + (f"{cnd:.3f}" if cnd is not None else "-"))
         L.append(f"  c{c}|{t['hits']}/{t['size']}|{mix}|"
-                 + ",".join((keywords.get(c) or [])[:5]))
+                 + ",".join((keywords.get(c) or [])[:5]) + suffix)
     L.append(f"chunk_chains[{len(chunk_chains)}]: len|ids (correlation-sorted)")
     for ch in chunk_chains:
         ids = [_id(o) for o in ch]
@@ -754,10 +772,12 @@ def render_digest(touched, keywords, src_counts, chunk_chains, term_chains,
     for o in sorted(by_chunk):
         ts = [t for w, t in sorted(by_chunk[o], reverse=True)[:4]]
         L.append(f"  {_id(o)}|{','.join(ts)}")
-    L.append(f"pathways[{min(len(pw.get('pairs', [])), 8)}]: a<->b dwpc|best chain")
-    for p in pw.get("pairs", [])[:8]:
-        L.append(f"  {_id(p['a'])}<->{_id(p['b'])} {p['dwpc']:.3f}|"
-                 + ">".join(_id(o) for o in p["path"]))
+    pairs = pw.get("pairs", [])[:8]
+    has_ppr = any("ppr" in p for p in pairs)
+    L.append(f"pathways[{len(pairs)}]: a<->b " + ("dwpc/ppr" if has_ppr else "dwpc") + "|best chain")
+    for p in pairs:
+        score = f"{p['dwpc']:.3f}" + (f"/{p.get('ppr', 0.0):.4f}" if has_ppr else "")
+        L.append(f"  {_id(p['a'])}<->{_id(p['b'])} {score}|" + ">".join(_id(o) for o in p["path"]))
     return "\n".join(L)
 
 

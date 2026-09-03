@@ -513,6 +513,27 @@ def test_pathway_pairs_are_normalized_low_to_high():
         assert r["a"] <= r["b"] or int(r["a"]) <= int(r["b"])
 
 
+def test_pathway_carries_ppr_beside_dwpc():
+    """X14: PATHWAY.ppr rides beside dwpc, additive; a pair predating W20 (no
+    ppr key) writes null via pair.get('ppr')."""
+    post = _capturing_post()
+    paths = dict(_PATHS)
+    paths["pairs"] = [
+        {"a": 1, "b": 2, "dwpc": 0.5, "n_paths": 2, "path": [1, 2], "ppr": 0.0125},
+        {"a": 3, "b": 4, "dwpc": 0.1, "n_paths": 1, "path": [3, 4]},   # no ppr
+    ]
+    export_neo4j.write_walk(_FakeBundle(anchors=[1, 2, 3, 4]), paths, post=post)
+    pathway_stmt = next(s for s in post.captured[-1]
+                         if "UNWIND $rows AS r" in s["statement"])
+    assert "p.ppr = r.ppr" in pathway_stmt["statement"]
+    rows = pathway_stmt["parameters"]["rows"]
+    assert all("ppr" in r for r in rows)
+    with_ppr = next(r for r in rows if r["a"] == "1")
+    without_ppr = next(r for r in rows if r["a"] == "3")
+    assert with_ppr["ppr"] == 0.0125
+    assert without_ppr["ppr"] is None
+
+
 def test_two_writes_of_the_same_walk_emit_identical_statements():
     post1 = _capturing_post()
     export_neo4j.write_walk(_FakeBundle(), _PATHS, post=post1)
@@ -711,6 +732,28 @@ def test_community_touched_merges_keywords_and_hits():
     # is a new node kind, not subject to X9's Chunk-STRING-id rule, so cid stays int.
     for r in rows:
         assert isinstance(r["cid"], int)
+
+
+def test_community_touched_carries_density_and_conductance():
+    """X15: density/conductance live on CommunitySummary, not TOUCHED. A
+    caller that supplies no metrics (module-level _TOUCHED) writes null --
+    asserted here without mutating _TOUCHED, so the absent-case tests above
+    keep proving that path."""
+    post = _capturing_post()
+    touched_with_metrics = [
+        {"cid": 7, "size": 12, "keywords": ["x", "y"], "hits": 3,
+         "density": 0.42, "conductance": 0.13},
+        {"cid": 8, "size": 5, "keywords": ["z"], "hits": 1},   # no metrics -> null
+    ]
+    export_neo4j.write_digest(_FakeBundle(), _DIGEST, touched_with_metrics, post=post)
+    stmts = post.captured[-1]
+    comm_stmt = next(s for s in stmts if "CommunitySummary" in s["statement"])
+    assert "cs.density = r.density, cs.conductance = r.conductance" in comm_stmt["statement"]
+    rows = comm_stmt["parameters"]["rows"]
+    row7 = next(r for r in rows if r["cid"] == 7)
+    row8 = next(r for r in rows if r["cid"] == 8)
+    assert row7["density"] == 0.42 and row7["conductance"] == 0.13
+    assert row8["density"] is None and row8["conductance"] is None
 
 
 def test_two_writes_of_digest_emit_identical_statement_shape_and_final_counts():

@@ -33,7 +33,7 @@ Maintain:  no writes; no re-partitioning; cid is read, never recomputed.
            its ANCHORS and PATHWAY edges written, or an exception.
            `write_digest` additionally guarantees NEXT_IN_CHAIN, Chunk.salient
            and CommunitySummary/TOUCHED are written for an existing (:Walk),
-           or an exception (X11-X13).
+           or an exception (X11-X15).
 
 GUARDS (EARS)
 X1 Chunk ids and Term ids SHALL occupy SEPARATE neo4j id-spaces. A term whose
@@ -75,6 +75,16 @@ X12 Chunk.salient SHALL be written only for chunks present in the digest's
 X13 CommunitySummary SHALL be keyed on `cid` alone (one mirror per run), and
     TOUCHED SHALL be re-writable: a second write of the same walk updates
     `hits` in place rather than duplicating the relationship.
+X14 PATHWAY.ppr SHALL carry W20's `ppr` beside `dwpc` as an ADDITIVE property: dwpc
+    still orders the pairs and keeps its name, and a caller whose pairs predate
+    W20 writes null, which removes the property rather than freezing a stale
+    number in the mirror.
+X15 Community density and conductance (W19) SHALL be written to the
+    CommunitySummary NODE, not to TOUCHED: `hits` is a property of one walk,
+    density and conductance are properties of the stored partition, and putting
+    them on the relationship would mint one copy per walk that could disagree.
+    A caller that supplies no metrics writes null, and re-write semantics (X13)
+    are unchanged.
 
 Usage:
     python export_neo4j.py brown-50-dual out/          # both edge kinds
@@ -290,6 +300,7 @@ def write_walk(bundle, paths: dict, *, prompt: str | None = None,
             "a": str(lo), "b": str(hi),
             "dwpc": pair["dwpc"], "n_paths": pair["n_paths"],
             "len": (len(pair["path"]) - 1) if pair.get("path") else None,
+            "ppr": pair.get("ppr"),                                   # X14
         })
 
     # Schema modification cannot share a transaction with writes (neo4j rejects
@@ -335,7 +346,7 @@ def write_walk(bundle, paths: dict, *, prompt: str | None = None,
             "statement": ("UNWIND $rows AS r\n"
                           "MATCH (s:Chunk {id: r.a}), (d:Chunk {id: r.b})\n"
                           "MERGE (s)-[p:PATHWAY {of: $prompt}]->(d)\n"
-                          "SET p.dwpc = r.dwpc, p.n_paths = r.n_paths, p.len = r.len\n"
+                          "SET p.dwpc = r.dwpc, p.n_paths = r.n_paths, p.len = r.len, p.ppr = r.ppr\n"
                           "RETURN count(p) AS merged"),
             "parameters": {"prompt": prompt, "rows": rows[i:i + batch]},
         })
@@ -389,7 +400,9 @@ def write_digest(bundle, digest: dict, touched: list, *, prompt: str | None = No
                 for o in kept if o in sal and sal[o].get("top")]
 
     touched_rows = [{"cid": t["cid"], "keywords": t["keywords"],
-                      "size": t["size"], "hits": t["hits"]} for t in touched]
+                      "size": t["size"], "hits": t["hits"],
+                      "density": t.get("density"), "conductance": t.get("conductance")}
+                     for t in touched]                                        # X15
 
     # Schema modification cannot share a transaction with writes (same
     # constraint as write_walk's walk_prompt).
@@ -433,7 +446,8 @@ def write_digest(bundle, digest: dict, touched: list, *, prompt: str | None = No
         statements.append({
             "statement": ("UNWIND $rows AS r\n"
                           "MERGE (cs:CommunitySummary {cid: r.cid})\n"             # X13
-                          "SET cs.keywords = r.keywords, cs.size = r.size\n"
+                          "SET cs.keywords = r.keywords, cs.size = r.size, "
+                          "cs.density = r.density, cs.conductance = r.conductance\n"
                           "WITH cs, r\n"
                           "MATCH (w:Walk {prompt: $prompt})\n"
                           "MERGE (w)-[t:TOUCHED]->(cs)\n"

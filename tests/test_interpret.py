@@ -829,6 +829,46 @@ def test_render_digest_resolves_ids_with_resolver():
     assert "1=brown:carrier|carrier,midway" in d1      # bindings resolved
 
 
+def test_render_digest_carries_community_metrics_and_ppr():
+    """design.md §6.17 W19/W20, T22: communities rows gain |d=..|c=.. when a
+    metrics map is supplied, and pathways switch to dwpc/ppr when the pairs
+    carry W20's ppr column. A cid absent from metrics renders |d=-|c=-."""
+    import interpret
+    touched = [{"cid": 8, "hits": 74, "size": 962}, {"cid": 9, "hits": 3, "size": 10}]
+    kw = {8: ["ship", "aircraft", "navy"], 9: ["x"]}
+    src = {8: {"wiki": 70, "brown": 4}, 9: {}}
+    metrics = {8: {"density": 0.036, "conductance": 0.87}}
+    args = (touched, kw, src, [[1, 2]], [["carrier", "torpedo", "midway"]],
+            {"carrier", "midway"}, {"carrier", "navy"},
+            [(1, "carrier", 2.0), (1, "midway", 1.0), (2, "navy", 0.5)],
+            {"pairs": [{"a": 1, "b": 2, "dwpc": 0.5, "path": [1, 9, 2], "ppr": 0.0125}]})
+    d1 = interpret.render_digest(*args, metrics=metrics)
+    assert d1 == interpret.render_digest(*args, metrics=metrics)   # determinism
+    assert "|d=density|c=conductance" in d1
+    assert "c8|74/962|wiki:70,brown:4|ship,aircraft,navy|d=0.036|c=0.870" in d1
+    assert "c9|3/10|-|x|d=-|c=-" in d1                 # cid absent from metrics
+    assert "1<->2 0.500/0.0125|1>9>2" in d1
+    assert "dwpc/ppr" in d1
+
+
+def test_render_digest_without_metrics_is_byte_identical():
+    """T11-style byte-identity pin: None and {} are indistinguishable from
+    omitting metrics entirely, and no ppr/density markers leak in."""
+    import interpret
+    touched = [{"cid": 8, "hits": 74, "size": 962}]
+    kw = {8: ["ship", "aircraft", "navy"]}
+    src = {8: {"wiki": 70, "brown": 4}}
+    args = (touched, kw, src, [[1, 2]], [["carrier", "torpedo", "midway"]],
+            {"carrier", "midway"}, {"carrier", "navy"},
+            [(1, "carrier", 2.0), (1, "midway", 1.0), (2, "navy", 0.5)],
+            {"pairs": [{"a": 1, "b": 2, "dwpc": 0.5, "path": [1, 9, 2]}]})
+    out = interpret.render_digest(*args)
+    assert out == interpret.render_digest(*args, metrics=None)
+    assert out == interpret.render_digest(*args, metrics={})
+    assert "|d=" not in out
+    assert "dwpc/ppr" not in out
+
+
 def test_grounding_instruction_present_for_prem_and_one_shot():
     """The prompt must tell the model the digest is citable -- measured basis:
     reason(judge=True, digest=...) cited 0 digest ids before this instruction
