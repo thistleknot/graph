@@ -980,3 +980,275 @@ def test_second_order_wrapper_shape_on_the_live_run(conn, run):
         assert r["term"] != target
         d = ix["df"].get(r["term"], 0)
         assert 5 <= d <= 0.5 * n
+
+
+# ---------------------------------- named graph metrics (W18/W19/W20)
+def _star(n_leaves=8):
+    adj = {0: {}}
+    for i in range(1, n_leaves + 1):
+        adj[0][i] = 1.0
+        adj[i] = {0: 1.0}
+    return adj
+
+
+def _triangle():
+    return {0: {1: 1.0, 2: 1.0}, 1: {0: 1.0, 2: 1.0}, 2: {0: 1.0, 1: 1.0}}
+
+
+def _ring_with_chords(n=60, chord_step=15, chord_every=5):
+    adj = {i: {} for i in range(n)}
+
+    def link(a, b, w=1.0):
+        adj[a][b] = w
+        adj[b][a] = w
+
+    for i in range(n):
+        link(i, (i + 1) % n)
+    for i in range(0, n, chord_every):
+        link(i, (i + chord_step) % n)
+    return adj
+
+
+def _path(n=5):
+    adj = {i: {} for i in range(n)}
+    for i in range(n - 1):
+        adj[i][i + 1] = 1.0
+        adj[i + 1][i] = 1.0
+    return adj
+
+
+def test_graph_metrics_star_puts_the_hub_first():
+    res = gt.graph_metrics(_star(8))
+    nodes = res["nodes"]
+    assert max(nodes, key=lambda o: nodes[o]["betweenness"]) == 0
+    assert max(nodes, key=lambda o: nodes[o]["pagerank"]) == 0
+    for leaf in range(1, 9):
+        assert nodes[leaf]["betweenness"] == 0.0
+    assert all(row["triangles"] == 0 for row in nodes.values())
+    assert res["n"] == 9
+    assert res["approx"] is False
+
+
+def test_graph_metrics_triangle_is_fully_clustered():
+    res = gt.graph_metrics(_triangle())
+    for row in res["nodes"].values():
+        assert row["triangles"] == 1
+        assert row["clustering"] == 1.0
+
+
+def test_graph_metrics_pagerank_is_a_distribution():
+    res = gt.graph_metrics(_star(8))
+    total = sum(row["pagerank"] for row in res["nodes"].values())
+    assert total == pytest.approx(1.0)
+
+
+def test_graph_metrics_sampled_betweenness_is_deterministic():
+    import pickle
+    adj = _ring_with_chords()
+    r1 = gt.graph_metrics(adj, k_sample=8)
+    r2 = gt.graph_metrics(adj, k_sample=8)
+    assert pickle.dumps(r1) == pickle.dumps(r2)
+    assert r1["approx"] is True
+    assert r1["params"]["k"] == 8
+
+
+def _two_cliques_one_bridge():
+    adj = {i: {} for i in range(10)}
+
+    def link(a, b, w=1.0):
+        adj[a][b] = w
+        adj[b][a] = w
+
+    for a in range(5):
+        for b in range(a + 1, 5):
+            link(a, b)
+    for a in range(5, 10):
+        for b in range(a + 1, 10):
+            link(a, b)
+    link(4, 5)
+    return adj
+
+
+def test_partition_metrics_two_cliques_one_bridge():
+    adj = _two_cliques_one_bridge()
+    res = gt.partition_metrics(adj, {0: list(range(5)), 1: list(range(5, 10))})
+    e_total = sum(len(v) for v in adj.values()) / 2.0
+    assert e_total == 21                     # 10 + 10 clique edges + 1 bridge
+    by_cid = {c["cid"]: c for c in res["communities"]}
+    for cid in (0, 1):
+        c = by_cid[cid]
+        assert c["density"] == pytest.approx(1.0)
+        assert c["volume"] == 21              # 4 nodes*deg4 + bridge node deg5
+        assert c["internal_edges"] == 10
+        assert c["cut"] == 1
+        assert c["conductance"] == pytest.approx(1 / 21)
+    assert res["wcc"]["components"] == 1
+
+
+def test_partition_metrics_reports_a_shattered_graph():
+    adj = {0: {1: 1.0, 2: 1.0}, 1: {0: 1.0, 2: 1.0}, 2: {0: 1.0, 1: 1.0},
+          3: {4: 1.0, 5: 1.0}, 4: {3: 1.0, 5: 1.0}, 5: {3: 1.0, 4: 1.0}}
+    res = gt.partition_metrics(adj, {0: [0, 1, 2], 1: [3, 4, 5]})
+    assert res["wcc"]["components"] == 2
+    assert res["wcc"]["sizes"] == [3, 3]
+    assert res["wcc"]["largest_frac"] == pytest.approx(0.5)
+    assert all(c["conductance"] == pytest.approx(0.0) for c in res["communities"])
+
+
+def test_partition_metrics_summary_is_median_and_p90():
+    # three disjoint communities, no cross edges -> conductance 0 for all,
+    # densities 1.0 (triangle), 0.5 (4-node path), 0.4 (5-node star).
+    adj = {0: {1: 1.0, 2: 1.0}, 1: {0: 1.0, 2: 1.0}, 2: {0: 1.0, 1: 1.0},
+          10: {11: 1.0}, 11: {10: 1.0, 12: 1.0}, 12: {11: 1.0, 13: 1.0},
+          13: {12: 1.0},
+          20: {21: 1.0, 22: 1.0, 23: 1.0, 24: 1.0},
+          21: {20: 1.0}, 22: {20: 1.0}, 23: {20: 1.0}, 24: {20: 1.0}}
+    members = {0: [0, 1, 2], 1: [10, 11, 12, 13], 2: [20, 21, 22, 23, 24]}
+    res = gt.partition_metrics(adj, members)
+    densities = sorted(c["density"] for c in res["communities"])
+    conductances = sorted(c["conductance"] for c in res["communities"])
+    assert densities == pytest.approx([0.4, 0.5, 1.0])
+    assert res["summary"]["density_median"] == pytest.approx(gt._pct(densities, 0.5))
+    assert res["summary"]["density_p90"] == pytest.approx(gt._pct(densities, 0.9))
+    assert res["summary"]["conductance_median"] == pytest.approx(gt._pct(conductances, 0.5))
+    assert res["summary"]["conductance_p90"] == pytest.approx(gt._pct(conductances, 0.9))
+    assert res["summary"]["n_communities"] == 3
+
+
+def test_ppr_concentrates_on_the_seed_and_sums_to_one():
+    # Seeded at the CENTER (2): a degree-1 endpoint seed forwards its entire
+    # mass onward every iteration (no self-loop), so its immediate neighbour
+    # legitimately outscores it -- verified byte-identical to nx.pagerank's
+    # own personalization on this same path. The center has no such
+    # asymmetry: PPR is symmetric and strictly decreasing outward both ways.
+    adj = _path(5)
+    res = gt.ppr(adj, [2])
+    assert res[2] > res[1] == pytest.approx(res[3])
+    assert res[1] > res[0] == pytest.approx(res[4])
+    assert sum(res.values()) == pytest.approx(1.0)
+
+
+def test_ppr_is_deterministic_and_symmetric_under_seed_swap():
+    import pickle
+    adj = _path(5)
+    r_from_0 = gt.ppr(adj, [0])
+    r_from_4 = gt.ppr(adj, [4])
+    assert r_from_0[4] == pytest.approx(r_from_4[0])
+    assert pickle.dumps(gt.ppr(adj, [0])) == pickle.dumps(gt.ppr(adj, [0]))
+
+
+# --------------------------- named graph metrics, live (brown-50)
+def test_node_metrics_covers_the_run_and_the_split_sums_to_degree(conn, run):
+    adj = gt.full_adjacency(conn, run)
+    res = gt.node_metrics(conn, run)
+    assert set(adj) <= set(res["nodes"])
+    assert res["approx"] is False
+    for o in sorted(adj)[:8]:
+        row = res["nodes"][o]
+        assert sum(row["prov"].values()) == row["degree"]
+        assert row["degree"] == gt.degrees(conn, run, [o])[o]
+        assert set(row["prov"]) <= set(run.provenance)
+
+
+def test_node_metrics_ords_filter_is_a_view_not_a_recomputation(conn, run):
+    filtered = gt.node_metrics(conn, run, [HUB, 0])["nodes"]
+    whole = gt.node_metrics(conn, run)["nodes"]
+    assert filtered[HUB] == whole[HUB]
+    assert filtered[HUB]["degree"] >= filtered[0]["degree"]
+
+
+def test_community_metrics_matches_the_stored_partition(conn, run):
+    with conn.cursor() as cur:
+        cur.execute("SELECT cid, size FROM community WHERE run_id = %s ORDER BY cid",
+                   (run.run_id,))
+        stored = cur.fetchall()
+    res = gt.community_metrics(conn, run)
+    assert [c["cid"] for c in res["communities"]] == [r["cid"] for r in stored]
+    assert [c["size"] for c in res["communities"]] == [r["size"] for r in stored]
+    for c in res["communities"]:
+        assert 0.0 <= c["density"] <= 1.0
+        assert 0.0 <= c["conductance"] <= 1.0
+    assert res["summary"]["n_communities"] == N_COMMUNITIES
+    adj = gt.full_adjacency(conn, run)
+    assert sum(res["wcc"]["sizes"]) == len(adj)
+
+
+def test_pathways_ppr_is_additive_and_does_not_reorder(conn, run):
+    rows = gt.walk(conn, run, HUB, hops=2, cap=25)
+    ords = sorted({HUB} | {r["ord"] for r in rows})
+    anchors = ords[:4]
+    if len(anchors) < 2:
+        pytest.skip("walk from HUB did not yield enough anchors")
+    pw = gt.pathways(conn, run, ords, anchors)
+    for key in ("n", "edges", "components", "wcc_sizes",
+               "largest_component_frac", "density", "conductance", "pairs"):
+        assert key in pw
+    assert pw["pairs"] == sorted(pw["pairs"], key=lambda p: (-p["dwpc"], p["a"], p["b"]))
+    for p in pw["pairs"]:
+        assert isinstance(p["ppr"], float)
+    assert set(pw["ppr"]) == set(ords)
+    assert sum(pw["ppr"].values()) == pytest.approx(1.0)
+
+
+# ---------------------------------------------------------------- W21 alias expansion
+
+
+def test_expand_terms_adds_siblings_keeps_originals(conn, run):
+    aliases = {"jury": ("panel", "grand_jury")}
+    out = gt.expand_terms(["jury", "county"], aliases)
+    assert out == sorted({"jury", "county", "panel", "grand_jury"})
+
+
+def test_expand_terms_empty_map_and_unknown_token_pass_through(conn, run):
+    assert gt.expand_terms(["jury", "county"], {}) == sorted(["jury", "county"])
+    assert gt.expand_terms(["nonexistent"], {"jury": ("panel",)}) == ["nonexistent"]
+
+
+def test_expand_terms_never_drops_a_term_with_a_large_alias_set(conn, run):
+    aliases = {"jury": tuple(f"alt{i}" for i in range(50))}
+    out = gt.expand_terms(["jury"], aliases)
+    assert "jury" in out
+    assert len(out) == 51
+    assert out == sorted(out)
+
+
+def test_alias_map_degrades_gracefully_whether_or_not_entities_exists(conn, run):
+    gt._ALIAS_CACHE.clear()
+    m = gt.alias_map(conn, run)
+    assert isinstance(m, dict)          # allowed to be {} -- brown-50 has no resolve run
+    gt._ALIAS_CACHE.clear()
+
+
+def test_search_expand_aliases_is_a_noop_when_alias_map_is_empty(conn, run):
+    gt._ALIAS_CACHE.clear()
+    q = "jury election county"
+    plain = gt.search(conn, run, q, k=5)
+    expanded = gt.search(conn, run, q, k=5, expand_aliases=True)
+    assert expanded == plain
+    gt._ALIAS_CACHE.clear()
+
+
+def test_search_expand_aliases_with_planted_map_surfaces_more_evidence(conn, run, monkeypatch):
+    """Planted alias joining two real vocabulary terms: expansion must not
+    drop the unexpanded results and should surface at least one new ord or a
+    strictly higher score on a shared ord."""
+    gt._ALIAS_CACHE.clear()
+    monkeypatch.setattr(gt, "alias_map", lambda conn, run: {"jury": ("election",)})
+    try:
+        plain = gt.search(conn, run, "jury", k=20)
+        expanded = gt.search(conn, run, "jury", k=20, expand_aliases=True)
+        plain_ords = {h["ord"] for h in plain}
+        expanded_ords = {h["ord"] for h in expanded}
+        assert plain_ords <= expanded_ords
+        plain_scores = {h["ord"]: h["score"] for h in plain}
+        expanded_scores = {h["ord"]: h["score"] for h in expanded}
+        new_ords = expanded_ords - plain_ords
+        higher = any(expanded_scores[o] > plain_scores.get(o, -1) for o in expanded_ords)
+        assert new_ords or higher
+    finally:
+        gt._ALIAS_CACHE.clear()
+
+
+def test_search_expand_aliases_default_is_false():
+    import inspect
+    assert inspect.signature(gt.search).parameters["expand_aliases"].default is False

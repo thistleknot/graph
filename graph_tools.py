@@ -36,6 +36,8 @@ TOOL SURFACE
 | local_medoid        | most central retrieved chunk in a community  | 1/cid  |
 | cross_community     | retrieved chunks bridging retrieved cids     | set    |
 | second_order         | which terms keep this term's company (W17)   | k/term |
+| node_metrics        | betweenness/pagerank/triangles per node (W18) | run   |
+| community_metrics   | density + conductance per stored cid (W19)   | cids  |
 
 GUARDS (EARS)
 W1  Every statement SHALL be run-scoped: run_id is the first predicate, so the
@@ -105,6 +107,38 @@ W17 second_order_terms() SHALL apply the ladder as a gate-then-fallback chain,
     requirement. The v0 nomen pool is a df-band + stoplist floor (df in
     [min_df, max_df_frac*n], len > 2, not stoplisted); true PPMI demotion of
     the high-frequency band is LATER, once entities v0's ppmi table exists.
+W18 node_metrics() SHALL compute the centrality lane over the WHOLE run and cache
+    it by (run_id, k, seed); `ords` filters the returned view, never the
+    computation, so two callers asking about different chunks get numbers off the
+    same graph. Betweenness is exact at or below BETWEENNESS_EXACT_MAX nodes and
+    the k-sample estimator above it, with k and seed PINNED as constants -- an
+    unseeded sample would make the number a coin flip and the cache a lie.
+    Betweenness and clustering are computed unweighted: networkx reads `weight`
+    as a DISTANCE and our strengths are similarities, so passing them would make
+    the strongest edges the longest. PageRank, where higher weight genuinely is
+    closer, uses strength, with alpha and tol pinned. Per-provenance degree
+    (sparse/dense/both) is read from edge_sym's provenance column and SHALL sum
+    to the node's degree.
+W19 community_metrics() SHALL score the STORED partition -- density and
+    conductance per cid read from community.members, never a re-partitioning of
+    an induced subgraph -- and SHALL report the whole-run WCC (component count
+    and sizes) beside it, because a modularity partition of a shattered graph is
+    a number without a shape. The run-wide summary is median and p90, not a mean:
+    community sizes are heavy-tailed and a mean reports the tail.
+W20 Personalized PageRank from the walk anchors is an ADDITIVE named column in
+    pathways(): every pair keeps its dwpc, the pair ordering stays DWPC's, and
+    `ppr` rides beside it. Two measures of connectedness, named separately, so a
+    later swap is a measured decision rather than a silent one. Nothing consumes
+    these metrics yet -- surfacing is T22's job.
+W21 Alias expansion SHALL be opt-in (`expand_aliases`, default OFF) and ADDITIVE:
+    a query token that is itself an entity surface form SHALL contribute the other
+    names sharing its `canonical_id` as extra OR-terms at full BM25 weight, and NO
+    original query term SHALL be dropped or reweighted. Matching SHALL be exact
+    against `entities.name` -- `tokenize` and the entity vocabulary are the same
+    vocabulary, and a looser match reopens the false merges E7 exists to close.
+    WHERE resolution has not run for a run -- no `entities` table, no rows, or
+    `canonical_id` NULL -- the map SHALL read back empty and search SHALL be
+    byte-identical to the unexpanded call, never an error.
 
 NOT HERE, DELIBERATELY
 - No LLM. No prompt, no model call, no NL->query translation.
@@ -140,6 +174,23 @@ def tokenize(text: str) -> list[str]:
     and diverging would silently change what is matched."""
     return [w for w in re.findall(r"[a-z]+", text.lower())
             if w not in _STOP and len(w) > 2]
+
+
+def expand_terms(terms: list[str], aliases: dict) -> list[str]:
+    """W21: alias expansion is ADDITIVE. A query token that IS an entity
+    surface form contributes its whole alias set as extra OR-terms; every
+    other token passes through untouched. Deterministic: sorted, deduped.
+
+    Full weight, no discount: siblings enter the BM25 loop as ordinary terms
+    with their own idf. BM25 already penalises a rarer alias through idf and
+    saturates its tf, so a hand-picked expansion discount would be a second,
+    unmeasured knob stacked on the one the scorer applies -- and this campaign
+    has three wins for additive-never-displace and none for re-weighting.
+    """
+    out = set(terms)
+    for t in terms:
+        out.update(aliases.get(t, ()))
+    return sorted(out)
 
 
 def connect(dsn: str = DSN):
@@ -205,15 +256,28 @@ def get_run(conn, label: str) -> RunHandle:
 
 
 def search(conn, run: RunHandle, query: str, k: int = 8,
-           K1: float = 1.5, B: float = 0.75) -> list[dict]:
+           K1: float = 1.5, B: float = 0.75,
+           expand_aliases: bool = False) -> list[dict]:
     """Lexical entry point: BM25 over the graph's OWN vocabulary (W12), scored
     in Python over the cached per-run postings (corpus_index). Was SQL over
     jsonb -- 7.3 s per query on 500 documents, called twice per walk.
 
-    W2: attrs is used for SCORING here, never for traversal."""
+    W2: attrs is used for SCORING here, never for traversal.
+
+    W21: `expand_aliases` (default False) is the ONE place the default lives.
+    With the flag off, this executes the same statements it does today --
+    that byte-identity is what the diagnostic baseline pins. WHERE resolution
+    has not run (alias_map reads back {}), `terms` is left untouched rather
+    than round-tripped through expand_terms -- a no-op re-sort/re-set would
+    still be functionally a no-op but could reorder the score accumulation
+    and break float byte-identity for no reason."""
     terms = tokenize(query)
     if not terms:
         return []
+    if expand_aliases:
+        aliases = alias_map(conn, run)
+        if aliases:
+            terms = expand_terms(terms, aliases)
     ix = corpus_index(conn, run)
     N, avgdl = ix["n"], ix["avgdl"]
     score: dict = {}; hit: dict = {}
@@ -707,6 +771,49 @@ def corpus_index(conn, run: RunHandle) -> dict:
     return _DF_CACHE[key]
 
 
+_ALIAS_CACHE: dict = {}
+
+
+def alias_map(conn, run: RunHandle) -> dict:
+    """{name: (sibling, ...)} for every entity that has at least one alias.
+
+    An alias set is exactly the rows sharing a canonical_id (entities.py E8).
+    Siblings exclude the term itself and are sorted, so the map is a pure
+    function of the run's rows.
+
+    Degrades to {} where entity resolution has not run for this run -- a
+    missing `entities` table, no rows, or canonical_id still NULL. That is a
+    real state (T19 resolved planted fixtures only), and search must not
+    depend on it.
+
+    No disk cache. `_disk` is justified by runs being immutable; canonical_id
+    is rewritten by every resolve_entities call, so this is not derived-from-
+    an-immutable-run and must not outlive the process."""
+    key = str(run.run_id)
+    if key in _ALIAS_CACHE:
+        return _ALIAS_CACHE[key]
+    if len(_ALIAS_CACHE) > 32:
+        _ALIAS_CACHE.clear()
+    out: dict = {}
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT e.name AS name, s.name AS sibling
+                  FROM entities e
+                  JOIN entities s ON s.run_id = e.run_id
+                                 AND s.canonical_id = e.canonical_id
+                                 AND s.entity_id <> e.entity_id
+                 WHERE e.run_id = %s AND e.canonical_id IS NOT NULL""",
+                (run.run_id,))
+            for r in cur.fetchall():
+                out.setdefault(r["name"], set()).add(r["sibling"])
+    except psycopg.Error:
+        out = {}
+    out = {name: tuple(sorted(sibs)) for name, sibs in out.items()}
+    _ALIAS_CACHE[key] = out
+    return out
+
+
 def corpus_df(conn, run: RunHandle) -> tuple[dict, float, int]:
     """(df per term, avgdl, n_chunks) -- a view over corpus_index."""
     ix = corpus_index(conn, run)
@@ -786,6 +893,13 @@ def _decorate(conn, run: RunHandle, rows: list[dict]) -> list[dict]:
     return rows
 
 
+BETWEENNESS_EXACT_MAX = 2000      # nodes; at or below this, betweenness is exact
+BETWEENNESS_K         = 512       # pivot sample above the floor
+BETWEENNESS_SEED      = 20260903  # fixed; the sample is a parameter, not a coin flip
+PR_ALPHA, PR_TOL, PR_MAX_ITER  = 0.85, 1.0e-08, 200
+PPR_ALPHA, PPR_TOL, PPR_MAX_ITER = 0.85, 1.0e-10, 200   # restart mass = 1 - PPR_ALPHA
+
+
 def degrees(conn, run: RunHandle, ords: list[int]) -> dict:
     """Global degree of each ordinal in the run's live edge set (W15)."""
     if not ords:
@@ -799,7 +913,8 @@ def degrees(conn, run: RunHandle, ords: list[int]) -> dict:
 
 
 def pathways(conn, run: RunHandle, ords: list[int], anchors: list[int],
-             max_len: int = 3, damp: float = 0.4, top_pairs: int = 12) -> dict:
+             max_len: int = 3, damp: float = 0.4, top_pairs: int = 12,
+             ppr_alpha: float = PPR_ALPHA) -> dict:
     """W15 (design 6.11): critical connectedness between idea nodes.
 
     Induced subgraph = `ords` and the edges among them. Anchors are any
@@ -873,7 +988,15 @@ def pathways(conn, run: RunHandle, ords: list[int], anchors: list[int],
                 pairs.append({"a": a, "b": b, "dwpc": total, "n_paths": count,
                               "path": best_p})
     pairs.sort(key=lambda p: (-p["dwpc"], p["a"], p["b"]))
-    return {**shape, "pairs": pairs[:top_pairs]}
+
+    # ---- W20: personalized PPR, additive -- DWPC still orders `pairs`
+    node_ppr = ppr(adj, anchors, alpha=ppr_alpha)
+    per_anchor = {a: ppr(adj, [a], alpha=ppr_alpha) for a in anchors}
+    for pair in pairs:
+        p_a, p_b = per_anchor.get(pair["a"], {}), per_anchor.get(pair["b"], {})
+        pair["ppr"] = (p_a.get(pair["b"], 0.0) + p_b.get(pair["a"], 0.0)) / 2
+
+    return {**shape, "pairs": pairs[:top_pairs], "ppr": node_ppr, "ppr_alpha": ppr_alpha}
 
 
 _ADJ_CACHE: dict = {}
@@ -931,6 +1054,229 @@ def best_path(conn, run: RunHandle, a: int, b: int, damp: float = 0.4):
         path.append(prev[path[-1]])
     path.reverse()
     return path, math.exp(-dist[b])
+
+
+# --------------------------------------- named graph metrics (W18/W19/W20)
+def graph_metrics(adj: dict, k_sample: int | None = None,
+                  seed: int = BETWEENNESS_SEED,
+                  alpha: float = PR_ALPHA, tol: float = PR_TOL) -> dict:
+    """W18. Centrality lane over {a: {b: strength}}. Pure -- no conn, unit-
+    testable on planted data. Betweenness and clustering are UNWEIGHTED
+    (networkx reads `weight` as a distance, and our strengths are
+    similarities); PageRank is weighted, where higher strength genuinely
+    means closer.
+
+    Returns {"nodes": {ord: {"betweenness","pagerank","triangles",
+    "clustering","degree"}}, "approx": bool,
+    "params": {"k": k|None, "seed", "alpha", "tol"}, "n": int}.
+    """
+    import networkx as nx
+
+    nodes = sorted(adj)
+    G = nx.Graph()
+    G.add_nodes_from(nodes)
+    for a in nodes:
+        for b in sorted(adj[a]):
+            if a < b:
+                G.add_edge(a, b, weight=adj[a][b])
+
+    k = None if k_sample is None else min(k_sample, len(G))
+    betweenness = nx.betweenness_centrality(G, k=k, seed=seed, weight=None,
+                                            normalized=True)
+    pagerank = nx.pagerank(G, alpha=alpha, tol=tol, max_iter=PR_MAX_ITER,
+                           weight="weight")
+    triangles = nx.triangles(G)
+    clustering = nx.clustering(G, weight=None)
+    approx = k is not None
+
+    out_nodes = {o: {"betweenness": betweenness[o], "pagerank": pagerank[o],
+                     "triangles": triangles[o], "clustering": clustering[o],
+                     "degree": len(adj[o])} for o in nodes}
+    return {"nodes": out_nodes, "approx": approx,
+           "params": {"k": k, "seed": seed, "alpha": alpha, "tol": tol},
+           "n": len(nodes)}
+
+
+def _pct(sorted_xs: list, q: float) -> float:
+    """Linear-interpolated percentile over an already-sorted list. 0.0 on
+    empty input."""
+    if not sorted_xs:
+        return 0.0
+    if len(sorted_xs) == 1:
+        return float(sorted_xs[0])
+    idx = q * (len(sorted_xs) - 1)
+    lo, hi = int(math.floor(idx)), int(math.ceil(idx))
+    if lo == hi:
+        return float(sorted_xs[lo])
+    frac = idx - lo
+    return float(sorted_xs[lo] * (1 - frac) + sorted_xs[hi] * frac)
+
+
+def partition_metrics(adj: dict, members: dict) -> dict:
+    """W19. Density + conductance of the STORED partition -- members =
+    {cid: [ord, ...]}; nothing is recomputed. Same algebra as pathways()'s
+    shape block, deliberately, so the two numbers are comparable. Pure --
+    no conn.
+
+    Returns {"communities": [{cid,size,internal_edges,volume,cut,density,
+    conductance}, ...] ordered by cid, "wcc": {"components","sizes",
+    "largest_frac"}, "summary": {"density_median","density_p90",
+    "conductance_median","conductance_p90","n_communities"}}.
+    """
+    e_total = sum(len(v) for v in adj.values()) / 2.0
+
+    communities = []
+    for cid in sorted(members):
+        S = set(members[cid])
+        n = len(S)
+        volume = sum(len(adj.get(o, {})) for o in S)
+        internal_edges = sum(1 for o in S for b in adj.get(o, {}) if b in S) // 2
+        cut = max(volume - 2 * internal_edges, 0)
+        vol_rest = max(2 * e_total - volume, 1)
+        conductance = cut / min(max(volume, 1), vol_rest)
+        density = (2 * internal_edges / (n * (n - 1))) if n > 1 else 0.0
+        communities.append({"cid": cid, "size": n, "internal_edges": internal_edges,
+                            "volume": volume, "cut": cut, "density": density,
+                            "conductance": conductance})
+
+    # ---- whole-run WCC (iterative DFS, no recursion -- mirrors pathways())
+    seen, comps = set(), []
+    for o in sorted(adj):
+        if o in seen:
+            continue
+        stack, comp = [o], set()
+        while stack:
+            u = stack.pop()
+            if u in comp:
+                continue
+            comp.add(u)
+            stack += [v for v in adj[u] if v not in comp]
+        seen |= comp
+        comps.append(len(comp))
+    comps.sort(reverse=True)
+    n_total = len(adj)
+    wcc = {"components": len(comps), "sizes": comps,
+          "largest_frac": (max(comps) / n_total) if n_total else 0.0}
+
+    densities = sorted(c["density"] for c in communities)
+    conductances = sorted(c["conductance"] for c in communities)
+    summary = {"density_median": _pct(densities, 0.5),
+              "density_p90": _pct(densities, 0.9),
+              "conductance_median": _pct(conductances, 0.5),
+              "conductance_p90": _pct(conductances, 0.9),
+              "n_communities": len(communities)}
+    return {"communities": communities, "wcc": wcc, "summary": summary}
+
+
+def ppr(adj: dict, seeds: list[int], alpha: float = PPR_ALPHA,
+       tol: float = PPR_TOL, max_iter: int = PPR_MAX_ITER) -> dict:
+    """W20. Personalized PageRank over {a:{b:w}} restarting on `seeds`
+    (uniform personalization). Hand-rolled power iteration -- no nx import,
+    keeping the additive pathways() column free of a new dependency on the
+    hot path. Dangling nodes send their mass back to the restart vector.
+
+    Returns {ord: score} summing to 1.0 over adj's keys; {} when seeds is
+    empty, adj is empty, or none of seeds are in adj.
+    """
+    nodes = sorted(adj)
+    seeds_in = [s for s in dict.fromkeys(seeds) if s in adj]
+    if not nodes or not seeds_in:
+        return {}
+    n = len(nodes)
+    idx = {o: i for i, o in enumerate(nodes)}
+    p = [0.0] * n
+    share0 = 1.0 / len(seeds_in)
+    for s in seeds_in:
+        p[idx[s]] = share0
+
+    x = list(p)
+    for _ in range(max_iter):
+        new_x = [0.0] * n
+        dangling_mass = 0.0
+        for i, o in enumerate(nodes):
+            neigh = adj[o]
+            deg_w = sum(neigh.values())
+            if deg_w <= 0:
+                dangling_mass += x[i]
+                continue
+            share = alpha * x[i] / deg_w
+            for b, w in neigh.items():
+                j = idx.get(b)
+                if j is not None:
+                    new_x[j] += share * w
+        restart_mass = (1 - alpha) + alpha * dangling_mass
+        for i in range(n):
+            new_x[i] += restart_mass * p[i]
+        diff = sum(abs(new_x[i] - x[i]) for i in range(n))
+        x = new_x
+        if diff < tol:
+            break
+    return {nodes[i]: x[i] for i in range(n)}
+
+
+_METRIC_CACHE: dict = {}
+_COMM_METRIC_CACHE: dict = {}
+
+
+def node_metrics(conn, run: RunHandle, ords: list[int] | None = None) -> dict:
+    """W18. Whole-run centrality lane + per-provenance degree split, cached
+    per run. `ords` filters the RETURNED view; it never changes what is
+    computed."""
+    ck = str(run.run_id)
+    disk_key = f"nodemetrics-{ck}-{BETWEENNESS_K}-{BETWEENNESS_SEED}"
+    if ck not in _METRIC_CACHE:
+        cached = _disk(disk_key)
+        if cached is not None:
+            _METRIC_CACHE[ck] = cached
+    if ck not in _METRIC_CACHE:
+        adj = full_adjacency(conn, run)
+        k = None if len(adj) <= BETWEENNESS_EXACT_MAX else BETWEENNESS_K
+        core = graph_metrics(adj, k_sample=k)
+        with conn.cursor() as cur:
+            cur.execute("""SELECT a AS ord, provenance, count(*) AS c FROM edge_sym
+                            WHERE run_id = %s AND valid_to IS NULL
+                            GROUP BY a, provenance""", (run.run_id,))
+            prov_rows = cur.fetchall()
+        prov: dict = {}
+        for r in prov_rows:
+            prov.setdefault(r["ord"], {})[r["provenance"]] = r["c"]
+        for o, row in core["nodes"].items():
+            p = prov.get(o, {})
+            row["prov"] = p
+            row["prov_degree_total"] = sum(p.values())
+        _METRIC_CACHE[ck] = core
+        _disk_put(disk_key, core)
+    core = _METRIC_CACHE[ck]
+    all_nodes = core["nodes"]
+    if ords is None:
+        view = dict(all_nodes)
+    else:
+        zero = {"betweenness": 0.0, "pagerank": 0.0, "triangles": 0,
+               "clustering": 0.0, "degree": 0, "prov": {}}
+        view = {o: all_nodes.get(o, dict(zero)) for o in ords}
+    return {**core, "nodes": view}
+
+
+def community_metrics(conn, run: RunHandle) -> dict:
+    """W19. Per-stored-cid density + conductance, WCC sanity, run-wide
+    median/p90."""
+    ck = str(run.run_id)
+    disk_key = f"commmetrics-{ck}"
+    if ck not in _COMM_METRIC_CACHE:
+        cached = _disk(disk_key)
+        if cached is not None:
+            _COMM_METRIC_CACHE[ck] = cached
+    if ck not in _COMM_METRIC_CACHE:
+        with conn.cursor() as cur:
+            cur.execute("""SELECT cid, members FROM community
+                            WHERE run_id = %s ORDER BY cid""", (run.run_id,))
+            rows = cur.fetchall()
+        members = {r["cid"]: list(r["members"]) for r in rows}
+        adj = full_adjacency(conn, run)
+        result = partition_metrics(adj, members)
+        _COMM_METRIC_CACHE[ck] = result
+        _disk_put(disk_key, result)
+    return _COMM_METRIC_CACHE[ck]
 
 
 # ---------------------------------------------------------------- dendrites

@@ -834,3 +834,43 @@ def test_s18_unmatchable_query_falls_back_to_the_anchor_mix(live):
     a = sp.ring(conn, run, W, top=3, per=8, mix=mix, query=junk)
     b = sp.ring(conn, run, W, top=3, per=8, mix=mix)
     assert a == b
+
+
+# ---------------------------------------------------------------- S19 alias expansion
+
+
+def test_s19_expand_aliases_defaults_are_false():
+    import inspect
+    for fn in (sp.ef_evidence, sp.ef_search, sp.anchor_hits, sp.candidate_scores):
+        assert inspect.signature(fn).parameters["expand_aliases"].default is False
+
+
+def test_s19_live_pass_through_is_identical_with_or_without_the_kwarg(live):
+    conn, run = live
+    b1, tele1 = sp.ef_evidence(conn, run, Q, expand_aliases=False)
+    b2, tele2 = sp.ef_evidence(conn, run, Q)
+    assert b1.sampled == b2.sampled
+    assert tele1["anchors"] == tele2["anchors"]
+
+
+def test_s19_flag_on_with_empty_alias_map_is_identical_but_recorded(live, monkeypatch):
+    conn, run = live
+    gt._ALIAS_CACHE.clear()
+    b_off, _ = sp.ef_evidence(conn, run, Q, expand_aliases=False)
+    b_on, _ = sp.ef_evidence(conn, run, Q, expand_aliases=True)
+    assert b_on.sampled == b_off.sampled
+    assert b_on.params["expand_aliases"] is True
+    assert b_off.params["expand_aliases"] is False
+    gt._ALIAS_CACHE.clear()
+
+
+def test_s19_planted_alias_map_respects_the_ef_budget(live, monkeypatch):
+    conn, run = live
+    gt._ALIAS_CACHE.clear()
+    monkeypatch.setattr(gt, "alias_map", lambda conn, run: {"jury": ("election",)})
+    try:
+        hits = sp.anchor_hits(conn, run, "jury", k_anchor=3, ef=8, expand_aliases=True)
+        assert hits
+        assert len(hits) <= 8
+    finally:
+        gt._ALIAS_CACHE.clear()

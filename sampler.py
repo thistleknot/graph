@@ -124,6 +124,12 @@ S18 (new 2026-09-03; promotes the probe-validated ring router. Trigger: T7c stop
     fill SHALL be identical to today's, element for element and in order, reached by
     the same early return.
 
+S19 (new 2026-09-03) The sampler SHALL pass `expand_aliases` through the ANCHOR path
+    only (ef_evidence -> ef_search -> anchor_hits -> gt.search, and candidate_scores's
+    legacy call), defaulting OFF, and SHALL record it in Bundle.params. The S18 ring
+    injection (source_topk) SHALL NOT expand: two term sets changing in one
+    measurement makes a diagnostic delta unattributable.
+
 MEASURED (brown-50, 6 queries, 2026-08-26) -- the sampling premise did not hold
 ------------------------------------------------------------------------------
 Stability (mean pairwise Jaccard of top-3 community sets across seeds) is NOT
@@ -294,7 +300,8 @@ def select_anchors(base: list, pool: list, sources: dict, ef: int,
     return merged
 
 
-def anchor_hits(conn, run: gt.RunHandle, query: str, k_anchor: int, ef: int) -> list:
+def anchor_hits(conn, run: gt.RunHandle, query: str, k_anchor: int, ef: int,
+                expand_aliases: bool = False) -> list:
     """S15 (amended 2026-09-03) entry point: today's global gt.search top-k,
     unconditionally, plus at most one competitive extra per absent source.
 
@@ -303,12 +310,16 @@ def anchor_hits(conn, run: gt.RunHandle, query: str, k_anchor: int, ef: int) -> 
                WHERE the run reports fewer than 2 source labels the return value is
                EXACTLY `gt.search(conn, run, query, k=min(k_anchor, ef))` -- the same
                call, the same object, no re-sort, no re-wrap.
+
+    S19: `expand_aliases` (default OFF) is passed to BOTH gt.search calls below
+    (the base call and the over-fetch loop) -- passing it to only one splits the
+    term set between the two and corrupts select_anchors.
     """
     k = min(k_anchor, ef)
     # Load-bearing: today's call, made FIRST and unconditionally. Identity with
     # today comes from making the same call, not from assuming the top-k of a
     # larger fetch is prefix-stable.
-    base = gt.search(conn, run, query, k=k)
+    base = gt.search(conn, run, query, k=k, expand_aliases=expand_aliases)
 
     sources = gt.run_sources(conn, run)
     elig = {s: n for s, n in sources.items() if n > 0}
@@ -322,7 +333,7 @@ def anchor_hits(conn, run: gt.RunHandle, query: str, k_anchor: int, ef: int) -> 
     fetch = max(k * ANCHOR_FETCH_MULT, ANCHOR_FETCH_MIN)
     rows: list = []
     while True:
-        rows = gt.search(conn, run, query, k=fetch)
+        rows = gt.search(conn, run, query, k=fetch, expand_aliases=expand_aliases)
         found = {h.get("source") for h in rows} & set(elig)
         if elig.keys() <= found or len(rows) < fetch or fetch >= ANCHOR_FETCH_CAP:
             break
@@ -333,7 +344,7 @@ def anchor_hits(conn, run: gt.RunHandle, query: str, k_anchor: int, ef: int) -> 
 
 def candidate_scores(conn, run: gt.RunHandle, query: str, k_anchor: int = DEFAULT_K_ANCHOR,
                      hops: int = DEFAULT_HOPS, min_strength: float = 0.0,
-                     cap: int = DEFAULT_CAP) -> tuple[dict, list]:
+                     cap: int = DEFAULT_CAP, expand_aliases: bool = False) -> tuple[dict, list]:
     """Induced subgraph around the query's lexical anchors.
 
     Score is the strength-decayed path score: an anchor starts at its
@@ -341,10 +352,13 @@ def candidate_scores(conn, run: gt.RunHandle, query: str, k_anchor: int = DEFAUL
     path per node wins, which mirrors the cookbook expansion.
 
     Traversal is graph_tools.neighbors -- indexed src/dst only, never attrs.
+
+    S19: `expand_aliases` (default OFF) is threaded to this legacy call too,
+    for consistency with the ef_evidence anchor path.
     """
     # Legacy fixed-hop path behind evidence(). Allocation (S15/S16) is
     # ef_search's serve path only -- this call stays a plain global search.
-    hits = gt.search(conn, run, query, k=k_anchor)
+    hits = gt.search(conn, run, query, k=k_anchor, expand_aliases=expand_aliases)
     if not hits:
         return {}, []
     top = max(h["score"] for h in hits) or 1.0
@@ -407,7 +421,7 @@ def boltzmann_sample(scores: dict, n: int = DEFAULT_N, T: float = DEFAULT_T,
 def ef_search(conn, run: gt.RunHandle, query: str, ef: int = DEFAULT_EF,
               T: float = DEFAULT_T, m: int = DEFAULT_M,
               k_anchor: int = DEFAULT_K_ANCHOR, max_hops: int = MAX_HOPS,
-              seed: int = 0) -> tuple[dict, dict]:
+              seed: int = 0, expand_aliases: bool = False) -> tuple[dict, dict]:
     """Best-first expansion with an HNSW stop condition (S9-S12).
 
     ef IS the evidence budget (S10), so anchors never exceed it:
@@ -444,11 +458,14 @@ def ef_search(conn, run: gt.RunHandle, query: str, ef: int = DEFAULT_EF,
     budget exceeds k_anchor only by those granted extras, never by a
     reallocation; S10 still wins -- anchors never exceed ef, since the extras
     cap is applied inside anchor_hits before it returns.
+
+    S19: `expand_aliases` (default OFF) is passed through to anchor_hits only
+    -- the ring injection (source_topk) does not expand.
     """
     if ef < 1 or m < 1 or max_hops < 1:
         raise ValueError(f"ef, m, max_hops must all be >= 1 "
                          f"(got {ef}, {m}, {max_hops})")
-    hits = anchor_hits(conn, run, query, k_anchor, ef)
+    hits = anchor_hits(conn, run, query, k_anchor, ef, expand_aliases=expand_aliases)
     if not hits:
         return {}, {"stop": "no_anchor", "depth": 0, "expanded": 0, "seen": 0,
                     "hop_capped": 0, "pool_median": 0, "pools_over_m": 0,
@@ -656,6 +673,12 @@ def source_topk(conn, run: gt.RunHandle, query: str, k: int = INJECT_K) -> dict:
 
     Returns {source: [(ord, score), ...]}, each list sorted (-score, ord) and
     cut at k; None-source rows are dropped.
+
+    S19: deliberately NOT alias-expanded. It is a separate, separately-measured
+    lane (S18); changing the anchor terms and the ring-injection terms in one
+    task makes any diagnostic delta unattributable. If a later task does thread
+    it, `_INJ_CACHE`'s key `(run_id, query, k)` must grow the flag -- a silently
+    shared cache across two term sets would be a correctness bug, not a perf one.
     """
     import math
     ck = (str(run.run_id), query, k)
@@ -846,16 +869,21 @@ def ef_evidence(conn, run: gt.RunHandle, query: str, ef: int = DEFAULT_EF,
                 seed: int = 0, k_comm: int = None,
                 ring_top: int = DEFAULT_RING_TOP,
                 ring_per: int = DEFAULT_RING_PER,
-                bridge_pairs: int = DEFAULT_BRIDGE_PAIRS) -> tuple["Bundle", dict]:
+                bridge_pairs: int = DEFAULT_BRIDGE_PAIRS,
+                expand_aliases: bool = False) -> tuple["Bundle", dict]:
     """evidence() with ef_search in place of fixed-hop expansion.
 
     Same Bundle shape so community_histogram, term_stats and the walker's
     rendering are unchanged; the second return is ef_search's telemetry (S12).
     Everything in W is the evidence -- there is no second sampling step, because
     ef IS the evidence budget and W is already the best ef reachable.
+
+    S19: `expand_aliases` (default OFF) rides the anchor path only (ef_search
+    -> anchor_hits -> gt.search) and is recorded in Bundle.params so a bundle
+    says which term set produced it. The ring (source_topk) does not expand.
     """
     W, tele = ef_search(conn, run, query, ef=ef, T=T, m=m,
-                        k_anchor=k_anchor, seed=seed)
+                        k_anchor=k_anchor, seed=seed, expand_aliases=expand_aliases)
     anchors = list(tele.get("anchors", []))
     extra = (ring(conn, run, W, top=ring_top, per=ring_per, mix=tele.get("anchor_mix"),
                   query=query)
@@ -880,7 +908,8 @@ def ef_evidence(conn, run: gt.RunHandle, query: str, ef: int = DEFAULT_EF,
                params={"ef": ef, "T": T, "m": m, "seed": seed,
                        "k_anchor": k_anchor, "k_comm": k_comm,
                        "ring_top": ring_top, "ring_per": ring_per,
-                       "bridge_pairs": bridge_pairs, **tele})
+                       "bridge_pairs": bridge_pairs,
+                       "expand_aliases": expand_aliases, **tele})
     return b, tele
 
 
