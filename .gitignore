@@ -17,3 +17,7 @@ trigram/*.jpg              # photos of trigram.md; the markdown is the source
 .tmp/
 .playwright-mcp/
 neo4j_*.png
+
+# third-party book companion code (kg-rag, KG+LLMs-in-action, gpml clone);
+# re-download from upstream rather than vendoring -- nested .git + corpora inside
+docs/
