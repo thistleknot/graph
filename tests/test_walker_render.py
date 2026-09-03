@@ -336,5 +336,8 @@ def test_mirror_tab_source_carries_neovis_and_bolt():
     bolt (the neo4j browser refuses iframes: X-Frame-Options DENY, measured)."""
     src = open("walker_app.py", encoding="utf-8").read()
     assert '"Mirror"' in src and "tab_mirror" in src
+    # one input field for the app: Mirror follows the Walk prompt, no selectbox
+    assert 'st.session_state.get("q")' in src
+    assert 'selectbox("Walk"' not in src.split("MIRROR (T26)")[1]
     assert "neovis.js" in src and "bolt://localhost:7687" in src
     assert "__CYPHER__" in src and "initialCypher" in src

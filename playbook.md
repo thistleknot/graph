@@ -685,3 +685,7 @@ fixed seeds), do-no-harm = frozen diagnostic keeps 18/20 with the same pass set,
   selector + depth toggle; nodes captioned by salient term, ANCHORS in red. One cleanup
   during build: collapsed a two-step cypher string injection into one substitution.
   20/20 walker tests.
+  _Lessons 2:_ Operator: one input field for the app. Mirror's walk selectbox removed --
+  the tab follows st.session_state["q"] (the Walk prompt); unjudged prompts get a
+  hit-Reason+judge hint instead of a picker. Verified live: prompt typed on Walk renders
+  its mirrored subgraph on Mirror with no second field.

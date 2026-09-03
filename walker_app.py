@@ -912,20 +912,29 @@ with tab_mirror:
     # The neo4j browser refuses iframes (X-Frame-Options: DENY, measured), so
     # the mirror is rendered HERE: neovis.js connects browser-side to bolt
     # :7687 and draws the selected Walk's subgraph inside this tab.
-    st.caption("The neo4j mirror, live. Pick a walk; drag nodes; chunk captions "
-               "are salient terms, color = source. Full browser: "
-               "http://localhost:7474 (neo4j/graphgraph).")
-    try:
-        import export_neo4j as _xn
-        _res = _xn._tx([{"statement":
-                         "MATCH (w:Walk) RETURN w.prompt ORDER BY w.prompt",
-                         "parameters": {}}])
-        _prompts = [r["row"][0] for r in _res[0]["data"]]
-    except Exception as e:                                  # noqa: BLE001
-        _prompts = []
-        st.warning(f"mirror unreachable: {e}")
-    if _prompts:
-        _wp = st.selectbox("Walk", _prompts, key="mirror_walk")
+    # ONE input field for the whole app: the Walk tab's prompt drives this
+    # tab too. A judged walk lands in the mirror (T17) and shows up here.
+    st.caption("The neo4j mirror, live, for the prompt on the Walk tab. Drag "
+               "nodes; chunk captions are salient terms, color = source. Full "
+               "browser: http://localhost:7474 (neo4j/graphgraph).")
+    _wp = (st.session_state.get("q") or "").strip()
+    _mirrored = False
+    if _wp:
+        try:
+            import export_neo4j as _xn
+            _res = _xn._tx([{"statement":
+                             "MATCH (w:Walk {prompt: $p}) RETURN count(w)",
+                             "parameters": {"p": _wp}}])
+            _mirrored = _res[0]["data"][0]["row"][0] > 0
+        except Exception as e:                              # noqa: BLE001
+            st.warning(f"mirror unreachable: {e}")
+    if not _wp:
+        st.info("Type a prompt on the Walk tab -- its mirrored walk renders here.")
+    elif not _mirrored:
+        st.info(f"“{_wp}” is not in the mirror yet. Hit **Reason + judge this "
+                "walk** on the Walk tab; the walk lands here automatically.")
+    else:
+        st.markdown(f"**{_wp}**")
         _depth = st.radio("Show", ["anchors + pathways", "+ chains"],
                           horizontal=True, key="mirror_depth")
         _rel = "ANCHORS|PATHWAY" if _depth == "anchors + pathways" \
