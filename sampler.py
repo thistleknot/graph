@@ -112,6 +112,14 @@ DEFAULT_M   = 3            # neighbours expanded per pop. MEASURED: candidate
                            # pools after seen-filtering have median 2, max 10,
                            # so m=8 enumerates and T never applies (S11 inert).
                            # m must sit BELOW the pool for sampling to exist.
+DEFAULT_K_ANCHOR = 3       # BM25 anchors seeded. MEASURED (diagnostic set,
+                           # 2026-09-02, run bfa594df): k=9 lifted quotes share
+                           # on register-explicit prompts (14-18% -> 23-29%)
+                           # but broke C3's brown floor (30% -> 19%), and the
+                           # frozen set's rule is do-no-harm -- so 3 stands.
+                           # A GLOBAL anchor count cannot fix the B-class
+                           # finding; per-source allocation (sqrt item) is the
+                           # justified build. See diagnostic-prompts.md.
 MAX_HOPS    = 8            # runaway guard, NOT a depth policy (S9)
 DEFAULT_RING_TOP = 3       # S13: one degree out from the top-3 of W (design 6.10)
 DEFAULT_RING_PER = 8       # S13: strongest 8 new neighbours per parent
@@ -147,7 +155,7 @@ class Bundle:
             sum(c["hits"] for c in self.communities), 1)
 
 
-def candidate_scores(conn, run: gt.RunHandle, query: str, k_anchor: int = 3,
+def candidate_scores(conn, run: gt.RunHandle, query: str, k_anchor: int = DEFAULT_K_ANCHOR,
                      hops: int = DEFAULT_HOPS, min_strength: float = 0.0,
                      cap: int = DEFAULT_CAP) -> tuple[dict, list]:
     """Induced subgraph around the query's lexical anchors.
@@ -220,9 +228,13 @@ def boltzmann_sample(scores: dict, n: int = DEFAULT_N, T: float = DEFAULT_T,
 
 def ef_search(conn, run: gt.RunHandle, query: str, ef: int = DEFAULT_EF,
               T: float = DEFAULT_T, m: int = DEFAULT_M,
-              k_anchor: int = 3, max_hops: int = MAX_HOPS,
+              k_anchor: int = DEFAULT_K_ANCHOR, max_hops: int = MAX_HOPS,
               seed: int = 0) -> tuple[dict, dict]:
     """Best-first expansion with an HNSW stop condition (S9-S12).
+
+    ef IS the evidence budget (S10), so anchors never exceed it:
+    k_anchor is clamped to ef -- a wide default anchor count must not
+    inflate a deliberately tight walk.
 
     HNSW does not take a hop count. It holds a result set W of width `ef` and a
     candidate frontier C, and stops when the best remaining candidate cannot
@@ -251,7 +263,7 @@ def ef_search(conn, run: gt.RunHandle, query: str, ef: int = DEFAULT_EF,
     if ef < 1 or m < 1 or max_hops < 1:
         raise ValueError(f"ef, m, max_hops must all be >= 1 "
                          f"(got {ef}, {m}, {max_hops})")
-    hits = gt.search(conn, run, query, k=k_anchor)
+    hits = gt.search(conn, run, query, k=min(k_anchor, ef))
     if not hits:
         return {}, {"stop": "no_anchor", "depth": 0, "expanded": 0, "seen": 0,
                     "hop_capped": 0, "pool_median": 0, "pools_over_m": 0,
@@ -365,7 +377,7 @@ def bridges(conn, run: gt.RunHandle, W: dict, pairs: int = DEFAULT_BRIDGE_PAIRS,
 
 
 def ef_evidence(conn, run: gt.RunHandle, query: str, ef: int = DEFAULT_EF,
-                T: float = DEFAULT_T, m: int = DEFAULT_M, k_anchor: int = 3,
+                T: float = DEFAULT_T, m: int = DEFAULT_M, k_anchor: int = DEFAULT_K_ANCHOR,
                 seed: int = 0, k_comm: int = None,
                 ring_top: int = DEFAULT_RING_TOP,
                 ring_per: int = DEFAULT_RING_PER,
@@ -416,7 +428,7 @@ def community_histogram(conn, run: gt.RunHandle, sampled: list,
 
 
 def evidence(conn, run: gt.RunHandle, query: str, n: int = DEFAULT_N,
-             T: float = DEFAULT_T, seed: int = 0, k_anchor: int = 3,
+             T: float = DEFAULT_T, seed: int = 0, k_anchor: int = DEFAULT_K_ANCHOR,
              hops: int = DEFAULT_HOPS, min_strength: float = 0.0,
              cap: int = DEFAULT_CAP, k_comm: int = None) -> Bundle:
     """The whole deterministic path, end to end. No model call."""
