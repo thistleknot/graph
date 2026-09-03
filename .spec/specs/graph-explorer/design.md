@@ -1043,6 +1043,16 @@ decomposition of the request itself. Premises then cite the ids holding the
 candidate. Propositional prompts are unaffected (E3's grounded behavior is
 the do-no-harm check).
 
+Every judged walk lands in the mirror (2026-09-03, T17). WHEN the walker's
+"Reason + judge" runs, the walk and its digest SHALL be persisted to the neo4j
+mirror via export_neo4j.write_walk + write_digest (Walk/ANCHORS/PATHWAY,
+NEXT_IN_CHAIN, Chunk.salient, CommunitySummary/TOUCHED) -- best-effort:
+gated by NEO4J_MIRROR (default on), a transport failure surfaces as a visible
+warning and never blocks the answer. Rationale: T8/T14 shipped the writers
+with no caller on the serve path, so the mirror held only test data; the
+evidence layer is aligned with neo4j only if every walk the operator judges
+is queryable there (cookbook/evidence_queries.cypher is the read side).
+
 Community references (c<cid>) and pathway pairs named in the digest describe
 structure, not a single citable excerpt, and stay outside the numeric `ids`
 schema -- widening `ids` to accept them would need a second id namespace with

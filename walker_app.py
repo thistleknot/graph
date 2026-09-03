@@ -572,6 +572,24 @@ with tab_walk:
                     st.session_state["assess"] = (q, interpret.reason(
                         conn, run, bnd, terms, concept, embed=embed,
                         judge=True, pw=pw, digest=digest))
+                    # T17: every judged walk lands in the neo4j mirror --
+                    # best-effort, never blocks the answer (design.md I14 sect).
+                    if os.environ.get("NEO4J_MIRROR", "1") != "0":
+                        try:
+                            import export_neo4j as xn
+                            xn.write_walk(bnd, pw, prompt=q)
+                            if ds_ is not None:
+                                xn.write_digest(
+                                    bnd,
+                                    {"chunks": ds_["chunks"], "sal": ds_["sal"],
+                                     "kept": ds_["kept"]},
+                                    [{"cid": t["cid"],
+                                      "keywords": kw.get(t["cid"], []),
+                                      "size": t["size"], "hits": t["hits"]}
+                                     for t in touched],
+                                    prompt=q)
+                        except Exception as e:              # noqa: BLE001
+                            st.warning(f"neo4j mirror skipped: {e}")
 
             got = st.session_state.get("assess")
             has_answer = False

@@ -458,3 +458,15 @@ first (ids resolvable), then demand grounding, then measure, then move the layer
   _Lessons:_ B3 FIXED: hypothesis is now Kafka's "a book must be the axe for the frozen sea
   within us", 3 premises all citing #2266 (quotes chunk), all supported, answer carries the
   citation. E3 held (#7). 48 tests pass. The whole grounded-reasoning gap is closed at 9b.
+
+- [DONE] T17 The walker mirrors every judged walk into neo4j
+  _Files:_ walker_app.py, .spec/specs/graph-explorer/design.md
+  _Verify:_ PYTHONPATH=. python .tmp/neo4j_backfill.py mixed-full-dual && cypher count check
+  _Notes:_ T8/T14 built write_walk/write_digest but no serve path calls them --
+  the mirror only ever held test data. Reason+judge now persists walk+digest
+  (best-effort, env-gated NEO4J_MIRROR, fail-soft warning); .tmp backfill
+  pushes the 20 frozen diagnostic walks so the mirror has content today.
+  _Lessons:_ Backfill wrote all 20: mirror now holds 20 Walk nodes, 80 ANCHORS, 82 PATHWAY,
+  1528 NEXT_IN_CHAIN, 1189 chunks with salient, 11 CommunitySummary, 73 TOUCHED. Walker glue
+  is best-effort inside the button (import inside the try; a down mirror = one warning, answer
+  unaffected). test_walker_render 18/18.
