@@ -54,6 +54,51 @@ S12 ef_search() SHALL report the depth it reached and why it stopped
     (converged / hop cap / frontier exhausted). A search that always hits the
     cap is not converging and its ef is mis-tuned.
 
+S15 (AMENDED 2026-09-03, supersedes the sqrt allocation below) BM25 anchors SHALL
+    start from the SAME unconditional global gt.search(k=k_anchor) run today, byte-
+    identical -- allocation never shrinks or reorders the base anchors. A source
+    absent from the base MAY add at most one extra: its single best hit from an
+    over-fetched pool, granted only when that hit's score is >= COMPETITIVE_FRAC of
+    the base's k-th (weakest) score. Anchors are do-no-harm ADDITIVE-ONLY: a global
+    reallocation cannot fix register starvation without breaking something else --
+    MEASURED 2026-09-02, run bfa594df, the sqrt per-source split (k_anchor 3 -> 9)
+    lifted the quotes share on register-explicit prompts from 14-18% to 23-29% but
+    dropped C3's brown floor from 30% to 19%, flipping A1 and E3 PASS -> FAIL. Every
+    selected anchor, base or extra, SHALL still pass R1 validation, unchanged:
+    competitiveness decides who MAY add, never whether a weak one is admitted.
+    [SUPERSEDED sqrt text retained for history: anchors were to be allocated per
+    source in proportion to sqrt(n_s), split by largest-remainder rounding and
+    selected by a separate per-source search. Superseded because it caps the
+    majority source regardless of its true share, which is what broke A1/E3.]
+
+S16 (AMENDED 2026-09-03) At most ONE extra per eligible source, chosen as that
+    source's single best hit from the over-fetched pool (pool score order, first
+    match). The extras cap is `max(0, ef - len(base))`, applied to the extras BEFORE
+    they are merged with base -- base anchors are never displaced by a later
+    truncation, so a tie on score with a lower ordinal cannot bump a base row out.
+    The merged anchor list SHALL be deduplicated by ordinal and ordered by BM25
+    score descending, ties by ordinal ascending; when no extra is granted the
+    return value SHALL be the base list itself (the same object), not a rebuilt
+    equal one. WHERE the run reports fewer than two source labels -- including
+    R19's literal "default" and a pre-R20 run carrying no labels -- the anchor list
+    SHALL be identical, element for element and in order, to today's single
+    gt.search(k=k_anchor).
+
+S17 (new 2026-09-03; promotes the queued source-aware ring share. Trigger: T7's
+    ring evidence, run bfa594df -- B1-B5 ring origin carries 8/24, 4/24, 0/24,
+    8/24, 4/24 quotes chunks per walk while walk-only quotes sits at 4-17%, so the
+    ring top-off, not the walk, is where register share is won or lost.) WHERE the
+    run reports more than one source label AND the anchor list spans more than one
+    source, the ring top-off budget (RING_TOP x RING_PER, S13) SHALL be allocated
+    across sources in proportion to the anchor list's source composition by
+    largest-remainder rounding, each source's slots filled by its strongest ring
+    candidates -- S13's candidate pool and strength ordering unchanged, only which
+    slots go to which source changes. A source with fewer candidates than slots
+    SHALL forfeit the shortfall to the remaining candidates in global strength
+    order, so the walk never shrinks. WHERE every anchor shares one source -- or
+    the run reports one label -- allocation SHALL be skipped and the ring fill
+    SHALL be identical to today's, element for element and in order.
+
 MEASURED (brown-50, 6 queries, 2026-08-26) -- the sampling premise did not hold
 ------------------------------------------------------------------------------
 Stability (mean pairwise Jaccard of top-3 community sets across seeds) is NOT
@@ -87,7 +132,6 @@ Candidate sets here run 25-102, so n=40 enumerates three of five queries.
 """
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -117,9 +161,23 @@ DEFAULT_K_ANCHOR = 3       # BM25 anchors seeded. MEASURED (diagnostic set,
                            # on register-explicit prompts (14-18% -> 23-29%)
                            # but broke C3's brown floor (30% -> 19%), and the
                            # frozen set's rule is do-no-harm -- so 3 stands.
-                           # A GLOBAL anchor count cannot fix the B-class
-                           # finding; per-source allocation (sqrt item) is the
-                           # justified build. See diagnostic-prompts.md.
+                           # AMENDED 2026-09-03: a GLOBAL anchor count cannot
+                           # fix the B-class finding -- and neither can a global
+                           # per-source REALLOCATION (the superseded scheme
+                           # capped the majority source and flipped A1/E3, see
+                           # S15). Anchors are
+                           # do-no-harm only: additive minority extras (S15/S16).
+                           # The measured B lever is the source-aware ring
+                           # share, not anchor allocation. See diagnostic-prompts.md.
+COMPETITIVE_FRAC  = 0.5    # S15 amended: a minority source's best hit is granted
+                           # an extra anchor only when its score >= this fraction
+                           # of the base k-th score. Spec-fixed threshold, not
+                           # tuned -- MEASURED 2026-09-02, run bfa594df, basis
+                           # for the additive-only amendment.
+ANCHOR_FETCH_MIN  = 64     # S15/S16: floor on the over-fetch used to find each
+                           # absent source's best hit (no longer per-source quotas)
+ANCHOR_FETCH_MULT = 16     # multiplier applied to k before escalation
+ANCHOR_FETCH_CAP  = 4096   # ceiling on the over-fetch -- stop escalating past this
 MAX_HOPS    = 8            # runaway guard, NOT a depth policy (S9)
 DEFAULT_RING_TOP = 3       # S13: one degree out from the top-3 of W (design 6.10)
 DEFAULT_RING_PER = 8       # S13: strongest 8 new neighbours per parent
@@ -155,6 +213,87 @@ class Bundle:
             sum(c["hits"] for c in self.communities), 1)
 
 
+def select_anchors(base: list, pool: list, sources: dict, ef: int,
+                    frac: float = COMPETITIVE_FRAC) -> list:
+    """S16 (amended 2026-09-03): base is do-no-harm -- a source absent from base
+    may ADD at most one extra, its best pool hit, when competitive.
+
+    Require:  ef >= 1; base ordered (-score, ord); pool a superset of base or
+              empty; sources is {label: n_s} restricted to n_s > 0.
+    Guarantee: every element of base is in the result, in a result ordered
+               (-score, ord), deduped by ord, len(result) <= ef and
+               <= len(base) + number of missing eligible sources. Returns
+               `base` itself (same object) when nothing is granted. Source
+               labels are read only to decide who MAY add an extra -- never to
+               admit or reject on strength (R1 still decides that, unchanged).
+
+    Deliberate asymmetry: base is source-agnostic, so an unlabelled or
+    non-eligible row CAN be a base anchor. Only the extras pass is source-gated.
+    """
+    if not base:
+        return base
+    threshold = frac * base[-1]["score"]
+    present = {h.get("source") for h in base}
+    missing = [s for s in sources if s not in present]
+    if not missing:
+        return base
+
+    best_by_source: dict = {}
+    for h in pool:
+        src = h.get("source")
+        if src in missing and src not in best_by_source:
+            best_by_source[src] = h
+
+    granted = [h for s, h in best_by_source.items() if h["score"] >= threshold]
+    granted.sort(key=lambda h: (-h["score"], h["ord"]))       # before the cap
+    cap = max(0, ef - len(base))
+    granted = granted[:cap]
+    if not granted:
+        return base
+
+    base_ords = {h["ord"] for h in base}
+    merged = list(base) + [h for h in granted if h["ord"] not in base_ords]
+    merged.sort(key=lambda h: (-h["score"], h["ord"]))
+    return merged
+
+
+def anchor_hits(conn, run: gt.RunHandle, query: str, k_anchor: int, ef: int) -> list:
+    """S15 (amended 2026-09-03) entry point: today's global gt.search top-k,
+    unconditionally, plus at most one competitive extra per absent source.
+
+    Require:  ef >= 1, k_anchor >= 1.
+    Guarantee: returns gt.search-shaped rows, ordered (-score, ord), len <= ef.
+               WHERE the run reports fewer than 2 source labels the return value is
+               EXACTLY `gt.search(conn, run, query, k=min(k_anchor, ef))` -- the same
+               call, the same object, no re-sort, no re-wrap.
+    """
+    k = min(k_anchor, ef)
+    # Load-bearing: today's call, made FIRST and unconditionally. Identity with
+    # today comes from making the same call, not from assuming the top-k of a
+    # larger fetch is prefix-stable.
+    base = gt.search(conn, run, query, k=k)
+
+    sources = gt.run_sources(conn, run)
+    elig = {s: n for s, n in sources.items() if n > 0}
+    if len(elig) < 2:                                       # S16 degenerate path
+        return base
+
+    present = {h.get("source") for h in base}
+    if all(s in present for s in elig) or len(base) >= ef:
+        return base                                         # no extra possible: no over-fetch
+
+    fetch = max(k * ANCHOR_FETCH_MULT, ANCHOR_FETCH_MIN)
+    rows: list = []
+    while True:
+        rows = gt.search(conn, run, query, k=fetch)
+        found = {h.get("source") for h in rows} & set(elig)
+        if elig.keys() <= found or len(rows) < fetch or fetch >= ANCHOR_FETCH_CAP:
+            break
+        fetch *= 4
+
+    return select_anchors(base, rows, elig, ef)
+
+
 def candidate_scores(conn, run: gt.RunHandle, query: str, k_anchor: int = DEFAULT_K_ANCHOR,
                      hops: int = DEFAULT_HOPS, min_strength: float = 0.0,
                      cap: int = DEFAULT_CAP) -> tuple[dict, list]:
@@ -166,6 +305,8 @@ def candidate_scores(conn, run: gt.RunHandle, query: str, k_anchor: int = DEFAUL
 
     Traversal is graph_tools.neighbors -- indexed src/dst only, never attrs.
     """
+    # Legacy fixed-hop path behind evidence(). Allocation (S15/S16) is
+    # ef_search's serve path only -- this call stays a plain global search.
     hits = gt.search(conn, run, query, k=k_anchor)
     if not hits:
         return {}, []
@@ -259,11 +400,18 @@ def ef_search(conn, run: gt.RunHandle, query: str, ef: int = DEFAULT_EF,
     Require:  ef >= 1; m >= 1; max_hops >= 1 as a runaway guard, not a policy.
     Guarantee: (results, telemetry) where results is {ord: score} of size <= ef
               and telemetry names the depth reached and the stop reason (S12).
+
+    S15/S16 (amended 2026-09-03): on a run reporting >= 2 source labels,
+    anchor_hits starts from the same global gt.search(k=k_anchor) as a single-
+    source run and may add at most one competitive extra per absent source. The
+    budget exceeds k_anchor only by those granted extras, never by a
+    reallocation; S10 still wins -- anchors never exceed ef, since the extras
+    cap is applied inside anchor_hits before it returns.
     """
     if ef < 1 or m < 1 or max_hops < 1:
         raise ValueError(f"ef, m, max_hops must all be >= 1 "
                          f"(got {ef}, {m}, {max_hops})")
-    hits = gt.search(conn, run, query, k=min(k_anchor, ef))
+    hits = anchor_hits(conn, run, query, k_anchor, ef)
     if not hits:
         return {}, {"stop": "no_anchor", "depth": 0, "expanded": 0, "seen": 0,
                     "hop_capped": 0, "pool_median": 0, "pools_over_m": 0,
@@ -323,28 +471,109 @@ def ef_search(conn, run: gt.RunHandle, query: str, ef: int = DEFAULT_EF,
                "seen": len(seen), "hop_capped": capped,
                "pool_median": (sorted(pools)[len(pools) // 2] if pools else 0),
                "pools_over_m": n_sampled, "pools": len(pools),
-               "ef": ef, "T": T, "m": m, "anchors": [h["ord"] for h in hits]}
+               "ef": ef, "T": T, "m": m, "anchors": [h["ord"] for h in hits],
+               "anchor_mix": gt.source_mix(hits)}
+
+
+def select_ring(cands: list, mix: dict, budget: int) -> list:
+    """S17 pure selector: largest-remainder split of `budget` slots across
+    `mix`'s sources, filled from `cands` in strength order, shortfall forfeit
+    to global strength order.
+
+    Require:  cands a list of row-dicts each with ord, score, source (source
+              may be None), no duplicate ords; mix {label: anchor_count} with
+              positive counts; budget >= 0.
+    Guarantee: returns a subset of cands of length min(budget, len(cands)),
+              ordered (-score, ord); a pure function of its arguments,
+              independent of input list order; no source receives more than
+              its quota unless reached through the forfeit pass; every source
+              with candidates and a quota >= 1 receives at least one slot.
+    """
+    if budget <= 0 or not cands:
+        return []
+    ordered = sorted(cands, key=lambda r: (-r["score"], r["ord"]))
+
+    A = sum(mix.values())
+    if A <= 0:
+        quotas = {}
+    else:
+        exact = {s: budget * n / A for s, n in mix.items()}
+        floors = {s: int(exact[s]) for s in mix}
+        remainder = budget - sum(floors.values())
+        remainders = sorted(mix, key=lambda s: (-(exact[s] - floors[s]), -mix[s], s))
+        quotas = dict(floors)
+        for s in remainders[:max(remainder, 0)]:
+            quotas[s] += 1
+
+    by_source: dict = {}
+    for r in ordered:
+        by_source.setdefault(r.get("source"), []).append(r)
+
+    chosen: list = []
+    taken_ords = set()
+    for s in sorted(quotas, key=lambda s: (-quotas[s], s)):
+        for r in by_source.get(s, [])[:quotas[s]]:
+            chosen.append(r)
+            taken_ords.add(r["ord"])
+
+    if len(chosen) < budget:
+        for r in ordered:
+            if len(chosen) >= budget:
+                break
+            if r["ord"] in taken_ords:
+                continue
+            chosen.append(r)
+            taken_ords.add(r["ord"])
+
+    chosen.sort(key=lambda r: (-r["score"], r["ord"]))
+    return chosen[:budget]
 
 
 def ring(conn, run: gt.RunHandle, W: dict, top: int = DEFAULT_RING_TOP,
-         per: int = DEFAULT_RING_PER) -> dict:
+         per: int = DEFAULT_RING_PER, mix: dict | None = None) -> dict:
     """S13: one degree out from the strongest `top` members of W, without a
     walk. Each parent's strongest `per` edges not already in W enter at
     score = parent score x edge strength (never above the parent). Edge table
-    only (W2), deterministic. Returns {ord: score} for the new members."""
-    out = {}
+    only (W2), deterministic. Returns {ord: score} for the new members.
+
+    S17: WHERE `mix` (the anchor source composition) spans >= 2 sources, the
+    top*per budget is allocated across sources by select_ring instead of
+    filled per-parent. WHERE mix is absent or spans < 1 source, this is
+    today's loop, unmoved, reached by an early return -- byte-identical dict,
+    not a re-derivation that happens to agree."""
+    if not mix or len(mix) < 2:
+        out = {}
+        parents = sorted(W, key=lambda o: (-W[o], o))[:max(top, 0)]
+        for p in parents:
+            added = 0
+            for nb in gt.neighbors(conn, run, p, limit=per * 3):
+                o = nb["ord"]
+                if o in W or o in out:
+                    continue
+                out[o] = W[p] * max(min(nb["strength"], 1.0), 0.0)
+                added += 1
+                if added >= per:
+                    break
+        return out
+
+    # S17 allocated path. Pool fetch is S13's unchanged limit=per*3 per parent;
+    # the per-parent `added >= per` early break is NOT carried here -- that was
+    # a *fill* rule, not the pool, and keeping it would cap the pool at the
+    # same rows today's fill already picks, leaving allocation nothing to
+    # steer with.
+    budget = max(top, 0) * max(per, 0)
+    pool: dict = {}
     parents = sorted(W, key=lambda o: (-W[o], o))[:max(top, 0)]
     for p in parents:
-        added = 0
         for nb in gt.neighbors(conn, run, p, limit=per * 3):
             o = nb["ord"]
-            if o in W or o in out:
+            if o in W or o in pool:
                 continue
-            out[o] = W[p] * max(min(nb["strength"], 1.0), 0.0)
-            added += 1
-            if added >= per:
-                break
-    return out
+            pool[o] = {"ord": o, "score": W[p] * max(min(nb["strength"], 1.0), 0.0),
+                       "source": gt.source_of(nb)}
+
+    chosen = select_ring(list(pool.values()), mix, budget)
+    return {r["ord"]: r["score"] for r in chosen}
 
 
 def bridges(conn, run: gt.RunHandle, W: dict, pairs: int = DEFAULT_BRIDGE_PAIRS,
@@ -392,7 +621,8 @@ def ef_evidence(conn, run: gt.RunHandle, query: str, ef: int = DEFAULT_EF,
     W, tele = ef_search(conn, run, query, ef=ef, T=T, m=m,
                         k_anchor=k_anchor, seed=seed)
     anchors = list(tele.get("anchors", []))
-    extra = ring(conn, run, W, top=ring_top, per=ring_per) if W and ring_top else {}
+    extra = (ring(conn, run, W, top=ring_top, per=ring_per, mix=tele.get("anchor_mix"))
+             if W and ring_top else {})
     tele["ring"] = len(extra)                                   # S13
     br, br_paths = (bridges(conn, run, W, pairs=bridge_pairs)
                     if W and bridge_pairs else ({}, []))

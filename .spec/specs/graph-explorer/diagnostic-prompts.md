@@ -75,7 +75,7 @@ to edit.
 | A3 | wiki 81/81, storm community | PASS |
 | A4 | wiki 46/46, boat_race community | PASS |
 | A5 | wiki 75/75 | PASS |
-| B1–B5 | quotes 6–31% at ef24 on the DUAL run; 40–53% on the SPARSE mixed-full run, same prompts and knobs | **KNOWN-FAIL (finding), recalibrated:** target = quotes ≥ 40% of the ef24 walk — achieved by the sparse run, so attainable; dense expansion dilutes register-targeted retrieval 2–4x. THE tuning target. |
+| B1–B5 | quotes 6–31% at ef24 on the DUAL run; 40–53% on the SPARSE mixed-full run, same prompts and knobs | **KNOWN-FAIL (finding), recalibrated:** target = quotes ≥ 40% of the ef24 walk — achieved by the sparse run, so attainable; dense expansion dilutes register-targeted retrieval 2–4x. THE tuning target. sqrt anchors (run bfa594df, 2026-09-03): before 6–31% -> after 2–25%; still KNOWN-FAIL. T7a+T7b additive anchors + S17 ring share (run bfa594df-1238-448f-8e2b-d05136e6307a, 2026-09-03): quotes_all 8–29% (B1 15% B2 19% B3 8% B4 19% B5 29%), quotes_walk 4–12% (B1 4% B2 12% B3 8% B4 12% B5 8%), ring fill 6/24 6/24 2/24 6/24 12/24; still KNOWN-FAIL, under the 40% gate. |
 | C1 | brown 26/86 (30%) | PASS |
 | C2 | brown 23/88, brown anchors | PASS |
 | C3 | brown 26/88 | PASS |
@@ -95,3 +95,29 @@ Standing findings the frozen set now carries:
    A/C/D/E.
 2. **A2:** lexically ambiguous entity names ('coral sea') mis-anchor; the
    named-article anchor expectation stays as the discriminator.
+
+2026-09-03 re-run (run bfa594df-1238-448f-8e2b-d05136e6307a, sqrt anchors
+S15/S16, same knobs): A/C/D/E 12/15 still passing, A2 still KNOWN-FAIL (not
+this fix's target), B quotes 2–25% (was 6–31%). Do-no-harm breach: A1 flipped
+to FAIL (wiki 80/81 of mix, but sqrt allocation caps wiki to 1-of-3 anchors
+so wiki/28410 is no longer among them; anchor is now wiki/16278) and E3
+flipped to FAIL (brown+political-wiki combined share fell to 2.8%, was
+≥50%) — both verdict cells above are left byte-identical per the freeze;
+this line is the record.
+
+2026-09-03 re-run, T7c (run bfa594df-1238-448f-8e2b-d05136e6307a, T7a additive
+anchors + T7b S17 source-aware ring share, sqrt code path deleted, same
+knobs): 13/20 pass, matching the original calibration count. A1 do-no-harm
+RESTORED to PASS (n=77, wiki 76/77, wiki/28410 anchored — additive extras
+never displace the base top-k, so the sqrt-era cap regression is gone). E3
+NOT restored: still FAIL (n=72, wiki 68/72, brown 4/72, game 0 — the
+brown+political-wiki combined share stays far under the ≥50% target; this is
+a different failure mode than the sqrt-cap one, since anchor allocation is no
+longer capping the majority source — the miss is upstream of anchors,
+consistent with the ring/PPR steering itself, not this fix's target). B
+quotes_all 8–29% (min B3 8%, max B5 29%), quotes_walk 4–12%, still under the
+40% gate — S17 ring share moved the needle (2–25% sqrt-era -> 8–29% here) but
+did not clear it. Per-origin quotes counts (ring/24 total ring slots): B1
+6/24, B2 6/24, B3 2/24, B4 6/24, B5 12/24. T7c ladder law: this is the
+second fable-tier scope of the B fix and E3 do-no-harm is not restored
+either — campaign STOPS here; T7c is BLOCKED, handed to the operator.

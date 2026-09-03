@@ -5,7 +5,10 @@ file is where they become durable -- if n=24 or the argmax default is ever
 changed, something here fails and states why the number was chosen.
 
 Guards pinned: S1 purity, S2 z-scoring, S3 without replacement, S4 enumeration,
-S5 stored cid grouping, S7 re-derivable params, S8 argmax default.
+S5 stored cid grouping, S7 re-derivable params, S8 argmax default, S15/S16
+(amended 2026-09-03) additive-only competitive anchor extras: base is the
+untouched global top-k, a minority source may add at most one competitive
+extra, extras never displace a base anchor.
 
 The pure-selection tests need no database. The pipeline tests do, and skip
 cleanly without one.
@@ -37,6 +40,8 @@ def test_defaults_are_the_measured_ones():
     assert sp.DEFAULT_T == 0.0
     assert sp.DEFAULT_HOPS == 2
     assert sp.DEFAULT_CAP == 150        # 2-hop p99 is 111
+    assert sp.DEFAULT_K_ANCHOR == 3     # allocation changes WHERE, never HOW MANY
+    assert sp.COMPETITIVE_FRAC == 0.5
 
 
 # ---------------------------------------------------------------- S8 argmax
@@ -422,3 +427,313 @@ def test_s14_bridges_are_discovered_off_walk_and_never_outrank_endpoints(live):
         for p in homes:
             assert p[0] in top and p[-1] in top
         assert b1.scores[o] <= min(b1.scores[p[0]], b1.scores[p[-1]]) + 1e-12
+
+
+# --------------------------- select_anchors: additive-only extras (S15/S16)
+# no DB
+
+def _row(ord_, score, source):
+    return {"ord": ord_, "score": score, "source": source}
+
+
+def test_a1_shape_one_source_dominates_extras_denied():
+    """Regression for the A1/E3 flip: 99% one source, minority hits well under
+    the competitive threshold. The old sqrt scheme would have capped wiki;
+    the amendment must leave base untouched."""
+    base = [_row(28410, 9.0, "wiki"), _row(16278, 8.0, "wiki"), _row(9001, 7.0, "wiki")]
+    pool = base + [_row(50, 1.0, "quotes"), _row(51, 0.9, "brown")]
+    picked = sp.select_anchors(base, pool, {"wiki": 3, "quotes": 1, "brown": 1}, ef=24)
+    assert picked is base
+    assert {28410, 16278, 9001} <= {h["ord"] for h in picked}
+    assert picked[0]["ord"] == 28410
+
+
+def test_granted_exactly_at_the_boundary():
+    base = [_row(1, 9.0, "wiki"), _row(2, 8.0, "wiki"), _row(3, 7.0, "wiki")]
+    pool = base + [_row(50, 3.5, "quotes")]           # == 0.5 * 7.0, inclusive
+    picked = sp.select_anchors(base, pool, {"wiki": 3, "quotes": 1}, ef=24)
+    assert len(picked) == 4
+    assert [h["ord"] for h in picked[:3]] == [1, 2, 3]
+
+
+def test_denied_just_under_the_boundary():
+    base = [_row(1, 9.0, "wiki"), _row(2, 8.0, "wiki"), _row(3, 7.0, "wiki")]
+    pool = base + [_row(50, 3.5 - 1e-9, "quotes")]
+    picked = sp.select_anchors(base, pool, {"wiki": 3, "quotes": 1}, ef=24)
+    assert picked is base
+
+
+def test_byte_identity_multi_source_nobody_competitive():
+    base = [_row(1, 9.0, "wiki"), _row(2, 8.0, "wiki"), _row(3, 7.0, "wiki")]
+    pool = base + [_row(50, 1.0, "quotes"), _row(51, 0.5, "brown")]
+    picked = sp.select_anchors(base, pool, {"wiki": 3, "quotes": 1, "brown": 1}, ef=24)
+    assert picked == base
+    assert picked is base
+
+
+def test_one_extra_per_source_maximum():
+    base = [_row(1, 9.0, "wiki")]
+    pool = base + [_row(50, 8.0, "quotes"), _row(51, 7.0, "quotes"), _row(52, 6.0, "quotes"),
+                   _row(60, 5.0, "brown"), _row(61, 4.0, "brown")]
+    picked = sp.select_anchors(base, pool, {"wiki": 1, "quotes": 1, "brown": 1}, ef=24)
+    assert len(picked) == 3
+    assert sum(1 for h in picked if h["source"] == "quotes") == 1
+    assert sum(1 for h in picked if h["source"] == "brown") == 1
+    assert 50 in [h["ord"] for h in picked]           # quotes' best, not runners-up
+
+
+def test_extras_never_displace_a_base_anchor_under_the_ef_clamp():
+    base = [_row(1, 9.0, "wiki"), _row(2, 8.0, "wiki"), _row(3, 7.0, "wiki")]
+    pool = base + [_row(50, 8.0, "quotes")]
+    picked = sp.select_anchors(base, pool, {"wiki": 3, "quotes": 1}, ef=3)
+    assert picked is base
+    assert len(picked) == 3
+
+    picked2 = sp.select_anchors(base, pool, {"wiki": 3, "quotes": 1}, ef=4)
+    assert len(picked2) == 4
+    assert {1, 2, 3} <= {h["ord"] for h in picked2}
+
+
+def test_tie_at_the_kth_score_sorts_ahead_no_base_row_dropped():
+    base = [_row(10, 9.0, "wiki"), _row(11, 8.0, "wiki"), _row(12, 7.0, "wiki")]
+    pool = base + [_row(1, 7.0, "quotes")]             # tie on score, lower ord
+    picked = sp.select_anchors(base, pool, {"wiki": 3, "quotes": 1}, ef=24)
+    assert len(picked) == 4
+    ords = [h["ord"] for h in picked]
+    assert ords == [10, 11, 1, 12]                     # tie: ord 1 sorts ahead of ord 12
+    assert {10, 11, 12} <= set(ords)                   # no base row dropped
+
+
+def test_a_source_already_in_base_gets_no_extra():
+    base = [_row(1, 9.0, "wiki"), _row(2, 8.0, "quotes")]
+    pool = base + [_row(50, 7.5, "quotes")]            # quotes already present in base
+    picked = sp.select_anchors(base, pool, {"wiki": 1, "quotes": 1}, ef=24)
+    assert picked is base
+
+
+def test_determinism_independent_of_sources_dict_order():
+    base = [_row(1, 9.0, "wiki")]
+    pool = base + [_row(50, 8.0, "quotes"), _row(60, 7.0, "brown")]
+    sources = {"wiki": 3, "quotes": 1, "brown": 1}
+    a = sp.select_anchors(base, pool, sources, ef=24)
+    b = sp.select_anchors(base, pool, dict(reversed(list(sources.items()))), ef=24)
+    assert a == b
+
+
+def test_empty_base_returns_base():
+    assert sp.select_anchors([], [], {"wiki": 1}, ef=24) == []
+
+
+def test_merged_list_is_score_ordered_and_deduped():
+    base = [_row(1, 9.0, "a"), _row(3, 7.0, "a"), _row(5, 5.0, "a")]
+    pool = base + [_row(2, 8.0, "b")]
+    picked = sp.select_anchors(base, pool, {"a": 1, "b": 1}, ef=24)
+    assert picked == sorted(picked, key=lambda r: (-r["score"], r["ord"]))
+    assert len(picked) == len({h["ord"] for h in picked})
+
+
+def test_starved_pool_grants_what_it_can_rather_than_raising():
+    """Fewer competitive candidates than missing sources: no raise, just fewer
+    extras than sources eligible."""
+    base = [_row(1, 9.0, "a")]
+    pool = base + [_row(2, 8.0, "b")]                  # "c" never appears in pool
+    picked = sp.select_anchors(base, pool, {"a": 1, "b": 1, "c": 1}, ef=24)
+    assert len(picked) == 2
+    assert {1, 2} == {h["ord"] for h in picked}
+
+
+def test_unlabelled_row_never_wins_an_extra_but_is_not_barred_from_base():
+    base = [_row(1, 9.0, None), _row(2, 8.0, "a")]     # unlabelled row IS a base anchor
+    pool = base + [_row(50, 8.5, None)]                # unlabelled pool row cannot be an extra
+    picked = sp.select_anchors(base, pool, {"a": 1, "b": 1}, ef=24)
+    assert picked is base                              # no pool row is labelled "b"
+    assert 1 in [h["ord"] for h in picked]
+
+
+# ---------------------------------------------------- anchor_hits pipeline
+# uses `live`, skips without a DB
+
+def _multi(live):
+    conn, _ = live
+    for label in ("mixed-full-dual",):
+        try:
+            run = gt.get_run(conn, label)
+        except Exception:
+            continue
+        if len(gt.run_sources(conn, run)) >= 2:
+            return conn, run
+    pytest.skip("no multi-source run")
+
+
+def test_single_source_anchors_are_identical_to_the_global_search(live):
+    conn, run = _dual(live)
+    if len(gt.run_sources(conn, run)) >= 2:
+        pytest.skip("brown-500-dual reports >= 2 source labels")
+    got = [h["ord"] for h in sp.anchor_hits(conn, run, Q, 3, 24)]
+    want = [h["ord"] for h in gt.search(conn, run, Q, k=3)]
+    assert got == want
+    _, tele = sp.ef_search(conn, run, Q, ef=24, T=0.0)
+    assert tele["anchors"] == want
+
+
+def test_multi_source_anchors_start_with_the_global_top_k(live):
+    conn, run = _multi(live)
+    sources = gt.run_sources(conn, run)
+    elig = {s: n for s, n in sources.items() if n > 0}
+    base = gt.search(conn, run, Q, k=3)
+    hits = sp.anchor_hits(conn, run, Q, 3, 24)
+    assert hits[:len(base)] == base
+    assert len(hits) <= 3 + (len(elig) - 1)
+
+
+def test_ef_search_anchors_never_exceed_ef(live):
+    conn, run = _multi(live)
+    _, tele = sp.ef_search(conn, run, Q, ef=2, T=0.0, k_anchor=3)
+    assert len(tele["anchors"]) <= 2
+
+
+# ---------------------------------------------- select_ring / ring (S17)
+# no DB for select_ring; ring's live tests reuse `live` and `_multi`
+
+def _rrow(ord_, score, source):
+    return {"ord": ord_, "score": score, "source": source}
+
+
+def test_s17_proportional_split():
+    """Design acceptance (a): anchors {wiki 2, quotes 1}, budget 24 -> 16/8."""
+    pool = [_rrow(i, 100.0 - i, "wiki") for i in range(20)] + \
+           [_rrow(1000 + i, 90.0 - i, "quotes") for i in range(20)]
+    chosen = sp.select_ring(pool, {"wiki": 2, "quotes": 1}, budget=24)
+    assert len(chosen) == 24
+    assert sum(1 for r in chosen if r["source"] == "wiki") == 16
+    assert sum(1 for r in chosen if r["source"] == "quotes") == 8
+
+
+def test_s17_largest_remainder_tie_breaks_by_name():
+    """mix={wiki:2, quotes:1, brown:1}, B=10 -> floors 5/2/2=9, one leftover,
+    quotes/brown tie on remainder and anchor count -> name-ascending -> brown."""
+    pool = [_rrow(i, 100.0 - i, "wiki") for i in range(10)] + \
+           [_rrow(200 + i, 50.0 - i, "quotes") for i in range(10)] + \
+           [_rrow(300 + i, 40.0 - i, "brown") for i in range(10)]
+    chosen = sp.select_ring(pool, {"wiki": 2, "quotes": 1, "brown": 1}, budget=10)
+    counts = {}
+    for r in chosen:
+        counts[r["source"]] = counts.get(r["source"], 0) + 1
+    assert counts == {"wiki": 5, "brown": 3, "quotes": 2}
+
+
+def test_s17_steering_beats_global_strength_fill():
+    """Every quotes candidate scores below the global top-24: a plain
+    global-strength fill returns 0 quotes, select_ring still returns >= 8."""
+    pool = [_rrow(i, 1000.0 - i, "wiki") for i in range(30)] + \
+           [_rrow(2000 + i, 10.0 - i * 0.1, "quotes") for i in range(10)]
+    global_fill = sorted(pool, key=lambda r: (-r["score"], r["ord"]))[:24]
+    assert sum(1 for r in global_fill if r["source"] == "quotes") == 0
+    chosen = sp.select_ring(pool, {"wiki": 2, "quotes": 1}, budget=24)
+    assert sum(1 for r in chosen if r["source"] == "quotes") >= 8
+
+
+def test_s17_shortfall_forfeits_to_global_strength_order():
+    """quotes quota 8 but only 3 quotes candidates exist -- all 3 taken, the
+    other 5 slots go to the strongest remaining rows globally; the walk does
+    not shrink."""
+    pool = [_rrow(i, 100.0 - i, "wiki") for i in range(30)] + \
+           [_rrow(500 + i, 50.0 - i, "quotes") for i in range(3)]
+    chosen = sp.select_ring(pool, {"wiki": 1, "quotes": 1}, budget=24)
+    assert len(chosen) == min(24, len(pool))
+    assert sum(1 for r in chosen if r["source"] == "quotes") == 3
+    assert {500, 501, 502} <= {r["ord"] for r in chosen}
+
+
+def test_s17_unlabelled_and_out_of_mix_rows_only_eligible_in_forfeit():
+    """wiki's own quota (budget=3, mix={wiki:1} -> quota 3) outruns its 2
+    candidates; the shortfall forfeits to the strongest remaining row
+    regardless of label -- the unlabelled #2 (score 8.0) beats brown's #3
+    (score 7.0), so it is picked before brown even though neither is 'wiki'."""
+    pool = [_rrow(1, 9.0, "wiki"), _rrow(2, 8.0, None), _rrow(3, 7.0, "brown"),
+            _rrow(4, 6.0, "wiki")]
+    chosen = sp.select_ring(pool, {"wiki": 1}, budget=3)
+    assert {r["ord"] for r in chosen} == {1, 4, 2}   # wiki's 2, then forfeit's best
+    chosen_full = sp.select_ring(pool, {"wiki": 1}, budget=4)
+    assert {r["ord"] for r in chosen_full} == {1, 2, 3, 4}
+
+
+def test_s17_order_independence():
+    import random
+    pool = [_rrow(i, float(i % 13), ("wiki" if i % 2 else "quotes")) for i in range(40)]
+    shuffled = pool[:]
+    random.Random(11).shuffle(shuffled)
+    a = sp.select_ring(pool, {"wiki": 2, "quotes": 1}, budget=17)
+    b = sp.select_ring(shuffled, {"wiki": 2, "quotes": 1}, budget=17)
+    assert a == b
+
+
+def test_s17_degenerate_inputs():
+    assert sp.select_ring([], {"wiki": 1}, budget=10) == []
+    pool = [_rrow(1, 9.0, "wiki")]
+    assert sp.select_ring(pool, {"wiki": 1}, budget=0) == []
+    assert sp.select_ring(pool, {"wiki": 1}, budget=5) == pool
+
+
+def test_s17_ring_byte_identity_when_mix_is_single_source(live):
+    """T8: the dominant path. mix with one source must reproduce today's loop
+    exactly -- same dict, same key order."""
+    conn, run = _dual(live)
+    W, _ = sp.ef_search(conn, run, Q, ef=24, T=0.0)
+    a = sp.ring(conn, run, W, top=3, per=8)
+    b = sp.ring(conn, run, W, top=3, per=8, mix={"wiki": 3})
+    assert a == b
+    assert list(a) == list(b)
+
+
+def test_s17_ef_evidence_identity_when_anchor_mix_below_two(live):
+    """T9: when tele['anchor_mix'] has fewer than 2 entries, the ring-origin
+    members must equal ring() recomputed with no mix, and anchor_mix must be
+    present in both tele and the bundle params."""
+    conn, run = _dual(live)
+    b, tele = sp.ef_evidence(conn, run, Q, ef=24, T=0.0)
+    assert "anchor_mix" in tele and "anchor_mix" in b.params
+    if len(tele.get("anchor_mix") or {}) >= 2:
+        pytest.skip("brown-500-dual reports >= 2 anchor sources")
+    ring_ords = {o for o, origin in b.origin.items() if origin == "ring"}
+    W, _ = sp.ef_search(conn, run, Q, ef=24, T=0.0)
+    want = sp.ring(conn, run, W, top=sp.DEFAULT_RING_TOP, per=sp.DEFAULT_RING_PER)
+    assert ring_ords == set(want)
+
+
+def test_s17_live_steering_invariant(live):
+    """T10: for each source in the anchor mix, chosen ring count >= its quota
+    OR the pool held fewer of that source than its quota."""
+    conn, run = _multi(live)
+    W, tele = sp.ef_search(conn, run, Q, ef=24, T=0.0)
+    mix = tele.get("anchor_mix") or {}
+    if len(mix) < 2:
+        pytest.skip("no probe query yielded an anchor mix >= 2")
+
+    budget = sp.DEFAULT_RING_TOP * sp.DEFAULT_RING_PER
+    A = sum(mix.values())
+    parents = sorted(W, key=lambda o: (-W[o], o))[:sp.DEFAULT_RING_TOP]
+    pool_counts: dict = {}
+    for p in parents:
+        for nb in gt.neighbors(conn, run, p, limit=sp.DEFAULT_RING_PER * 3):
+            if nb["ord"] in W:
+                continue
+            src = gt.source_of(nb)
+            pool_counts[src] = pool_counts.get(src, 0) + 1
+
+    extra = sp.ring(conn, run, W, top=sp.DEFAULT_RING_TOP, per=sp.DEFAULT_RING_PER, mix=mix)
+    chosen_counts: dict = {}
+    # Re-derive each chosen ord's source by re-labelling via its parents.
+    labelled: dict = {}
+    for p in parents:
+        for nb in gt.neighbors(conn, run, p, limit=sp.DEFAULT_RING_PER * 3):
+            if nb["ord"] in extra and nb["ord"] not in labelled:
+                labelled[nb["ord"]] = gt.source_of(nb)
+    for o in extra:
+        src = labelled.get(o)
+        chosen_counts[src] = chosen_counts.get(src, 0) + 1
+
+    for s, n_s in mix.items():
+        quota = int(budget * n_s / A)  # floor; largest-remainder can only add
+        held = pool_counts.get(s, 0)
+        assert chosen_counts.get(s, 0) >= min(quota, held) or held < quota
