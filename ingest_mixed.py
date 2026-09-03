@@ -94,7 +94,7 @@ def load_quotes(n_docs, stride):
     return doc_ids, docs, sources
 
 
-def load_wiki(n_docs, stride, include=None):
+def load_wiki(n_docs, stride, include=None, titles=None):
     """(doc_ids, docs, sources) for EleutherAI/wikitext_document_level.
 
     include: optional regex matched against each document's opening 120 chars
@@ -103,6 +103,14 @@ def load_wiki(n_docs, stride, include=None):
     operator asks about must not be a stride victim (measured 2026-09-02:
     "= Battle of Midway =" sits at index 28410, 28410 % 4 == 2, absent from
     every stride-4 run; the answer was built from adjacent evidence)."""
+    if titles:
+        # exact article titles are the common case; compile them into the
+        # same head-matching machinery (regex stays for true patterns --
+        # measured 2026-09-03: a spaced regex did not survive PowerShell
+        # argument splitting, an exact title list has nothing to escape)
+        alts = "|".join(re.escape(t.strip()) for t in titles if t.strip())
+        exact = r"=\s*(" + alts + r")\s*="
+        include = f"(?:{include})|(?:{exact})" if include else exact
     if n_docs <= 0 and not include:
         return [], [], []
     rows = _hf_rows(WIKI_DATASET, WIKI_CONFIG, "train", "page")
@@ -120,11 +128,12 @@ def load_wiki(n_docs, stride, include=None):
 
 
 def load_mixed(brown, quotes, wiki, brown_stride, quotes_stride, wiki_stride,
-               wiki_include=None):
+               wiki_include=None, wiki_titles=None):
     """Concatenates the three arms in SOURCES order. Returns (doc_ids, docs, sources)."""
     b_ids, b_docs, b_src = load_brown(brown, brown_stride)
     q_ids, q_docs, q_src = load_quotes(quotes, quotes_stride)
-    w_ids, w_docs, w_src = load_wiki(wiki, wiki_stride, include=wiki_include)
+    w_ids, w_docs, w_src = load_wiki(wiki, wiki_stride, include=wiki_include,
+                                     titles=wiki_titles)
 
     doc_ids = b_ids + q_ids + w_ids
     docs = b_docs + q_docs + w_docs
@@ -149,6 +158,10 @@ def build_argparser():
     p.add_argument("--wiki-stride", type=int, default=1)
     p.add_argument("--wiki-include", default=None, metavar="REGEX",
                    help="always include wiki docs whose head matches (stride-proof anchors)")
+    p.add_argument("--wiki-title", action="append", default=None, metavar="TITLE",
+                   help="always include the wiki article with this exact title "
+                        "(repeatable; no escaping needed -- the plain spelling "
+                        "of --wiki-include)")
     return p
 
 
@@ -171,7 +184,7 @@ def main(argv=None):
     doc_ids, docs, sources = load_mixed(
         args.brown, args.quotes, args.wiki,
         args.brown_stride, args.quotes_stride, args.wiki_stride,
-        wiki_include=args.wiki_include,
+        wiki_include=args.wiki_include, wiki_titles=args.wiki_title,
     )
     _ckpt("load:done", f"docs={len(docs)} chars={sum(len(d) for d in docs)}")
     for src in SOURCES:

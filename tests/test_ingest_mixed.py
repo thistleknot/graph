@@ -264,3 +264,22 @@ def test_wiki_include_rescues_stride_victims(fake_hf, monkeypatch):
     ids2, _, _ = ingest_mixed.load_wiki(3, 4, include=r"Battle of Midway")
     idx2 = [int(i.split("/")[1]) for i in ids2]
     assert len(idx2) == len(set(idx2))
+
+
+def test_wiki_title_is_exact_and_escape_free(fake_hf, monkeypatch):
+    """--wiki-title: plain article names, repeatable, regex-metacharacters in
+    the title are literal; composes with --wiki-include."""
+    rows = ["= Article %d = body" % i for i in range(10)]
+    rows[3] = "= Battle of Midway = decisive naval battle"
+    rows[5] = "= AC/DC (band) = rock band"           # regex metachars in title
+    rows[7] = "= Battle of Jutland = naval battle"
+    monkeypatch.setattr(ingest_mixed, "_hf_rows", lambda *a, **k: rows)
+    ids, _, _ = ingest_mixed.load_wiki(
+        2, 4, titles=["Battle of Midway", "AC/DC (band)"])
+    idx = {int(i.split("/")[1]) for i in ids}
+    assert {3, 5} <= idx and 7 not in idx
+    # titles compose with a regex include
+    ids2, _, _ = ingest_mixed.load_wiki(
+        0, 1, include=r"Jutland", titles=["Battle of Midway"])
+    idx2 = {int(i.split("/")[1]) for i in ids2}
+    assert idx2 == {3, 7}
