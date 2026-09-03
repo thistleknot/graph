@@ -246,40 +246,29 @@ def test_main_reaches_communities_and_save(stubbed):
     assert stubbed["save"][0] is stubbed["cg"]
 
 
-def test_wiki_include_rescues_stride_victims(fake_hf, monkeypatch):
-    """--wiki-include: a document whose head matches rides along even when the
-    stride skips its index; already-sampled docs are not duplicated; output
-    stays index-sorted (operator, 2026-09-02: the Battle of Midway article was
-    a stride-4 victim at index 28410)."""
+def test_wiki_title_parses_head_and_rescues_stride_victims(fake_hf, monkeypatch):
+    """--wiki-title matches by EQUALITY on the parsed '= Title =' head -- no
+    pattern scanning (operator, 2026-09-03: regex selection was an ad hoc
+    hack; parse once at the boundary, compare exactly). Stride victims are
+    rescued, already-sampled docs are not duplicated, output stays sorted."""
     rows = ["= Article %d = body text" % i for i in range(10)]
     rows[3] = "= Battle of Midway = The Battle of Midway was decisive"
+    rows[5] = "= AC/DC (band) = rock band"          # metachars stay literal
     monkeypatch.setattr(ingest_mixed, "_hf_rows", lambda *a, **k: rows)
-    ids, docs, src = ingest_mixed.load_wiki(3, 4, include=r"Battle of Midway")
+    ids, docs, src = ingest_mixed.load_wiki(
+        3, 4, titles=["battle of midway", "AC/DC (band)"])
     idx = [int(i.split("/")[1]) for i in ids]
-    assert 3 in idx                              # the stride victim is rescued
+    assert 3 in idx and 5 in idx                    # rescued, case-insensitive
     assert idx == sorted(idx) and len(idx) == len(set(idx))
-    assert all(s == "wiki" for s in src)
-    # matching a doc the stride already took must not duplicate it
-    rows[0] = "= Battle of Midway = duplicate-position head"
-    ids2, _, _ = ingest_mixed.load_wiki(3, 4, include=r"Battle of Midway")
-    idx2 = [int(i.split("/")[1]) for i in ids2]
-    assert len(idx2) == len(set(idx2))
+    assert all(s_ == "wiki" for s_ in src)
+    # equality means no substring surprises: 'Midway' alone matches nothing
+    ids2, _, _ = ingest_mixed.load_wiki(0, 1, titles=["Midway"])
+    assert ids2 == []
 
 
-def test_wiki_title_is_exact_and_escape_free(fake_hf, monkeypatch):
-    """--wiki-title: plain article names, repeatable, regex-metacharacters in
-    the title are literal; composes with --wiki-include."""
-    rows = ["= Article %d = body" % i for i in range(10)]
-    rows[3] = "= Battle of Midway = decisive naval battle"
-    rows[5] = "= AC/DC (band) = rock band"           # regex metachars in title
-    rows[7] = "= Battle of Jutland = naval battle"
-    monkeypatch.setattr(ingest_mixed, "_hf_rows", lambda *a, **k: rows)
-    ids, _, _ = ingest_mixed.load_wiki(
-        2, 4, titles=["Battle of Midway", "AC/DC (band)"])
-    idx = {int(i.split("/")[1]) for i in ids}
-    assert {3, 5} <= idx and 7 not in idx
-    # titles compose with a regex include
-    ids2, _, _ = ingest_mixed.load_wiki(
-        0, 1, include=r"Jutland", titles=["Battle of Midway"])
-    idx2 = {int(i.split("/")[1]) for i in ids2}
-    assert idx2 == {3, 7}
+def test_wiki_title_parser_is_the_single_authority():
+    """wiki_title(): the one head parser -- consumers never scan text."""
+    assert ingest_mixed.wiki_title("= Battle of Midway = text") == "Battle of Midway"
+    assert ingest_mixed.wiki_title("  = Spaced = body") == "Spaced"
+    assert ingest_mixed.wiki_title("no head here") is None
+    assert ingest_mixed.wiki_title("= = ") is None
