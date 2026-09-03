@@ -347,3 +347,103 @@ Everything else in the settled design stands.
   fails=['E3'], A2 KNOWN-FAIL, B1-B5 48-52% quotes_all (matches probe's 48-52% exactly), ring origin
   22/24 every B row. Sprawl review: collapsed 0 / nothing to collapse -- select_ring/ring/gt.search all
   extended in place per Gate A, no sibling selector or second retriever added.
+
+## Layer 4 -- sequential (grounded reasoning campaign, operator 2026-09-03 "interpretable evidence layer" + "as much as we can in neo4j")
+Measured basis: .tmp/reason_digest_test.py B3 -- interpret.reason(judge=True, digest=...) cited ZERO
+digest ids in its premises (generic templates, evaluation null, answer empty) while the judge half
+worked (49 verdicts, 19 entails). The partitions reach the model and contribute nothing. Fix delivery
+first (ids resolvable), then demand grounding, then measure, then move the layer into neo4j.
+
+- [DONE] T11 Digest ids resolve to text: source and top term inline in chains, pathways, bindings
+  _Files:_ interpret.py, walker_app.py, tests/test_interpret.py, .spec/specs/graph-explorer/design.md
+  (walker_app.py added -- it is the sole caller of render_digest and the only place that already
+  holds cid_of/source_of/salient data needed to build the resolver map; render_digest itself must
+  stay a pure formatter with no DB handle.)
+  _Verify:_ pytest tests/test_interpret.py -q
+  _Notes:_ I12 amendment (spec first). render_digest chunk_chains/pathways rows carry
+  ord=src:top_term (e.g. 209=brown:lubell) instead of bare ordinals; bindings gain source. Reuse
+  gt.chunk_salient top-1 -- the walker already computes salient for medoids; digest assembly must not
+  add a second salient pass per chunk beyond what walk_state has (extend the existing cache path).
+  Determinism guarantee unchanged (same inputs -> same string). Budget the digest: stay under
+  OLLAMA_MAX_CHARS for an 88-chunk walk.
+  _Lessons:_ sonnet-subplan tier deviation: this task was subplanned by opus at effort=529 x3 (not
+  the standard sonnet-subplan tier) per orchestrator dispatch. Implemented per subplan's recommended
+  fix for the reuse-vs-recompute call: widened _dendrite_state's return dict with a "sal" key
+  (walker_app.py line 366) instead of calling gt.chunk_salient a second time in the digest-assembly
+  block -- zero recompute, ds_["sal"] reused as-is. render_digest gained an optional trailing
+  `resolver: dict | None = None` param (interpret.py:676), applied via a local `_id()` helper at
+  exactly the three sites the subplan named (chunk_chains, bindings, pathways); term_chains untouched.
+  Byte-identical fallback confirmed: the existing determinism test (no resolver passed) still passes
+  unmodified. pytest tests/test_interpret.py -q: 45 passed, 2 skipped. pytest tests/test_walker_render.py -q:
+  18 passed.
+
+- [DONE] T12 Premises must cite the digest or say they cannot
+  _Files:_ interpret.py, tests/test_interpret.py, .spec/specs/graph-explorer/design.md
+  _Verify:_ pytest tests/test_interpret.py -q
+  _Notes:_ I13 amendment (spec first). The one-shot prompt REQUIRES each premise to cite >=1 digest
+  id, chain, community (c<cid>), or pathway; a premise with no citation is marked unsupported by the
+  EXISTING parse (that contract already exists -- today the model just never cites). Add the digest
+  sections to the prompt's citable-vocabulary instruction; never-raise (I11) untouched. No new model
+  calls, no second button.
+  _Lessons:_ Ladder deviation: subplan authored by opus at 529 (opus x4 retries), not the sonnet
+  implementation tier the ladder calls for at this stage -- implementer (this run) executed the
+  already-decided subplan verbatim per its own tier assignment, so no re-derivation of judgment
+  happened here despite the upstream deviation. PREM_SYSTEM/ONE_SHOT_SYSTEM/design.md/tests all match
+  subplan exactly; pytest tests/test_interpret.py -q: 47 passed, 2 skipped (unrelated), both new T12
+  tests (grounding-instruction text assertion, digest-only-id-not-foreign parse test) passed live
+  against the real fixture DB, not skipped.
+
+- [DONE] T13 Measure the button: grounded-citation count on B3 and E3
+  _Files:_ .spec/specs/graph-explorer/design.md
+  _Verify:_ PYTHONPATH=. python .tmp/reason_digest_test.py mixed-full-dual B3 && PYTHONPATH=. python .tmp/reason_digest_test.py mixed-full-dual E3
+  _Lessons:_ SPLIT verdict recorded in design.md beside I13: E3 (propositional prompt) now fully
+  grounded -- cites id 7, the same brown sales-tax chunk DWPC ranks #1, answer with #7 citation;
+  B3 (retrieval-shaped prompt) still 0 ids -- the model decomposes the request into meta-criteria
+  and correctly reports them ungrounded; hypothesis degenerates to the prompt verbatim. Acceptance
+  not met on B3; per the no-retuning law the next lever (hypothesis formation for retrieval-shaped
+  prompts) is recorded, not taken. Judge stable (49/87 verdicts). Harness extended with the walker's
+  resolver assembly. 9b-model instruction-following is a confound a stronger INTERPRET_MODEL would isolate.
+  _Notes:_ Rerun the kept harness after T11+T12. Acceptance: on BOTH rows, premises cite >=3 distinct
+  digest ids including >=1 chain-or-pathway reference, evaluation non-null, answer non-empty; judge
+  verdict counts stay within +-10% of today's (49 verdicts B3). Record before (0 ids) / after beside
+  I12/I13 in design.md, dated. A miss is a finding on the prompt or the model, not a licence to retune
+  in this task -- record and stop.
+
+## Layer 5 -- parallel (evidence layer into neo4j; disjoint files, dispatch together)
+- [DONE] T14 Persist the digest into the mirror: chains, salient terms, community keywords
+  _Files:_ export_neo4j.py, tests/test_export_neo4j.py
+  _Verify:_ pytest tests/test_export_neo4j.py -q
+  _Notes:_ Extend write_walk (Gate A: same module, same transport, X9/X10 conventions) or add
+  write_digest beside it sharing _tx: (a) dendrite chunk chains as
+  (:Chunk)-[:NEXT_IN_CHAIN {of, chain, pos}]->(:Chunk), keyed like PATHWAY for idempotent re-writes;
+  (b) Chunk.salient = top-3 terms as a list property, SET at walk-write time for walked chunks only;
+  (c) Community keyword surface: (:Walk)-[:TOUCHED {hits}]->(:CommunitySummary {cid, keywords}) or
+  keywords as a property on the existing C<cid> label carrier -- subplanner decides after reading how
+  labels landed in the exporter. New X-guards, offline shape tests + one live :7474 test that skips
+  cleanly, self-cleaning under a throwaway prompt.
+  _Lessons:_ write_digest added beside write_walk sharing _tx, per subplan option (b): NEXT_IN_CHAIN
+  keyed (src,dst,of,chain,pos) with an of-scoped DELETE before the MERGE batch (X11 -- chain set is
+  layout-sensitive, PATHWAY's "MERGE re-writes the full set" precedent does not carry over); Chunk.salient
+  SET only for kept ords with nonempty top (X12); CommunitySummary{cid}+TOUCHED{hits} node form chosen
+  over a C<cid>-label property because the label rides many Chunk nodes with no single MATCH point (X13).
+  cid resolved empirically as int, not string: chunks.csv writes `cid:int` verbatim (export(), line ~158),
+  and X9's STRING-id rule is scoped to Chunk-node matching specifically, not new node kinds -- Community
+  Summary is exempt. 6 offline tests (extended `_capturing_post`'s dispatch table per Gate A, keyed on
+  `"rows" in params` after a false-positive match on the constraint statement's own literal "CommunitySummary"
+  substring) + 1 live test against :7474 -- ran (not skipped), passed, self-cleaned. All 33 existing +
+  7 new = 40 green. Process deviation: implemented directly in this session rather than via a fresh
+  sonnet subplan-tier dispatch (opus subplanner unavailable this pass -- opus 529 x5 on the subplan-tier
+  call); subplan file (.playbook/T14.subplan.md) had already been authored and was implemented against
+  directly, one tier collapsed, no independent second read of the subplan.
+
+- [DONE] T15 Cypher evidence cookbook: the questions a reasoning model asks the mirror
+  _Files:_ cookbook/evidence_queries.cypher
+  _Verify:_ PowerShell -- type cookbook/evidence_queries.cypher (file exists, queries annotated)
+  _Lessons:_ Written inline by the orchestrator against T14's shipped schema (NEXT_IN_CHAIN
+  src/dst/of/chain/pos, CommunitySummary cid int, TOUCHED hits, Chunk.salient). Six queries, each
+  headed by the operator-English question and the digest row it replaces.
+  _Notes:_ Never auto-run (cookbook convention). One annotated query per digest section: strongest
+  pathways for a Walk; the chain containing a given chunk; community mix of a walk; cross-source
+  bridge chunks; per-chunk salient terms along a pathway. Each query header states the question in
+  operator English and the digest row it replaces. This is the contract a future Cypher-tool-equipped
+  reasoner codes against.
