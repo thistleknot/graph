@@ -4,7 +4,7 @@ chunkgraph.py — dual-space retrieval graph over arbitrary text.
 STAGED PIPELINE
 | stage    | mechanism                                                            | tag        |
 |----------|----------------------------------------------------------------------|------------|
-| CHUNK    | recursive \n\n -> \n -> word window; never intra-word (R16); doc_id, source(R8/R20)| [mandatory, R16/R8/R19/R20]|
+| CHUNK    | recursive \n\n -> \n -> word window; never intra-word (R16); doc_id, source(R8/R20), title(R22)| [mandatory, R16/R8/R19/R20]|
 | PHRASE   | Dunning-LLR report + NPMI Phrases merged into tokens pre-BM25 (R9)   | [opt: R9]  |
 | SPARSE   | BM25-weighted CSR, L2 rows, blockwise X@X.T, in-loop threshold (R10) | [mandatory]|
 | DENSE    | pluggable embed_fn (default: local MiniLM mean-pool); cosine sim     | [opt: R5]  |
@@ -129,6 +129,16 @@ R21 WHEN similarities are normalized in a multi-source run, the Box-Cox fit SHAL
    SHALL be recorded in diagnostics. A run SHALL carry at most 8 source labels --
    block codes are packed int8, so a ninth label overflows the code space. A
    single-source run is one block and is byte-identical to today.
+R22 WHEN a document carries a parsed title, every chunk of that document SHALL carry
+   `title` in its persisted node payload beside `doc_id` and `source`, and the title
+   SHALL be parsed ONCE at the ingest boundary (ingest_mixed.wiki_title() for
+   wikitext) and passed into fit() as a list aligned with `docs`. Extends R20's
+   contract and obeys R20's law: parse at the boundary, select by equality, never
+   scan chunk text downstream. WHERE a document has no title -- a source with no
+   such notion, a parse returning None, or a run written before this guard -- the
+   `title` key SHALL BE ABSENT rather than present and null or empty, and consumers
+   SHALL degrade to displaying `doc_id` rather than fail. Title is display and
+   selection metadata only: it SHALL NOT weight, quota, or filter retrieval.
 R6 WHEN both estimators (median/1.4826*MAD vs mean/std) diverge > DIV_WARN in
    BC space, fit() SHALL record a warning in self.diagnostics.
 
@@ -321,25 +331,31 @@ class ChunkGraph:
         self.ingested_at = datetime.now(timezone.utc).isoformat()
 
     # ---------- fit ----------
-    def fit(self, docs, doc_ids=None, sources=None):
+    def fit(self, docs, doc_ids=None, sources=None, titles=None):
         """Require: docs list[str]. Guarantee: graph fitted; self.doc_id[i]
         names the source document of chunk i (R8); self.source[i] names the
         corpus of chunk i (R20), `None` when the caller supplied no sources.
         `sources` defaults to a single "default" group for R19 grouping; each
-        document is chunked against its own source's params (R19)."""
+        document is chunked against its own source's params (R19).
+        self.title[i] is the title of chunk i's document, `None` when the
+        document carried none (R22)."""
         doc_ids = doc_ids or [f"doc{i}" for i in range(len(docs))]
         labelled = sources is not None                                          # R20
         sources = ["default"] * len(docs) if sources is None else list(sources)
         assert len(sources) == len(docs)
+        titles = [None] * len(docs) if titles is None else list(titles)         # R22
+        assert len(titles) == len(docs)
         self.chunk_params = derive_chunk_params_by_source(docs, sources)         # R19
         self.diagnostics["chunk"] = {s: dict(p) for s, p in self.chunk_params.items()}
-        self.chunks, self.doc_id, self.source = [], [], []
-        for did, d, src in zip(doc_ids, docs, sources):
+        self.chunks, self.doc_id, self.source, self.title = [], [], [], []
+        for did, d, src, ttl in zip(doc_ids, docs, sources, titles):
             cp = {k: self.chunk_params[src][k] for k in ("m", "hi", "unit")}
             cs = _chunk(d, **cp)
             self.chunks += cs; self.doc_id += [did]*len(cs)
             self.source += [src if labelled else None] * len(cs)                # R20
-        assert len(self.source) == len(self.doc_id) == len(self.chunks)          # R20
+            t = ttl if isinstance(ttl, str) and ttl.strip() else None
+            self.title += [t] * len(cs)                                          # R22
+        assert len(self.source) == len(self.doc_id) == len(self.chunks) == len(self.title)  # R20/R22
         raw_tok = [_tok(c) for c in self.chunks]
         self.docs_tok = self._merge_phrases(raw_tok) if self.phrases else raw_tok   # R9
         n = self.n = len(self.chunks)

@@ -96,6 +96,35 @@ def test_empty_subgraph_returns_none(app):
     assert app.draw_subgraph([], [], None) is None
 
 
+def test_hovertext_shows_the_title_when_the_run_has_one(app, ords, hub, monkeypatch):
+    """Spec: .spec/specs/graph-explorer/design.md sec 6.15 R22 · Task: playbook.md T6"""
+    monkeypatch.setattr(app.pg_store, "node_titles", lambda conn, run_id, o=None: {ords[0]: "Battle of Midway"})
+    fig = app.draw_subgraph(ords, ords[:4], hub)
+    node_trace = fig.data[-1]
+    idx = ords.index(ords[0])
+    assert "Battle of Midway" in node_trace.hovertext[idx]
+    with app.conn.cursor() as cur:
+        cur.execute("SELECT doc_id FROM node WHERE run_id = %s AND ord = %s",
+                    (app.run.run_id, ords[0]))
+        doc_id = cur.fetchone()["doc_id"]
+    assert doc_id not in node_trace.hovertext[idx]
+
+
+def test_hovertext_degrades_to_doc_id_without_titles(app, ords, hub, monkeypatch):
+    """Spec: .spec/specs/graph-explorer/design.md sec 6.15 R22 · Task: playbook.md T6"""
+    monkeypatch.setattr(app.pg_store, "node_titles", lambda conn, run_id, o=None: {})
+    fig = app.draw_subgraph(ords, ords[:4], hub)
+    payload = fig.to_plotly_json()
+    assert payload["data"]
+    node_trace = fig.data[-1]
+    for i, o in enumerate(ords):
+        with app.conn.cursor() as cur:
+            cur.execute("SELECT doc_id FROM node WHERE run_id = %s AND ord = %s",
+                        (app.run.run_id, o))
+            doc_id = cur.fetchone()["doc_id"]
+        assert doc_id in node_trace.hovertext[i]
+
+
 def test_current_node_is_emphasised(app, ords, hub):
     """The node you are standing on must be visually distinguishable."""
     fig = app.draw_subgraph(ords, ords[:4], hub)

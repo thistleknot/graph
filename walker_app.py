@@ -32,6 +32,7 @@ import streamlit as st
 
 import graph_tools as gt
 import interpret
+import pg_store
 import sampler
 
 st.set_page_config(page_title="ChunkGraph Walker", layout="wide")
@@ -164,6 +165,7 @@ def draw_subgraph(ords, trail, current=None, height=340):
         G.add_edge(e["src"], e["dst"], weight=max(e["strength"], 0.01))
     pos = nx.spring_layout(G, seed=7, k=0.9, iterations=120)
     meta = {o: gt.node(conn, run, o) for o in ords}
+    titles = pg_store.node_titles(conn, run.run_id, ords)                      # R22
 
     ex, ey = [], []
     for e in edges:
@@ -190,7 +192,7 @@ def draw_subgraph(ords, trail, current=None, height=340):
             color=[cid_color(meta[o]["cid"]) for o in ords],
             line=dict(width=[3 if o == current else 1 for o in ords],
                       color="#222")),
-        hovertext=[f"#{o} · {meta[o]['doc_id']} · {cid_badge(meta[o]['cid'], labels)}"
+        hovertext=[f"#{o} · {interpret.chunk_label(meta[o], titles)} · {cid_badge(meta[o]['cid'], labels)}"
                    f"<br>{meta[o]['body'][:120]}…" for o in ords],
         hoverinfo="text"))
     fig.update_layout(showlegend=False, height=height,

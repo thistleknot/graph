@@ -48,7 +48,9 @@ def fake_hf(monkeypatch):
         if path == ingest_mixed.QUOTES_DATASET:
             return [f"quote {i}" for i in range(20)]
         if path == ingest_mixed.WIKI_DATASET:
-            return [f"page {i} " + "body " * 30 for i in range(20)]
+            rows = [f"page {i} " + "body " * 30 for i in range(20)]
+            rows[0] = "= Battle of Midway = " + "body " * 30   # titled (R22)
+            return rows                                         # rows[1:] stay headless
         raise AssertionError(f"unexpected dataset path {path}")
 
     monkeypatch.setattr(ingest_mixed, "_hf_rows", _fake)
@@ -84,6 +86,16 @@ class FakeGraphNoSources:
     def communities(self, min_size=5):
         self.min_size = min_size
         return {0: [0, 1]}
+
+
+class FakeGraphWithTitles(FakeGraphNoSources):
+    """Duck-types the post-R22 ChunkGraph.fit signature (titles= present,
+    beside sources=)."""
+
+    def fit(self, docs, doc_ids=None, sources=None, titles=None):
+        self.fit_args = (docs, doc_ids)
+        self.fit_kwargs = {"sources": sources, "titles": titles}
+        return self
 
 
 class FakeGraphWithSources(FakeGraphNoSources):
@@ -158,19 +170,19 @@ def test_load_brown_n_zero_skips_incumbent(monkeypatch):
 
 
 def test_load_mixed_counts_per_source(fake_hf, fake_brown):
-    doc_ids, docs, sources = ingest_mixed.load_mixed(2, 3, 4, 1, 1, 1)
+    doc_ids, docs, sources, titles = ingest_mixed.load_mixed(2, 3, 4, 1, 1, 1)
     assert len(docs) == 9
     assert collections.Counter(sources) == {"brown": 2, "quotes": 3, "wiki": 4}
 
 
 def test_load_mixed_doc_id_prefix_matches_source(fake_hf, fake_brown):
-    doc_ids, docs, sources = ingest_mixed.load_mixed(2, 3, 4, 1, 1, 1)
+    doc_ids, docs, sources, titles = ingest_mixed.load_mixed(2, 3, 4, 1, 1, 1)
     for did, src in zip(doc_ids, sources):
         assert did.split("/", 1)[0] == src
 
 
 def test_load_mixed_order_is_brown_quotes_wiki(fake_hf, fake_brown):
-    doc_ids, docs, sources = ingest_mixed.load_mixed(2, 3, 4, 1, 1, 1)
+    doc_ids, docs, sources, titles = ingest_mixed.load_mixed(2, 3, 4, 1, 1, 1)
     assert sources == ["brown"] * 2 + ["quotes"] * 3 + ["wiki"] * 4
     assert len(doc_ids) == len(docs) == len(sources)
 
@@ -272,3 +284,43 @@ def test_wiki_title_parser_is_the_single_authority():
     assert ingest_mixed.wiki_title("  = Spaced = body") == "Spaced"
     assert ingest_mixed.wiki_title("no head here") is None
     assert ingest_mixed.wiki_title("= = ") is None
+
+
+# ------------------------------------------------------------------- R22 titles
+
+
+def test_load_mixed_titles_align_with_docs(fake_hf, fake_brown):
+    """Spec: .spec/specs/graph-explorer/design.md sec 6.15 R22 · Task: playbook.md T6"""
+    doc_ids, docs, sources, titles = ingest_mixed.load_mixed(2, 3, 4, 1, 1, 1)
+    assert len(titles) == len(docs)
+    brown_and_quotes = titles[:5]                       # 2 brown + 3 quotes
+    assert brown_and_quotes == [None] * 5
+    wiki_titles = titles[5:]
+    assert wiki_titles[0] == "Battle of Midway"          # fake_hf's titled row
+    assert wiki_titles[1] is None                        # headless wiki row
+
+
+def test_titles_reach_fit_when_the_signature_takes_them(monkeypatch, fake_hf, fake_brown):
+    """Spec: .spec/specs/graph-explorer/design.md sec 6.15 R22 · Task: playbook.md T6"""
+    rec = {}
+
+    def fake_chunkgraph(**kwargs):
+        rec["cg"] = FakeGraphWithTitles(**kwargs)
+        return rec["cg"]
+
+    monkeypatch.setattr(ingest_mixed, "ChunkGraph", fake_chunkgraph)
+    monkeypatch.setattr(ingest_mixed.pg_store, "save", lambda cg, label: "run-id-sentinel")
+
+    ingest_mixed.main(["lbl", "--brown", "2", "--quotes", "3", "--wiki", "4"])
+
+    titles = rec["cg"].fit_kwargs["titles"]
+    assert len(titles) == 9
+    assert titles[:5] == [None] * 5
+    assert titles[5] == "Battle of Midway"
+
+
+def test_pre_r22_fit_signature_still_ingests(stubbed):
+    """Spec: .spec/specs/graph-explorer/design.md sec 6.15 R22 · Task: playbook.md T6"""
+    run_id = ingest_mixed.main(["lbl", "--brown", "1", "--quotes", "1", "--wiki", "1"])
+    assert run_id == "run-id-sentinel"
+    assert stubbed["cg"].fit_kwargs == {}

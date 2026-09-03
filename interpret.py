@@ -81,6 +81,7 @@ import warnings
 from datetime import datetime, timezone
 
 import graph_tools as gt
+import pg_store
 from label_communities import _host   # one definition of the Ollama connect address
 
 OPENROUTER_MODEL = os.environ.get("INTERPRET_MODEL", "qwen/qwen3.5-9b")
@@ -138,6 +139,15 @@ def rerank(conn, run, query: str, ords: list[int]) -> tuple[list[int], str]:
         return keep, f"rerank: {RERANK_MODEL}, kept {len(keep)} of {len(ords)}"
     except Exception as e:                                # pragma: no cover
         return ords, f"rerank: failed ({type(e).__name__}), passed through"
+
+
+def chunk_label(row, titles: dict | None = None) -> str:
+    """R22 display rule, design.md sec 6.15: ONE definition for every
+    consumer that shows a chunk's identity. Returns the title for `row`'s
+    ord when the titles map has a non-empty string for it, else `doc_id`.
+    Never raises on a row missing `ord`, on `titles=None`, or an empty map."""
+    t = (titles or {}).get(row.get("ord"))
+    return t if isinstance(t, str) and t else row["doc_id"]
 
 
 def excerpt(body: str, query: str, n_chars: int = MAX_CHUNK_CHARS, embed=None) -> str:
@@ -245,6 +255,7 @@ def render_bundle(conn, run, bundle, terms: dict, concept: dict,
     per_doc = int(max(300, min(MAX_CHUNK_CHARS, unit)))
     touched = [t for t in gt.communities_touched(conn, run, ords)]
     cid_of = {o: gt.node(conn, run, o)["cid"] for o in ords}
+    titles = pg_store.node_titles(conn, run.run_id, ords)                      # R22
     lines = [f"PROMPT: {bundle.query}", "",
              f"VALID IDS ({len(ords)} chunks -- return exactly {len(ords)} verdicts, "
              f"copy these numbers exactly): " + ", ".join(str(o) for o in ords), "",
@@ -262,7 +273,7 @@ def render_bundle(conn, run, bundle, terms: dict, concept: dict,
         for o in mine[:max_chunks_per_community]:
             nd = gt.node(conn, run, o)
             budget = per_doc * (ANCHOR_MULT if o in anchors else 1)
-            lines.append(f"   [id={o}] ({nd['doc_id']}) {excerpt(nd['body'], bundle.query, budget, embed)}")
+            lines.append(f"   [id={o}] ({chunk_label(nd, titles)}) {excerpt(nd['body'], bundle.query, budget, embed)}")
         if len(mine) > max_chunks_per_community:
             lines.append(f"   (+{len(mine) - max_chunks_per_community} more retrieved in c{c})")
         lines.append("")
@@ -556,6 +567,7 @@ def community_briefs(conn, run, bundle, terms: dict, concept: dict,
     model-chosen (S6, determinism boundary)."""
     touched = gt.communities_touched(conn, run, bundle.sampled)
     cid_of = {o: gt.node(conn, run, o)["cid"] for o in bundle.sampled}
+    titles = pg_store.node_titles(conn, run.run_id, bundle.sampled)            # R22
     out = []
     for t in touched:
         c = t["cid"]
@@ -565,6 +577,7 @@ def community_briefs(conn, run, bundle, terms: dict, concept: dict,
         def med(o):
             nd = gt.node(conn, run, o)
             return {"ord": o, "doc_id": nd["doc_id"],
+                    "label": chunk_label(nd, titles),
                     "excerpt": excerpt(nd["body"], bundle.query, n_chars, embed)}
         top = sorted(mine, key=lambda o: (-bundle.scores.get(o, 0.0), o))[:EVIDENCE_PER_BRIEF]
         out.append({"cid": c, "hits": t["hits"], "size": t["size"],
@@ -582,13 +595,16 @@ def render_briefs(bundle, briefs: list[dict]) -> str:
     L = [f"PROMPT: {bundle.query}", "",
          "VALID IDS (copy exactly; anything else is discarded): " + ", ".join(map(str, ids)), ""]
     for b in briefs:
+        loc_label = b["local"].get("label") or b["local"]["doc_id"]
+        glob_label = b["global"].get("label") or b["global"]["doc_id"]
         L += [f"== COMMUNITY c{b['cid']} · {b['hits']} of {b['size']} members retrieved",
               f"   terms as the prompt sees it: {' / '.join(b['terms_cond'])}",
               f"   terms the community holds:   {' / '.join(b['terms_unsup'])}",
-              f"   LOCAL medoid (what the walk found here)  [id={b['local']['ord']}] ({b['local']['doc_id']}) {b['local']['excerpt']}",
-              f"   GLOBAL medoid (what the community is)     [id={b['global']['ord']}] ({b['global']['doc_id']}) {b['global']['excerpt']}"]
+              f"   LOCAL medoid (what the walk found here)  [id={b['local']['ord']}] ({loc_label}) {b['local']['excerpt']}",
+              f"   GLOBAL medoid (what the community is)     [id={b['global']['ord']}] ({glob_label}) {b['global']['excerpt']}"]
         for e in b.get("evidence", []):
-            L.append(f"   retrieved evidence (walk-ranked)        [id={e['ord']}] ({e['doc_id']}) {e['excerpt']}")
+            e_label = e.get("label") or e["doc_id"]
+            L.append(f"   retrieved evidence (walk-ranked)        [id={e['ord']}] ({e_label}) {e['excerpt']}")
         L.append("")
     return "\n".join(L)
 

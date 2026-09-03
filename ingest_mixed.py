@@ -16,7 +16,7 @@ Usage:
 Set CHUNKGRAPH_MODEL_DIR to a local sentence-transformer directory to exercise
 the DENSE arm as well; unset, the run stays sparse-only per R5.
 
-Spec: .spec/specs/graph-explorer/design.md sec 6.14 R20 - Task: playbook.md T2, T8
+Spec: .spec/specs/graph-explorer/design.md sec 6.14 R20, sec 6.15 R22 - Task: playbook.md T2, T8, T6
 """
 from __future__ import annotations
 
@@ -135,7 +135,11 @@ def load_wiki(n_docs, stride, titles=None):
 
 def load_mixed(brown, quotes, wiki, brown_stride, quotes_stride, wiki_stride,
                wiki_titles=None):
-    """Concatenates the three arms in SOURCES order. Returns (doc_ids, docs, sources)."""
+    """Concatenates the three arms in SOURCES order. Returns
+    (doc_ids, docs, sources, titles). Titles are computed HERE rather than
+    inside each loader (R22): loader arity stays stable for brown/quotes (they
+    have no notion of a title, so their entries are all None) and the parse
+    still happens exactly once, at this boundary, via wiki_title()."""
     b_ids, b_docs, b_src = load_brown(brown, brown_stride)
     q_ids, q_docs, q_src = load_quotes(quotes, quotes_stride)
     w_ids, w_docs, w_src = load_wiki(wiki, wiki_stride, titles=wiki_titles)
@@ -143,13 +147,14 @@ def load_mixed(brown, quotes, wiki, brown_stride, quotes_stride, wiki_stride,
     doc_ids = b_ids + q_ids + w_ids
     docs = b_docs + q_docs + w_docs
     sources = b_src + q_src + w_src
+    titles = [None] * len(b_docs) + [None] * len(q_docs) + [wiki_title(d) for d in w_docs]
 
-    assert len(doc_ids) == len(docs) == len(sources)
+    assert len(doc_ids) == len(docs) == len(sources) == len(titles)
     for did, src in zip(doc_ids, sources):
         assert did.startswith(f"{src}/")
     assert docs, "load_mixed produced zero docs"
 
-    return doc_ids, docs, sources
+    return doc_ids, docs, sources, titles
 
 
 def build_argparser():
@@ -168,14 +173,23 @@ def build_argparser():
     return p
 
 
-def _fit(cg, docs, doc_ids, sources):
-    """The D1 seam: passes sources= to fit() iff the parameter exists on the
-    ChunkGraph in play, so this module needs zero edits when Layer 3 lands it."""
-    if "sources" in inspect.signature(cg.fit).parameters:
+def _fit(cg, docs, doc_ids, sources, titles=None):
+    """The D1 seam: passes sources= (and, per R22, titles=) to fit() iff the
+    parameter exists on the ChunkGraph in play, so this module needs zero
+    edits when a newer fit() signature lands."""
+    params = inspect.signature(cg.fit).parameters
+    kw = {}
+    if "sources" in params:
         print("sources: passed to fit")
-        return cg.fit(docs, doc_ids=doc_ids, sources=sources)
-    print("sources: carried in doc_id prefix only (pre-T4 fit)")
-    return cg.fit(docs, doc_ids=doc_ids)
+        kw["sources"] = sources
+    else:
+        print("sources: carried in doc_id prefix only (pre-T4 fit)")
+    if "titles" in params:
+        print("titles: passed to fit")
+        kw["titles"] = titles
+    else:
+        print("titles: not carried (pre-R22 fit)")
+    return cg.fit(docs, doc_ids=doc_ids, **kw)
 
 
 def main(argv=None):
@@ -184,12 +198,13 @@ def main(argv=None):
 
     print(f"DSN   : {pg_store.DSN}")
     _ckpt("load:start")
-    doc_ids, docs, sources = load_mixed(
+    doc_ids, docs, sources, titles = load_mixed(
         args.brown, args.quotes, args.wiki,
         args.brown_stride, args.quotes_stride, args.wiki_stride,
         wiki_titles=args.wiki_title,
     )
-    _ckpt("load:done", f"docs={len(docs)} chars={sum(len(d) for d in docs)}")
+    _ckpt("load:done", f"docs={len(docs)} chars={sum(len(d) for d in docs)} "
+          f"titled={sum(1 for t in titles if t is not None)}")
     for src in SOURCES:
         print(f"{src:6s}: {sources.count(src)} docs")
     print(f"corpus: {len(docs)} docs, {sum(len(d) for d in docs):,} chars")
@@ -198,7 +213,7 @@ def main(argv=None):
     print(f"dense : {model_dir or 'DISABLED (sparse-only, R5)'}")
     cg = ChunkGraph(model_dir=model_dir) if model_dir else ChunkGraph(embed_fn=None)
     _ckpt("fit:start", f"docs={len(docs)} dense={'on' if model_dir else 'off'}")
-    _fit(cg, docs, doc_ids, sources)
+    _fit(cg, docs, doc_ids, sources, titles=titles)
     _ckpt("fit:done", f"n={cg.n}")
     print(f"fitted: {cg.n} chunks, blend_mode={cg.blend_mode}", flush=True)
 

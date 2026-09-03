@@ -119,6 +119,40 @@ def test_check_empty_reply_is_zero_coverage():
     assert r["coverage"] == 0.0 and r["entailed"] == [] and r["foreign"] == []
 
 
+# ------------------------------------------------------------------- R22: title
+
+
+def test_chunk_label_prefers_the_title():
+    """Spec: .spec/specs/graph-explorer/design.md sec 6.15 R22 · Task: playbook.md T6"""
+    row = {"ord": 7, "doc_id": "wiki/28410"}
+    assert interpret.chunk_label(row, titles={7: "Battle of Midway"}) == "Battle of Midway"
+
+
+def test_chunk_label_degrades_to_doc_id():
+    """Spec: .spec/specs/graph-explorer/design.md sec 6.15 R22 · Task: playbook.md T6"""
+    row = {"ord": 7, "doc_id": "wiki/28410"}
+    assert interpret.chunk_label(row, titles=None) == "wiki/28410"
+    assert interpret.chunk_label(row, titles={}) == "wiki/28410"
+    assert interpret.chunk_label(row, titles={7: ""}) == "wiki/28410"
+    assert interpret.chunk_label({"doc_id": "wiki/28410"}, titles={7: "x"}) == "wiki/28410"
+
+
+def test_render_briefs_shows_title_for_one_and_doc_id_for_the_other():
+    """Spec: .spec/specs/graph-explorer/design.md sec 6.15 R22 · Task: playbook.md T6"""
+    class B:
+        query = "q"
+    briefs = [
+        {"cid": 1, "hits": 2, "size": 5, "terms_cond": [], "terms_unsup": [],
+         "local": {"ord": 1, "doc_id": "wiki/1", "label": "Battle of Midway", "excerpt": "e1"},
+         "global": {"ord": 2, "doc_id": "brown/ca01", "excerpt": "e2"},
+         "evidence": [{"ord": 3, "doc_id": "brown/ca02", "excerpt": "e3"}]},
+    ]
+    text = interpret.render_briefs(B(), briefs)
+    assert "Battle of Midway" in text
+    assert "brown/ca01" in text                 # no 'label' key -> falls back to doc_id
+    assert "brown/ca02" in text
+
+
 # --------------------------------------------------------- I4 / I5 backends
 
 

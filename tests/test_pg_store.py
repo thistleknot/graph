@@ -32,12 +32,14 @@ class FakeGraph:
     """Duck-types ChunkGraph post-fit(). Attribute names mirror chunkgraph.py."""
 
     def __init__(self, dim: int = DIM, with_embeddings: bool = True,
-                 sources: list[str] | None = None):
+                 sources: list[str] | None = None,
+                 titles: list[str | None] | None = None):
         self.n = N
         self.chunks = [f"chunk number {i} about topic {i % 3}" for i in range(N)]
         self.docs_tok = [c.split() for c in self.chunks]
         self.doc_id = [f"doc{i // 4}" for i in range(N)]
         self.source = sources                                                    # R20
+        self.title = titles                                                      # R22
         self.tfs = [{t: 1 for t in toks} for toks in self.docs_tok]
         self.qterms = [{"topic", f"{i % 3}"} for i in range(N)]
         self.disc = [{f"term{i}", "shared"} for i in range(N)]
@@ -432,3 +434,93 @@ def test_chunkgraph_fit_labels_every_chunk():
     cg2 = chunkgraph.ChunkGraph(embed_fn=None, phrases=False)
     cg2.fit(docs, doc_ids=doc_ids, sources=None)
     assert cg2.source == [None] * cg2.n
+
+
+# --------------------------------------------------------------------- R22: title
+
+
+def test_chunkgraph_fit_titles_every_chunk():
+    """No Postgres required -- exercises chunkgraph.fit() directly (R22).
+    Spec: .spec/specs/graph-explorer/design.md sec 6.15 R22 · Task: playbook.md T6"""
+    import chunkgraph
+
+    lens = [1, 2, 3, 4, 1, 2, 2, 3, 4, 1, 3, 2]
+    docs = ["\n".join(f"line {i} {j}" for j in range(ln)) for i, ln in enumerate(lens)]
+    doc_ids = [f"d/{i}" for i in range(len(lens))]
+    titles = ["Battle of Midway", None] + [None] * (len(lens) - 2)
+
+    cg = chunkgraph.ChunkGraph(embed_fn=None, phrases=False)
+    cg.fit(docs, doc_ids=doc_ids, titles=titles)
+
+    assert len(cg.title) == len(cg.chunks)
+    n0 = cg.doc_id.count("d/0")
+    assert cg.title[:n0] == ["Battle of Midway"] * n0
+    assert all(t is None for t, did in zip(cg.title, cg.doc_id) if did != "d/0")
+
+    cg2 = chunkgraph.ChunkGraph(embed_fn=None, phrases=False)
+    cg2.fit(docs, doc_ids=doc_ids, titles=None)
+    assert cg2.title == [None] * cg2.n
+
+
+def test_node_title_persisted_when_present(db):
+    """Spec: .spec/specs/graph-explorer/design.md sec 6.15 R22 · Task: playbook.md T6"""
+    label = LABEL + "_titled"
+    titles = ["Battle of Midway"] * 4 + [None] * 8
+    run = pg_store.save(FakeGraph(titles=titles), label, dsn=db)
+    try:
+        with psycopg.connect(db) as conn, conn.cursor() as cur:
+            cur.execute("""SELECT ord, attrs->>'title' FROM node
+                            WHERE run_id = %s AND ord < 4 ORDER BY ord""", (run,))
+            for ord_, title in cur.fetchall():
+                assert title == "Battle of Midway"
+
+            cur.execute("""SELECT count(*) FROM node
+                            WHERE run_id = %s AND ord >= 4 AND attrs ? 'title'""", (run,))
+            assert cur.fetchone()[0] == 0, "no title key must be absent, not null"
+    finally:
+        with psycopg.connect(db, autocommit=True) as conn:
+            conn.execute("DELETE FROM graph_run WHERE label = %s", (label,))
+
+
+def test_node_title_absent_on_unlabelled_run(db, first_run):
+    """Spec: .spec/specs/graph-explorer/design.md sec 6.15 R22 · Task: playbook.md T6"""
+    with psycopg.connect(db) as conn, conn.cursor() as cur:
+        cur.execute("""SELECT count(*) FROM node
+                        WHERE run_id = %s AND attrs ? 'title'""", (first_run,))
+        assert cur.fetchone()[0] == 0
+
+
+def test_save_tolerates_graph_without_title_attr(db):
+    """Spec: .spec/specs/graph-explorer/design.md sec 6.15 R22 · Task: playbook.md T6"""
+    label = LABEL + "_notitle"
+    cg = FakeGraph()
+    delattr(cg, "title")
+    try:
+        run = pg_store.save(cg, label, dsn=db)
+        assert run
+    finally:
+        with psycopg.connect(db, autocommit=True) as conn:
+            conn.execute("DELETE FROM graph_run WHERE label = %s", (label,))
+
+
+def test_node_titles_returns_only_titled_ords(db):
+    """Spec: .spec/specs/graph-explorer/design.md sec 6.15 R22 · Task: playbook.md T6"""
+    label = LABEL + "_reader"
+    titles = ["Battle of Midway"] * 4 + [None] * 8
+    run = pg_store.save(FakeGraph(titles=titles), label, dsn=db)
+    try:
+        with psycopg.connect(db) as conn:
+            got = pg_store.node_titles(conn, run)
+            assert got == {0: "Battle of Midway", 1: "Battle of Midway",
+                          2: "Battle of Midway", 3: "Battle of Midway"}
+
+            untitled_run = pg_store.save(FakeGraph(), LABEL + "_reader_untitled", dsn=db)
+            try:
+                assert pg_store.node_titles(conn, untitled_run) == {}
+            finally:
+                with psycopg.connect(db, autocommit=True) as c2:
+                    c2.execute("DELETE FROM graph_run WHERE label = %s",
+                              (LABEL + "_reader_untitled",))
+    finally:
+        with psycopg.connect(db, autocommit=True) as conn:
+            conn.execute("DELETE FROM graph_run WHERE label = %s", (label,))

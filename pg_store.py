@@ -5,7 +5,10 @@ Guarantee: one graph_run row plus its nodes/edges/communities/embeddings,
 committed atomically; any prior live run under the same label is superseded,
 never deleted. Node payloads carry `source` and edge rows carry the source
 pair when the run was fit with labelled sources; absent otherwise
-(design.md §6.14 R20).
+(design.md §6.14 R20). Node payloads also carry `title` when the graph was
+fit with titles, key absent otherwise (design.md §6.15 R22).
+
+Spec: .spec/specs/graph-explorer/design.md sec 6.15 R22 · Task: playbook.md T6
 """
 from __future__ import annotations
 
@@ -74,6 +77,7 @@ def save(cg, label: str, dsn: str = DSN, min_size: int = 5) -> str:
                 "FROM STDIN"
             ) as cp:
                 sources = getattr(cg, "source", None)
+                titles = getattr(cg, "title", None)                            # R22
                 for i, body in enumerate(cg.chunks):
                     attrs = {
                         "n_tok": len(cg.docs_tok[i]),
@@ -84,6 +88,9 @@ def save(cg, label: str, dsn: str = DSN, min_size: int = 5) -> str:
                     src = sources[i] if sources is not None else None
                     if isinstance(src, str) and src:
                         attrs["source"] = src                                  # R20
+                    ttl = titles[i] if titles is not None else None
+                    if isinstance(ttl, str) and ttl:
+                        attrs["title"] = ttl                                   # R22
                     cp.write_row((run_id, i, cg.doc_id[i], _hash(body),
                                   body, Jsonb(attrs)))
 
@@ -158,6 +165,20 @@ def _ensure_hnsw(dsn: str) -> None:
     with psycopg.connect(dsn, autocommit=True) as conn:
         conn.execute("""CREATE INDEX IF NOT EXISTS node_embedding_hnsw
                           ON node_embedding USING hnsw (embedding vector_ip_ops)""")
+
+
+def node_titles(conn, run_id: str, ords: list[int] | None = None) -> dict[int, str]:
+    """R22 display reader. Takes an OPEN connection (consumers already hold
+    one from gt.connect()). Returns {ord: title} for titled ordinals only --
+    a pre-R22 run, or a run fit without titles, yields {} and raises nothing."""
+    sql = "SELECT ord, attrs->>'title' FROM node WHERE run_id = %s AND attrs ? 'title'"
+    params = [run_id]
+    if ords is not None:
+        sql += " AND ord = ANY(%s)"
+        params.append(list(ords))
+    with conn.cursor() as cur:
+        cur.execute(sql, params)
+        return {r[0]: r[1] for r in cur.fetchall() if r[1]}
 
 
 def load_edges(run_label: str, dsn: str = DSN) -> list[dict]:
