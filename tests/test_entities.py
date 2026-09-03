@@ -142,6 +142,82 @@ def test_ddl_is_runtime_idempotent():
         assert "IF NOT EXISTS" in stmt
 
 
+# ------------------------------------------------ resolution v1 (T19), 8.1 half
+
+
+def test_normalize_name_folds_case_and_separators():
+    a = ent.normalize_name("United_States")
+    b = ent.normalize_name("  united states. ")
+    c = ent.normalize_name("UNITED-STATES")
+    assert a == b == c
+    assert ent.normalize_name("united stated") != a
+
+
+def test_string_candidates_pairs_near_duplicates_and_skips_distant():
+    names = {0: "co-occurrence", 1: "cooccurrence", 2: "united", 3: "untied",
+            4: "alpha", 5: "delta"}
+    pairs = ent.string_candidates(names)
+    assert (0, 1) in pairs
+
+    ratio = ent.name_similarity("united", "untied")
+    if ratio >= ent.SIM_THRESHOLD:
+        assert (2, 3) in pairs   # E6 catches it; E7 must reject it downstream
+    else:
+        assert (2, 3) not in pairs
+
+    assert (4, 5) not in pairs
+    for a, b in pairs:
+        assert a < b
+    assert pairs == sorted(pairs)
+
+
+def test_corroboration_gate_blocks_a_string_match_with_no_shared_neighbors():
+    candidates = [(0, 1)]
+    neighbors = {0: {10, 11}, 1: {20, 21}}
+    assert ent.corroborated(candidates, neighbors) == []
+
+
+def test_corroboration_gate_admits_a_string_match_with_two_shared_neighbors():
+    candidates = [(0, 1)]
+    neighbors = {0: {10, 11, 12}, 1: {10, 11, 13}}
+    assert ent.corroborated(candidates, neighbors) == [(0, 1)]
+
+    neighbors_one_shared = {0: {10, 12}, 1: {10, 13}}
+    assert ent.corroborated(candidates, neighbors_one_shared) == []
+
+
+def test_canonical_is_the_longest_name_ties_by_ascending_name():
+    names_by_id = {0: "ab", 1: "abc", 2: "abd", 3: "z"}
+    comp_root = ent.components([(1, 2)], names_by_id.keys())
+    canon = ent.canonical_ids(comp_root, names_by_id)
+    assert canon[1] == 1
+    assert canon[2] == 1
+    assert canon[0] == 0
+    assert canon[3] == 3
+
+
+def test_resolution_is_order_independent():
+    names_a = {0: "alpha", 1: "alpha2", 2: "beta"}
+    names_b = {2: "beta", 1: "alpha2", 0: "alpha"}
+    pairs_a = [(0, 1)]
+    pairs_b = list(reversed(pairs_a))
+
+    canon_a = ent.canonical_ids(ent.components(pairs_a, names_a.keys()), names_a)
+    canon_b = ent.canonical_ids(ent.components(pairs_b, names_b.keys()), names_b)
+    assert canon_a == canon_b
+
+
+def test_embedding_signal_is_off_by_default_and_degrades_to_empty():
+    import inspect
+
+    sig = inspect.signature(ent.resolve_entities)
+    assert sig.parameters["use_embeddings"].default is False
+
+    names = {0: "alpha", 1: "alpha2"}
+    assert ent.embedding_candidates(names, model_dir=None) == []
+    assert ent.embedding_candidates(names, model_dir="/nonexistent") == []
+
+
 # =============================================================== 8.2 DB-backed
 
 import psycopg
@@ -153,6 +229,7 @@ import pg_store
 
 LABEL_A = "pytest_entities_a"
 LABEL_B = "pytest_entities_b"
+LABEL_C = "pytest_entities_c"
 
 # Planted 12-chunk corpus (schema enforces n_chunks >= 10), hand-counted:
 #   alpha: chunks 0-7   (df 8)
@@ -209,8 +286,8 @@ def db():
         pytest.skip(f"no database: {exc}")
     yield _dsn()
     with psycopg.connect(_dsn(), autocommit=True) as conn:
-        conn.execute("DELETE FROM graph_run WHERE label IN (%s, %s)",
-                    (LABEL_A, LABEL_B))
+        conn.execute("DELETE FROM graph_run WHERE label IN (%s, %s, %s)",
+                    (LABEL_A, LABEL_B, LABEL_C))
 
 
 @pytest.fixture(scope="module")
@@ -336,3 +413,97 @@ def test_builder_never_writes_the_chunk_graph(db, run_a):
         assert cur.fetchone()[0] == n_edge_before
         cur.execute("SELECT count(*) FROM community WHERE run_id=%s", (run.run_id,))
         assert cur.fetchone()[0] == n_comm_before
+
+
+# ------------------------------------------------ resolution v1 (T19), 8.2 half
+
+
+def test_every_entity_row_gets_a_canonical_id(db, run_a):
+    conn, run, rid = run_a
+    ent.build_entities(conn, run)
+    with psycopg.connect(db) as c2, c2.cursor() as cur:
+        cur.execute("SELECT count(*) FROM entities WHERE run_id=%s AND canonical_id IS NULL",
+                   (run.run_id,))
+        assert cur.fetchone()[0] == 0
+        cur.execute("SELECT count(*) FROM entities WHERE run_id=%s AND canonical_id <> entity_id",
+                   (run.run_id,))
+        assert cur.fetchone()[0] == 0   # no false merge on names sharing nothing
+
+
+def test_resolve_is_idempotent_and_leaves_the_other_run_alone(db, run_a, run_b):
+    conn_a, run_a_h, _ = run_a
+    conn_b, run_b_h = run_b
+
+    ent.build_entities(conn_a, run_a_h)
+    ent.build_entities(conn_b, run_b_h)
+
+    def _snapshot(conn, run):
+        with conn.cursor() as cur:
+            cur.execute("SELECT entity_id, name, canonical_id FROM entities WHERE run_id=%s "
+                       "ORDER BY entity_id", (run.run_id,))
+            return cur.fetchall()
+
+    snap_a1 = _snapshot(conn_a, run_a_h)
+    snap_b1 = _snapshot(conn_b, run_b_h)
+
+    result_1 = ent.resolve_entities(conn_a, run_a_h)
+    result_2 = ent.resolve_entities(conn_a, run_a_h)
+    assert result_2 == result_1
+
+    snap_a2 = _snapshot(conn_a, run_a_h)
+    snap_b2 = _snapshot(conn_b, run_b_h)
+    assert snap_a2 == snap_a1
+    assert snap_b2 == snap_b1
+
+
+class PlantedDupGraph(PlantedGraph):
+    """Extends the planted vocabulary with a near-duplicate pair --
+    'co-occurrence' / 'cooccurrence' -- co-present with alpha, beta and delta
+    on chunks 0-7 so both clear MIN_JOINT_CHUNKS against >= 2 shared
+    neighbors."""
+
+    def __init__(self):
+        super().__init__()
+        extra = ["co-occurrence", "cooccurrence"]
+        terms_by_chunk = [
+            _TERMS_BY_CHUNK[i] + extra if i <= 7 else list(_TERMS_BY_CHUNK[i])
+            for i in range(_N)
+        ]
+        self.chunks = [" ".join(terms_by_chunk[i]) for i in range(_N)]
+        self.docs_tok = [terms_by_chunk[i] + ["pad"] * (i % 4) for i in range(_N)]
+        self.tfs = [{t: 1 for t in terms_by_chunk[i]} for i in range(_N)]
+
+
+def test_a_planted_near_duplicate_merges_end_to_end(db):
+    import graph_tools as gt
+    from psycopg.rows import dict_row
+
+    pg_store.save(PlantedDupGraph(), LABEL_C, dsn=db)
+    conn = psycopg.connect(db, row_factory=dict_row)
+    run = gt.get_run(conn, LABEL_C)
+
+    result = ent.build_entities(conn, run)
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT entity_id, name, canonical_id FROM entities WHERE run_id=%s",
+                   (run.run_id,))
+        rows = cur.fetchall()
+    by_name = {r["name"]: r for r in rows}
+
+    assert "co-occurrence" in by_name
+    assert "cooccurrence" in by_name
+    dup_canon = {by_name["co-occurrence"]["canonical_id"], by_name["cooccurrence"]["canonical_id"]}
+    assert len(dup_canon) == 1
+    canon_id = dup_canon.pop()
+    assert by_name[max("co-occurrence", "cooccurrence", key=len)]["entity_id"] == canon_id
+
+    with conn.cursor(row_factory=ent._tuple_row) as cur:
+        cur.execute("SELECT count(*) FROM entities WHERE run_id=%s", (run.run_id,))
+        assert cur.fetchone()[0] == len(by_name)
+        cur.execute("SELECT count(*) FROM mentions WHERE run_id=%s AND entity_id IN (%s, %s)",
+                   (run.run_id, by_name["co-occurrence"]["entity_id"],
+                    by_name["cooccurrence"]["entity_id"]))
+        assert cur.fetchone()[0] > 0   # both surface forms still carry mentions -- never deleted
+
+    assert result["resolution"]["merged_pairs"] == 1
+    assert result["resolution"]["aliases"] == 1

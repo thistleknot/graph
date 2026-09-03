@@ -1,8 +1,9 @@
 """entities.py -- Entities v0: bipartite entity/mention store beside the chunk
-graph, built over the run's EXISTING salient vocabulary (node.attrs->'tf').
+graph, built over the run's EXISTING salient vocabulary (node.attrs->'tf'),
+plus resolution v1: deterministic canonical ids over that population (E6-E8).
 
-Spec: .spec/specs/graph-explorer/design.md §6.15 block C, guards E1-E5
-Task: playbook.md T4
+Spec: .spec/specs/graph-explorer/design.md §6.15 blocks C + D, guards E1-E8
+Task: playbook.md T4 (v0), T19 (resolution v1)
 
 E1  Entities v0 SHALL be populated from the run's EXISTING salient/phrase vocabulary
     (the terms already persisted in node.attrs->'tf'), typed "term_v0", by
@@ -35,6 +36,35 @@ E5  entity_edges SHALL carry npmi, ppmi and bm25 on the SAME row, computed over 
     entity weighting and retrieval weighting share one ruler. a < b SHALL hold on
     every row: one row per undirected pair, the same law `edge` carries.
 
+E6  Candidate pairs SHALL come from a NORMALIZED string similarity over
+    entities.name -- casefold, separators collapsed to single spaces, surrounding
+    punctuation stripped -- scored by difflib.SequenceMatcher.ratio(), stdlib only,
+    NO new dependency. A pair scoring below SIM_THRESHOLD (= 0.90) SHALL NOT be a
+    candidate. Candidate generation SHALL be blocked by a character-3-gram
+    inverted index plus the lossless length bound 2*min(la,lb)/(la+lb) >=
+    SIM_THRESHOLD: an unblocked pass is O(V^2) over a vocabulary that reaches six
+    figures on a full wiki run, which is not a tuning choice but the difference
+    between a pass that terminates and one that does not.
+
+E7  A candidate pair SHALL be merged ONLY WHERE it also shares at least
+    MIN_SHARED_NEIGHBORS (= 2) co-occurrence neighbors, taken as each entity's top
+    NEIGHBOR_TOP_K (= 25) entity_edges partners by bm25 among rows with ppmi > 0.
+    String similarity alone merges "united" into "untied"; requiring a SECOND,
+    independent signal -- that the two names keep the same company in the corpus --
+    is what makes a false merge cost two coincidences rather than one. An entity
+    with no qualifying edges SHALL merge with nothing.
+
+E8  Resolution SHALL be additive and idempotent. canonical_id SHALL be added by
+    idempotent DDL (ALTER TABLE ... ADD COLUMN IF NOT EXISTS), SHALL be non-NULL
+    on every row of the run -- an unmerged entity is its own canonical -- and SHALL
+    be chosen per connected component as the LONGEST name, ties broken by ascending
+    name, so the value does not depend on row order, dict order, or the order pairs
+    were discovered. No row and no surface form SHALL be deleted or rewritten: the
+    alias set of a canonical is exactly the rows carrying its canonical_id. The
+    embedding signal (model2vec, fixed threshold, deterministic) SHALL be reachable
+    only through an explicit flag defaulting to OFF, and where the model or the
+    dependency is absent it SHALL contribute no candidates rather than raise.
+
 Require:  a live run exists for the given label (graph_tools.get_run).
 Guarantee: build_entities() is read-only against node/edge/community and
           idempotent per run -- a rebuild replaces exactly that run's three
@@ -50,12 +80,14 @@ EXISTS) -- design.md block C already states this is the correct call. Do not
 """
 from __future__ import annotations
 
+import difflib
 import math
 import os
 import sys
 
 import psycopg
 from psycopg.rows import dict_row
+from psycopg.rows import tuple_row as _tuple_row
 
 import graph_tools as gt
 
@@ -64,6 +96,14 @@ DSN = os.environ.get("CHUNKGRAPH_DSN",
 MIN_JOINT_CHUNKS = 5           # E4
 ENTITY_TYPE = "term_v0"        # E1
 K1, B = 1.5, 0.75              # E5: graph_tools.search's constants, one ruler
+
+SIM_THRESHOLD = 0.90        # E6: SequenceMatcher.ratio floor for a candidate pair
+MIN_SHARED_NEIGHBORS = 2    # E7: two coincidences, not one
+NEIGHBOR_TOP_K = 25         # E7: neighbors per entity, by bm25 among ppmi > 0
+GRAM_N = 3                  # E6: blocking key width
+MAX_GRAM_BLOCK = 2000       # E6: a 3-gram in more blocks than this is a stopword-
+                            # grade key and is skipped; declared lossy, bounded
+EMB_THRESHOLD = 0.85        # E8: cosine floor for the OFF-by-default third signal
 
 _DDL = (
     """CREATE TABLE IF NOT EXISTS entities (
@@ -97,14 +137,31 @@ _DDL = (
         FOREIGN KEY (run_id, b) REFERENCES entities (run_id, entity_id) ON DELETE CASCADE
     )""",
     """CREATE INDEX IF NOT EXISTS entity_edges_npmi ON entity_edges (run_id, npmi DESC)""",
+    # No FK on canonical_id: Postgres has no ADD CONSTRAINT IF NOT EXISTS, so a
+    # self-referential composite FK cannot be added idempotently in this pattern.
+    """ALTER TABLE entities ADD COLUMN IF NOT EXISTS canonical_id integer""",
+    """CREATE INDEX IF NOT EXISTS entities_canonical ON entities (run_id, canonical_id)""",
 )
 
 
 def ensure_schema(conn) -> None:
     """Runtime-idempotent: every statement is CREATE ... IF NOT EXISTS, safe
-    to run on every build (§0)."""
+    to run on every build (§0).
+
+    ALTER TABLE ... ADD COLUMN IF NOT EXISTS still takes an ACCESS EXCLUSIVE
+    lock on `entities` even when the column already exists (Postgres locks
+    the relation before checking), which stalls behind any concurrent reader
+    holding even an AccessShare lock on that table. Skipping the ALTER once
+    the column is already present avoids re-acquiring that lock on every
+    build/resolve call -- the common case after the first run.
+    """
     with conn.cursor() as cur:
+        cur.execute("""SELECT 1 FROM information_schema.columns
+                        WHERE table_name = 'entities' AND column_name = 'canonical_id'""")
+        has_canonical_id = cur.fetchone() is not None
         for stmt in _DDL:
+            if "ADD COLUMN IF NOT EXISTS canonical_id" in stmt and has_canonical_id:
+                continue
             cur.execute(stmt)
 
 
@@ -188,7 +245,224 @@ def pair_counts(tf_by_ord: dict, df: dict, min_joint: int = MIN_JOINT_CHUNKS) ->
     return {pair: ords for pair, ords in pairs.items() if len(ords) >= min_joint}
 
 
-def build_entities(conn, run, min_joint: int = MIN_JOINT_CHUNKS) -> dict:
+def normalize_name(name: str) -> str:
+    """E6: casefold; collapse `_ - / .` and any whitespace run to a single
+    space; strip leading/trailing punctuation and spaces. Deterministic, no
+    regex state."""
+    s = name.casefold()
+    for ch in "_-/.":
+        s = s.replace(ch, " ")
+    s = " ".join(s.split())
+    return s.strip(" \t\n\r\f\v.,;:!?'\"()[]{}")
+
+
+def name_similarity(a: str, b: str) -> float:
+    """E6: difflib ratio over normalized names. Callers always pass
+    `(names[x], names[y])` with x < y, so symmetry is by construction."""
+    return difflib.SequenceMatcher(None, normalize_name(a), normalize_name(b)).ratio()
+
+
+def _grams(s: str, n: int) -> set:
+    if len(s) < n:
+        return {s}
+    return {s[i:i + n] for i in range(len(s) - n + 1)}
+
+
+def string_candidates(names_by_id: dict, threshold: float = SIM_THRESHOLD,
+                      n: int = GRAM_N, max_block: int = MAX_GRAM_BLOCK) -> list:
+    """E6: blocked candidate generation. Returns a sorted list of (a, b), a < b."""
+    norm = {i: normalize_name(name) for i, name in names_by_id.items()}
+    index: dict = {}
+    for i, s in norm.items():
+        for g in _grams(s, n):
+            index.setdefault(g, []).append(i)
+
+    seen = set()
+    out = []
+    for g, ids in index.items():
+        if len(ids) > max_block:
+            continue
+        ids_sorted = sorted(ids)
+        for pi, a in enumerate(ids_sorted):
+            for b in ids_sorted[pi + 1:]:
+                if (a, b) in seen:
+                    continue
+                seen.add((a, b))
+                la, lb = len(norm[a]), len(norm[b])
+                if la == 0 and lb == 0:
+                    bound = 1.0
+                elif la + lb == 0:
+                    bound = 0.0
+                else:
+                    bound = 2 * min(la, lb) / (la + lb)
+                if bound < threshold:
+                    continue
+                if name_similarity(names_by_id[a], names_by_id[b]) >= threshold:
+                    out.append((a, b))
+    return sorted(out)
+
+
+def neighbor_sets(edge_rows, top_k: int = NEIGHBOR_TOP_K) -> dict:
+    """Folds already-ranked-and-truncated (x, y) rows (§5's SQL) into
+    {entity_id: set(entity_id)}."""
+    out: dict = {}
+    for x, y in edge_rows:
+        out.setdefault(x, set()).add(y)
+    return out
+
+
+def corroborated(candidates: list, neighbors: dict,
+                 min_shared: int = MIN_SHARED_NEIGHBORS) -> list:
+    """E7: keep (a, b) where the two neighbor sets share >= min_shared ids,
+    excluding a and b themselves. Order preserved."""
+    out = []
+    for a, b in candidates:
+        shared = (neighbors.get(a, set()) & neighbors.get(b, set())) - {a, b}
+        if len(shared) >= min_shared:
+            out.append((a, b))
+    return out
+
+
+def components(pairs: list, ids) -> dict:
+    """Stdlib union-find: union by smaller id becomes root (deterministic,
+    rank-free). Returns {entity_id: root_id} for every id in `ids`."""
+    parent = {i: i for i in ids}
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    for a, b in pairs:
+        ra, rb = find(a), find(b)
+        if ra == rb:
+            continue
+        if ra < rb:
+            parent[rb] = ra
+        else:
+            parent[ra] = rb
+
+    return {i: find(i) for i in ids}
+
+
+def canonical_ids(comp_root: dict, names_by_id: dict) -> dict:
+    """E8: per connected component, canonical = longest name, ties by
+    ascending name. Returns {entity_id: canonical_id}, non-NULL for every id."""
+    groups: dict = {}
+    for i, root in comp_root.items():
+        groups.setdefault(root, []).append(i)
+
+    out = {}
+    for root, members in groups.items():
+        canon = min(members, key=lambda i: (-len(names_by_id[i]), names_by_id[i]))
+        for i in members:
+            out[i] = canon
+    return out
+
+
+def embedding_candidates(names_by_id: dict, model_dir: str | None = None,
+                         threshold: float = EMB_THRESHOLD,
+                         n: int = GRAM_N, max_block: int = MAX_GRAM_BLOCK) -> list:
+    """OFF-by-default third signal (E8). Any failure -- missing dependency,
+    missing model, bad model_dir -- returns [] rather than raising."""
+    if not model_dir:
+        return []
+    try:
+        import numpy as np
+        from model2vec import StaticModel
+
+        ids = sorted(names_by_id)
+        model = StaticModel.from_pretrained(model_dir)
+        vecs = model.encode([names_by_id[i] for i in ids])
+        vecs = np.asarray(vecs, dtype=float)
+        norms = np.linalg.norm(vecs, axis=1, keepdims=True)
+        norms[norms == 0] = 1.0
+        vecs = vecs / norms
+
+        norm = {i: normalize_name(names_by_id[i]) for i in ids}
+        index: dict = {}
+        for i in ids:
+            for g in _grams(norm[i], n):
+                index.setdefault(g, []).append(i)
+
+        pos = {i: k for k, i in enumerate(ids)}
+        seen = set()
+        out = []
+        for g, gid in index.items():
+            if len(gid) > max_block:
+                continue
+            gid_sorted = sorted(gid)
+            for pi, a in enumerate(gid_sorted):
+                for b in gid_sorted[pi + 1:]:
+                    if (a, b) in seen:
+                        continue
+                    seen.add((a, b))
+                    cos = float(np.dot(vecs[pos[a]], vecs[pos[b]]))
+                    if cos >= threshold:
+                        out.append((a, b))
+        return sorted(out)
+    except Exception:
+        return []
+
+
+def resolve_entities(conn, run, threshold: float = SIM_THRESHOLD,
+                     min_shared: int = MIN_SHARED_NEIGHBORS,
+                     top_k: int = NEIGHBOR_TOP_K,
+                     use_embeddings: bool = False,
+                     model_dir: str | None = None) -> dict:
+    """The only writer of canonical_id (E8). Deterministic: every
+    intermediate is sorted, so two runs over the same rows return an equal
+    dict."""
+    ensure_schema(conn)
+    rid = run.run_id
+
+    with conn.cursor(row_factory=_tuple_row) as cur:
+        cur.execute("SELECT entity_id, name FROM entities WHERE run_id = %s", (rid,))
+        names_by_id = {row[0]: row[1] for row in cur.fetchall()}
+
+        cur.execute("""
+            WITH und AS (
+                SELECT a AS x, b AS y, bm25 FROM entity_edges WHERE run_id = %(rid)s AND ppmi > 0
+                UNION ALL
+                SELECT b AS x, a AS y, bm25 FROM entity_edges WHERE run_id = %(rid)s AND ppmi > 0
+            ), rk AS (
+                SELECT x, y, ROW_NUMBER() OVER (PARTITION BY x ORDER BY bm25 DESC, y ASC) AS rn
+                  FROM und
+            )
+            SELECT x, y FROM rk WHERE rn <= %(k)s ORDER BY x, rn
+        """, {"rid": rid, "k": top_k})
+        edge_rows = cur.fetchall()
+
+    candidates = string_candidates(names_by_id, threshold=threshold)
+    if use_embeddings:
+        emb = embedding_candidates(names_by_id, model_dir=model_dir)
+        candidates = sorted(set(candidates) | set(emb))
+    neighbors = neighbor_sets(edge_rows, top_k=top_k)
+    merged_pairs = corroborated(candidates, neighbors, min_shared=min_shared)
+    comp_root = components(merged_pairs, names_by_id.keys())
+    canon = canonical_ids(comp_root, names_by_id)
+
+    groups: dict = {}
+    for i, root in comp_root.items():
+        groups.setdefault(root, []).append(i)
+
+    with conn.cursor() as cur:
+        cur.execute("UPDATE entities SET canonical_id = entity_id WHERE run_id = %s", (rid,))
+        merged_rows = sorted((cid, rid, eid) for eid, cid in canon.items() if cid != eid)
+        if merged_rows:
+            cur.executemany(
+                "UPDATE entities SET canonical_id = %s WHERE run_id = %s AND entity_id = %s",
+                merged_rows)
+    conn.commit()
+
+    n_aliases = sum(1 for eid, cid in canon.items() if cid != eid)
+    return {"entities": len(names_by_id), "candidates": len(candidates),
+            "merged_pairs": len(merged_pairs), "clusters": len(groups),
+            "aliases": n_aliases}
+
+
+def build_entities(conn, run, min_joint: int = MIN_JOINT_CHUNKS, resolve: bool = True) -> dict:
     """The only writer. `conn` must be a WRITABLE connection -- gt.connect()
     is read-only at the server (W3) and raises on the first CREATE TABLE.
 
@@ -235,8 +509,11 @@ def build_entities(conn, run, min_joint: int = MIN_JOINT_CHUNKS) -> dict:
                 cp.write_row((rid, a, b, npmi, ppmi, bm25))
     conn.commit()
 
-    return {"n_chunks": v["n"], "entities": len(names), "mentions": n_mentions,
-            "edges": len(pairs)}
+    result = {"n_chunks": v["n"], "entities": len(names), "mentions": n_mentions,
+              "edges": len(pairs)}
+    if resolve:
+        result["resolution"] = resolve_entities(conn, run)
+    return result
 
 
 def main(argv: list) -> int:
@@ -254,9 +531,11 @@ def main(argv: list) -> int:
         result = build_entities(conn, run)
     finally:
         conn.close()
+    res = result.get("resolution", {})
     print(f"{label} {run.run_id} N={result['n_chunks']} "
           f"entities={result['entities']} mentions={result['mentions']} "
-          f"edges={result['edges']}")
+          f"edges={result['edges']} "
+          f"canonical={res.get('clusters', 0)} aliases={res.get('aliases', 0)}")
     return 0
 
 
