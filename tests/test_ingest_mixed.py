@@ -195,7 +195,7 @@ def test_main_stride_args_reach_only_their_own_loader(monkeypatch, stubbed):
     recorders = {}
 
     def make_recorder(name, orig):
-        def _rec(n, stride):
+        def _rec(n, stride, **kw):
             recorders[name] = (n, stride)
             return orig(n, stride)
         return _rec
@@ -244,3 +244,23 @@ def test_main_reaches_communities_and_save(stubbed):
     ingest_mixed.main([])
     assert stubbed["cg"].min_size == 5
     assert stubbed["save"][0] is stubbed["cg"]
+
+
+def test_wiki_include_rescues_stride_victims(fake_hf, monkeypatch):
+    """--wiki-include: a document whose head matches rides along even when the
+    stride skips its index; already-sampled docs are not duplicated; output
+    stays index-sorted (operator, 2026-09-02: the Battle of Midway article was
+    a stride-4 victim at index 28410)."""
+    rows = ["= Article %d = body text" % i for i in range(10)]
+    rows[3] = "= Battle of Midway = The Battle of Midway was decisive"
+    monkeypatch.setattr(ingest_mixed, "_hf_rows", lambda *a, **k: rows)
+    ids, docs, src = ingest_mixed.load_wiki(3, 4, include=r"Battle of Midway")
+    idx = [int(i.split("/")[1]) for i in ids]
+    assert 3 in idx                              # the stride victim is rescued
+    assert idx == sorted(idx) and len(idx) == len(set(idx))
+    assert all(s == "wiki" for s in src)
+    # matching a doc the stride already took must not duplicate it
+    rows[0] = "= Battle of Midway = duplicate-position head"
+    ids2, _, _ = ingest_mixed.load_wiki(3, 4, include=r"Battle of Midway")
+    idx2 = [int(i.split("/")[1]) for i in ids2]
+    assert len(idx2) == len(set(idx2))
