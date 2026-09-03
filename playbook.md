@@ -200,3 +200,15 @@ single global cut). Implementation tasks cite them.
 - sqrt-allocation of BM25 anchors per source (k_anchor_s ∝ n_s^0.5) — build
   ONLY if T9 shows a source demonstrably never surfacing on prompts that
   target it. Evidence lives in T9's _Lessons:.
+  _Evidence (2026-09-02, dendrite probe):_ "what courage means in a losing
+  battle" walked wiki 75 / brown 14 / quotes 2; plain token 'battle' (df 1699,
+  60/91 chunks) carried the walk into game/war articles. _Disposition
+  (operator):_ NOT a defect — the system matched the words it was given; the
+  "wanted quotes" reading was an unstated intent. Nothing is tunable until a
+  DIAGNOSTIC SET exists: ~20 prompts each with an expected-outcome statement
+  (which sources/registers should surface). Build the set first; any threshold
+  (anchor keyness, sqrt allocation) is tuned against it or not at all.
+  _Drafted:_ .spec/specs/graph-explorer/diagnostic-prompts.md — 20 prompts in 5
+  classes (event/quotes/brown/bridge/ambiguous-controls), expectations written
+  before running; 4 rows anchored to taken measurements, rest await one
+  calibration run, then the set freezes.
