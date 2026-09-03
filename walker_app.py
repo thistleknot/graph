@@ -478,7 +478,7 @@ def draw_global_map(comms, qrows, height=560):
     return fig
 
 
-tab_walk, tab_map, tab_mirror = st.tabs(["Walk", "Map", "Mirror"])
+tab_walk, tab_map = st.tabs(["Walk", "Map"])
 
 @st.cache_data(show_spinner=False, max_entries=32)
 def walk_for(run_id: str, q: str):
@@ -907,44 +907,14 @@ with tab_map:
           "avg strength": round(r["avg_strength"], 3)} for r in q],
         use_container_width=True, hide_index=True, height=300)
 
-# ================================================================ MIRROR (T26)
-with tab_mirror:
-    # The neo4j browser refuses iframes (X-Frame-Options: DENY, measured), so
-    # the mirror is rendered HERE: neovis.js connects browser-side to bolt
-    # :7687 and draws the selected Walk's subgraph inside this tab.
-    # ONE input field for the whole app: the Walk tab's prompt drives this
-    # tab too. A judged walk lands in the mirror (T17) and shows up here.
-    st.caption("The neo4j mirror, live, for the prompt on the Walk tab. Drag "
-               "nodes; chunk captions are salient terms, color = source. Full "
-               "browser: http://localhost:7474 (neo4j/graphgraph).")
-    _wp = (st.session_state.get("q") or "").strip()
-    _mirrored = False
-    if _wp:
-        try:
-            import export_neo4j as _xn
-            _res = _xn._tx([{"statement":
-                             "MATCH (w:Walk {prompt: $p}) RETURN count(w)",
-                             "parameters": {"p": _wp}}])
-            _mirrored = _res[0]["data"][0]["row"][0] > 0
-        except Exception as e:                              # noqa: BLE001
-            st.warning(f"mirror unreachable: {e}")
-    if not _wp:
-        st.info("Type a prompt on the Walk tab -- its mirrored walk renders here.")
-    elif not _mirrored:
-        st.info(f"“{_wp}” is not in the mirror yet. Hit **Reason + judge this "
-                "walk** on the Walk tab; the walk lands here automatically.")
-    else:
-        st.markdown(f"**{_wp}**")
-        _depth = st.radio("Show", ["anchors + pathways", "+ chains"],
-                          horizontal=True, key="mirror_depth")
-        _rel = "ANCHORS|PATHWAY" if _depth == "anchors + pathways" \
-            else "ANCHORS|PATHWAY|NEXT_IN_CHAIN"
-        _cy = (f"MATCH (w:Walk {{prompt: $prompt}}) "
-               f"OPTIONAL MATCH p=(w)-[:ANCHORS]->(:Chunk) "
-               f"OPTIONAL MATCH q=(:Chunk)-[r:{_rel.replace('ANCHORS|','')} "
-               f"{{of: $prompt}}]->(:Chunk) RETURN w, p, q")
-        _html = """
-<div id="viz" style="width:100%;height:640px;border:1px solid #ddd"></div>
+# ---------------------------------------------------------------- MIRROR (T26)
+def _neovis_html(cypher: str) -> str:
+    """One neovis canvas over bolt :7687 for a literal cypher string. The
+    neo4j browser refuses iframes (X-Frame-Options: DENY, measured), so the
+    mirror renders in-app. No Streamlit widgets in here: everything is
+    client-side, so nothing reruns the script (tabs keep their state)."""
+    return """
+<div id="viz" style="width:100%;height:520px;border:1px solid #ddd"></div>
 <script src="https://unpkg.com/neovis.js@2.1.0"></script>
 <script>
   const SRC_COLOR = {wiki:"#7f9fc4", quotes:"#e8843c", brown:"#5aa26b"};
@@ -978,9 +948,89 @@ with tab_mirror:
   });
   viz.render();
 </script>
-"""
-        # neovis takes the cypher as one literal string; inline the prompt value.
-        _html = _html.replace("__CYPHER__",
-                              json.dumps(_cy.replace("$prompt", json.dumps(_wp))))
+""".replace("__CYPHER__", json.dumps(cypher))
+
+
+with tab_map:
+    # ONE input field for the whole app: the Walk tab's prompt drives the
+    # mirror section too. A judged walk lands in neo4j (T17) and shows here.
+    # ---- PARTITIONS (the operator's standing ask): the dendrite-sorted
+    # chains, each partition's BM25 salient terms laid side by side so the
+    # partitions can be COMPARED -- pregrouped text, same place as the graphs.
+    _wp0 = (st.session_state.get("q") or "").strip()
+    if _wp0:
+        st.markdown("### Partitions (dendrite sort)")
+        st.caption("Each row is one correlation chain over the walked chunks "
+                   "(correlation sorting.md). Terms are the chain members' own "
+                   "BM25-salient vocabulary, ranked by how many members carry "
+                   "them -- what this partition talks about vs the others.")
+        try:
+            _bnd0, _ = walk_for(str(run.run_id), _wp0)
+            _ws0 = walk_state(str(run.run_id), _wp0, _bnd=_bnd0, _embed=embed)
+            _ds0 = dendrite_state(str(run.run_id), _wp0, _bnd=_bnd0,
+                                  _members=_ws0["term_members"])
+        except Exception as e:                              # noqa: BLE001
+            _ds0 = None
+            st.warning(f"partitions unavailable: {e}")
+        if _ds0 is not None:
+            _sal0 = _ds0["sal"]
+            _rows = []
+            for _ci, _chain in enumerate(_ds0["chunks"]["chains"]):
+                _tc = Counter()
+                _mix = Counter()
+                for _o in _chain:
+                    for _t in (_sal0.get(_o, {}).get("top") or []):
+                        _tc[_t] += 1
+                    _nd0 = gt.node(conn, run, _o)
+                    _mix[gt.source_of(_nd0) or "?"] += 1
+                _rows.append({
+                    "chain": _ci + 1,
+                    "chunks": len(_chain),
+                    "sources": " ".join(f"{k}:{v}" for k, v in
+                                        _mix.most_common()),
+                    "salient terms (carried by N members)":
+                        ", ".join(f"{t}({n})" if n > 1 else t
+                                  for t, n in _tc.most_common(12)),
+                })
+            st.dataframe(_rows, use_container_width=True, hide_index=True)
+            _tchains = _ds0["terms"]["chains"]
+            if _tchains:
+                st.caption("Term chains (terms that rise and fall together "
+                           "across the walked chunks):")
+                for _tch in _tchains:
+                    if len(_tch) > 1:
+                        st.markdown("- `" + " > ".join(_tch) + "`")
+
+    st.markdown("### Mirror")
+    st.caption("The neo4j mirror, live, for the prompt on the Walk tab. Drag "
+               "nodes; chunk captions are salient terms, color = source. Full "
+               "browser: http://localhost:7474 (neo4j/graphgraph).")
+    _wp = (st.session_state.get("q") or "").strip()
+    _mirrored = False
+    if _wp:
+        try:
+            import export_neo4j as _xn
+            _res = _xn._tx([{"statement":
+                             "MATCH (w:Walk {prompt: $p}) RETURN count(w)",
+                             "parameters": {"p": _wp}}])
+            _mirrored = _res[0]["data"][0]["row"][0] > 0
+        except Exception as e:                              # noqa: BLE001
+            st.warning(f"mirror unreachable: {e}")
+    if not _wp:
+        st.info("Type a prompt on the Walk tab -- its mirrored walk renders here.")
+    elif not _mirrored:
+        st.info(f"“{_wp}” is not in the mirror yet. Hit **Reason + judge "
+                "this walk** on the Walk tab; the walk lands here automatically.")
+    else:
         import streamlit.components.v1 as _components
-        _components.html(_html, height=660)
+        _p = json.dumps(_wp)
+        st.markdown(f"**{_wp}** -- anchors + pathways")
+        _components.html(_neovis_html(
+            f"MATCH (w:Walk {{prompt: {_p}}}) "
+            f"OPTIONAL MATCH p=(w)-[:ANCHORS]->(:Chunk) "
+            f"OPTIONAL MATCH q=(:Chunk)-[:PATHWAY {{of: {_p}}}]->(:Chunk) "
+            f"RETURN w, p, q"), height=540)
+        st.markdown("**chains** (dendrite order, dashed)")
+        _components.html(_neovis_html(
+            f"MATCH p=(:Chunk)-[:NEXT_IN_CHAIN {{of: {_p}}}]->(:Chunk) "
+            f"RETURN p"), height=540)

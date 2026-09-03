@@ -689,3 +689,11 @@ fixed seeds), do-no-harm = frozen diagnostic keeps 18/20 with the same pass set,
   the tab follows st.session_state["q"] (the Walk prompt); unjudged prompts get a
   hit-Reason+judge hint instead of a picker. Verified live: prompt typed on Walk renders
   its mirrored subgraph on Mirror with no second field.
+  _Lessons 3:_ Operator redirects folded in: (1) Mirror moved UNDER Map (no third tab --
+  also dissolves the stateless-tab reset the Show radio caused); (2) no toggle: anchors+
+  pathways and chains render stacked, one after the other; (3) the standing partitions
+  ask landed -- "Partitions (dendrite sort)" section above Mirror: one row per correlation
+  chain with chunk count, source mix, and the chain's BM25-salient terms ranked by member
+  carry-count (partitions comparable at a glance), plus the term chains as text. All
+  driven by the ONE Walk prompt via cached walk/dendrite state. Verified live: Midway
+  prompt shows the naval term chain swordfish>tirpitz>...>carrier_aircrews>philippine_sea.
