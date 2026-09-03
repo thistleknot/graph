@@ -15,3 +15,5 @@ trigram.zip                # duplicate of trigram/
 trigram/*.jpg              # photos of trigram.md; the markdown is the source
 .playbook/
 .tmp/
+.playwright-mcp/
+neo4j_*.png
