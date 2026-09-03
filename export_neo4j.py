@@ -23,11 +23,14 @@ shared terms, so dropping them would silently make the export sparse-only.
 because a consumer that only walks SIMILAR should still see the whole graph.
 
 Require:   a live run under `label`; read-only DB access.
-Guarantee: nodes.csv + edges.csv + import.sh in `out`, neo4j-admin header
-           format, every :START_ID/:END_ID resolvable within its id-space.
-           nodes.csv carries a `source` column, empty on runs predating R20
-           (design.md §6.14 R20).
+Guarantee: chunks.csv + terms.csv + contains.csv + similar.csv + import.sh in
+           `out`, neo4j-admin header format, every :START_ID/:END_ID resolvable
+           within its id-space. chunks.csv carries a `source` column, empty on
+           runs predating R20 (design.md §6.14 R20). vector_index.cypher is
+           additionally emitted when at least one embedding was written.
 Maintain:  no writes; no re-partitioning; cid is read, never recomputed.
+           `write_walk` additionally guarantees one (:Walk) per prompt with
+           its ANCHORS and PATHWAY edges written, or an exception.
 
 GUARDS (EARS)
 X1 Chunk ids and Term ids SHALL occupy SEPARATE neo4j id-spaces. A term whose
@@ -42,6 +45,22 @@ X4 Text SHALL be emitted through csv.writer, never hand-quoted. Chunk bodies
    contain commas, quotes and newlines.
 X5 The run label and run_id SHALL be recorded in import.sh, so an imported
    database can name the run it came from.
+X6 Nodes SHALL be emitted one id-space per file. A single file carrying two
+   `:ID(...)` columns is rejected by current neo4j-admin; the 4-file layout is
+   what makes X1 structural rather than a per-row invariant.
+X7 The embedding column SHALL be `;`-separated tokens copied verbatim from
+   storage, of uniform length across the run, and `vector_index.cypher` SHALL
+   be emitted if and only if at least one vector was written.
+X8 A chunk with a community SHALL carry `C<cid>` as a second label in the
+   `:LABEL` column, so the imported database is partitionable without a
+   post-import pass.
+X9  The live writer SHALL MATCH Chunk nodes, never MERGE them, and SHALL address
+    them by `id` as a STRING -- the CSV import runs --id-type=STRING, so an integer
+    parameter matches nothing and the write silently succeeds having written nothing.
+X10 A walk SHALL be re-writable: (:Walk) is keyed on `prompt`, (:PATHWAY) on
+    (src, dst, of) with the ordinal pair normalized low->high, so a second write of
+    the same walk updates in place instead of duplicating. Any transport or MATCH
+    shortfall SHALL raise; there is no partial-write fallback.
 
 Usage:
     python export_neo4j.py brown-50-dual out/          # both edge kinds
@@ -50,13 +69,22 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import base64
 import csv
+import json
 import sys
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 import graph_tools as gt
 
 MIN_TF = 1          # emit a CONTAINS edge at this term frequency or above
+
+NEO4J_HTTP = "http://localhost:7474"        # docker compose maps the HTTP endpoint
+NEO4J_DB = "neo4j"
+NEO4J_AUTH = ("neo4j", "graphgraph")
+TX_BATCH = 500                              # rows per UNWIND statement
 
 
 def _fetch(conn, run, min_tf: int):
@@ -76,10 +104,16 @@ def _fetch(conn, run, min_tf: int):
             """SELECT cid, unnest(members) AS ord
                  FROM community WHERE run_id = %s""", (run.run_id,))
         cid = {r["ord"]: r["cid"] for r in cur.fetchall()}
+        cur.execute(
+            """SELECT ord, embedding::text AS e FROM node_embedding
+                WHERE run_id = %s""", (run.run_id,))
+        emb = {r["ord"]: [tok.strip() for tok in r["e"].strip("[]").split(",")]
+               for r in cur.fetchall()}
 
     chunks, contains = [], []
     for r in rows:
-        chunks.append((r["ord"], r["doc_id"], r["source"], r["body"], cid.get(r["ord"])))
+        chunks.append((r["ord"], r["doc_id"], r["source"], r["body"],
+                        cid.get(r["ord"]), emb.get(r["ord"])))
         for term, tf in (r["tf"] or {}).items():
             if tf >= min_tf:
                 contains.append((r["ord"], term, tf))
@@ -87,7 +121,7 @@ def _fetch(conn, run, min_tf: int):
 
 
 def export(conn, run, out: Path, edges: str = "both", min_tf: int = MIN_TF) -> dict:
-    """Require: out is a writable directory. Guarantee: X1-X5 hold on the files."""
+    """Require: out is a writable directory. Guarantee: X1-X8 hold on the files."""
     out.mkdir(parents=True, exist_ok=True)
     chunks, contains, similar = _fetch(conn, run, min_tf)
 
@@ -103,51 +137,217 @@ def export(conn, run, out: Path, edges: str = "both", min_tf: int = MIN_TF) -> d
         raise ValueError(f"{len(dangling)} dangling edge endpoints; "
                          f"first: {dangling[0]}")
 
-    with (out / "nodes.csv").open("w", newline="", encoding="utf-8") as f:
-        w = csv.writer(f)                                           # X4
-        w.writerow(["id:ID(Chunk)", "id:ID(Term)", "doc_id", "source", "text",
-                    "cid:int", ":LABEL"])
-        for ord_, doc_id, source, body, c in chunks:
-            w.writerow([ord_, "", doc_id, source or "", body,
-                       "" if c is None else c, "Chunk"])
-        for t in terms:
-            w.writerow(["", t, "", "", "", "", "Term"])
+    embed_dim = None                                                 # X7
+    for _, _, _, _, _, e in chunks:
+        if e:
+            embed_dim = len(e)
+            break
+    n_embedded = 0
+    n_labeled = 0
+    for ord_, _, _, _, c, e in chunks:
+        if e:
+            n_embedded += 1
+            if len(e) != embed_dim:
+                raise ValueError(f"ragged embedding at ord {ord_}: "
+                                  f"{len(e)} != {embed_dim}")
+        if c is not None:
+            n_labeled += 1
 
-    n_contains = n_similar = 0
-    with (out / "edges.csv").open("w", newline="", encoding="utf-8") as f:
+    with (out / "chunks.csv").open("w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)                                            # X4, X6
+        w.writerow(["id:ID(Chunk)", "doc_id", "source", "text", "cid:int",
+                    "embedding:float[]", ":LABEL"])
+        for ord_, doc_id, source, body, c, e in chunks:
+            label = "Chunk" if c is None else f"Chunk;C{c}"           # X8
+            w.writerow([ord_, doc_id, source or "", body,
+                       "" if c is None else c,
+                       "" if not e else ";".join(e), label])
+
+    with (out / "terms.csv").open("w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
-        w.writerow([":START_ID(Chunk)", ":END_ID(Term)", ":END_ID(Chunk)",
-                    ":TYPE", "tf:int", "strength:float", "prov",
-                    "sim_sparse:float", "sim_dense:float"])
+        w.writerow(["name:ID(Term)", ":LABEL"])
+        for t in terms:
+            w.writerow([t, "Term"])
+
+    n_contains = 0
+    with (out / "contains.csv").open("w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow([":START_ID(Chunk)", ":END_ID(Term)", ":TYPE", "tf:int"])
         if edges in ("both", "contains"):
             for ord_, term, tf in contains:
-                w.writerow([ord_, term, "", "CONTAINS", tf, "", "", "", ""])
+                w.writerow([ord_, term, "CONTAINS", tf])
                 n_contains += 1
+
+    n_similar = 0
+    with (out / "similar.csv").open("w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow([":START_ID(Chunk)", ":END_ID(Chunk)", ":TYPE", "strength:float",
+                    "prov", "sim_sparse:float", "sim_dense:float"])
         if edges in ("both", "similar"):
             for e in similar:
-                w.writerow([e["src"], "", e["dst"], "SIMILAR", "",
-                            e["strength"], e["provenance"],
-                            e["sim_sparse"],
+                w.writerow([e["src"], e["dst"], "SIMILAR", e["strength"],
+                            e["provenance"], e["sim_sparse"],
                             "" if e["sim_dense"] is None else e["sim_dense"]])
                 n_similar += 1
 
     src_line = (f"# sources: {gt.format_source_mix(src_mix)}\n"
                 if src_mix else "")                                  # X5's spirit
+    vector_line = ("# then: cypher-shell -f vector_index.cypher\n"
+                    if embed_dim else "")
     (out / "import.sh").write_text(
         f"#!/bin/sh\n"
         f"# run {run.label} ({run.run_id})\n"                        # X5
         f"{src_line}"
         f"neo4j-admin database import full \\\n"
-        f"  --nodes=nodes.csv \\\n"
-        f"  --relationships=edges.csv \\\n"
+        f"  --nodes=chunks.csv \\\n"
+        f"  --nodes=terms.csv \\\n"
+        f"  --relationships=contains.csv \\\n"
+        f"  --relationships=similar.csv \\\n"
         f"  --id-type=STRING \\\n"
+        f"  --multiline-fields=true \\\n"
         f"  --overwrite-destination=true \\\n"
-        f"  neo4j\n", encoding="utf-8")
+        f"  neo4j\n"
+        f"{vector_line}", encoding="utf-8")
+
+    if embed_dim:                                                    # X7
+        (out / "vector_index.cypher").write_text(
+            f"// run {run.label} ({run.run_id})\n"
+            f"CREATE VECTOR INDEX chunk_embedding IF NOT EXISTS\n"
+            f"FOR (c:Chunk) ON (c.embedding)\n"
+            f"OPTIONS {{indexConfig: {{`vector.dimensions`: {embed_dim}, "
+            f"`vector.similarity_function`: 'cosine'}}}};\n",
+            encoding="utf-8")
+    else:
+        cyp = out / "vector_index.cypher"
+        if cyp.exists():
+            cyp.unlink()
 
     return {"chunks": len(chunks), "terms": len(terms),
             "contains": n_contains, "similar": n_similar,
             "sources": src_mix,
+            "embeddings": n_embedded, "embed_dim": embed_dim,
+            "labeled": n_labeled,
             "label": run.label, "run_id": str(run.run_id)}
+
+
+def _tx(statements: list, url: str = NEO4J_HTTP, auth: tuple = NEO4J_AUTH,
+        db: str = NEO4J_DB, timeout: float = 30.0) -> list:
+    """Require: a reachable neo4j HTTP tx endpoint.
+    Guarantee: every statement committed, or an exception. Returns results."""
+    body = json.dumps({"statements": statements}).encode("utf-8")
+    token = base64.b64encode(f"{auth[0]}:{auth[1]}".encode("utf-8")).decode("ascii")
+    req = urllib.request.Request(
+        f"{url}/db/{db}/tx/commit", data=body,
+        headers={"Content-Type": "application/json",
+                 "Accept": "application/json",
+                 "Authorization": f"Basic {token}"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        payload = json.load(r)
+    errors = payload.get("errors") or []
+    if errors:                                                      # fail fast
+        first = errors[0]
+        raise RuntimeError(f"neo4j tx error {first.get('code')}: {first.get('message')}")
+    return payload["results"]
+
+
+def write_walk(bundle, paths: dict, *, prompt: str | None = None,
+               url: str = NEO4J_HTTP, auth: tuple = NEO4J_AUTH,
+               db: str = NEO4J_DB, batch: int = TX_BATCH,
+               post=_tx) -> dict:
+    """Require: the run's chunks are already imported (id:ID(Chunk), STRING space).
+    Guarantee: exactly one (:Walk {prompt}) node, its ANCHORS set, and one
+               PATHWAY per pair per `of`, idempotent under re-write.
+    Maintain:  no node creation in the Chunk id-space; chunks are MATCHed only."""
+    prompt = prompt if prompt is not None else bundle.query
+
+    anchors = []
+    seen = set()
+    for a in bundle.anchors:                                        # X9
+        aid = str(a["ord"]) if isinstance(a, dict) else str(int(a))
+        if aid not in seen:
+            seen.add(aid)
+            anchors.append(aid)
+
+    rows = []
+    for pair in paths.get("pairs", []):
+        a, b = int(pair["a"]), int(pair["b"])
+        lo, hi = (a, b) if a <= b else (b, a)                        # X10 normalize
+        rows.append({
+            "a": str(lo), "b": str(hi),
+            "dwpc": pair["dwpc"], "n_paths": pair["n_paths"],
+            "len": (len(pair["path"]) - 1) if pair.get("path") else None,
+        })
+
+    # Schema modification cannot share a transaction with writes (neo4j rejects
+    # it: "Write query after executing Schema modification"), so the constraint
+    # goes over the wire on its own, before the write transaction.
+    post([{
+        "statement": "CREATE CONSTRAINT walk_prompt IF NOT EXISTS "
+                      "FOR (w:Walk) REQUIRE w.prompt IS UNIQUE",
+        "parameters": {},
+    }], url=url, auth=auth, db=db)
+
+    statements = [{
+        "statement": ("MERGE (w:Walk {prompt: $prompt})\n"
+                      "SET w.run_id = $run_id, w.n = $n, w.edges = $edges, "
+                      "w.wcc = $wcc, w.wcc_sizes = $wcc_sizes, "
+                      "w.largest_component_frac = $lcf, w.density = $density, "
+                      "w.conductance = $conductance"),
+        "parameters": {
+            "prompt": prompt, "run_id": getattr(bundle, "run_id", None),
+            "n": paths["n"], "edges": paths["edges"],
+            "wcc": paths["components"], "wcc_sizes": paths["wcc_sizes"],
+            "lcf": paths["largest_component_frac"],
+            "density": paths["density"], "conductance": paths["conductance"],
+        },
+    }]
+
+    anchor_stmt_idx = []
+    for i in range(0, len(anchors), batch):
+        anchor_stmt_idx.append(len(statements))
+        statements.append({
+            "statement": ("MATCH (w:Walk {prompt: $prompt})\n"
+                          "UNWIND $ids AS cid\n"
+                          "MATCH (c:Chunk {id: cid})\n"                # X9: MATCH, never MERGE
+                          "MERGE (w)-[:ANCHORS]->(c)\n"
+                          "RETURN count(c) AS matched"),
+            "parameters": {"prompt": prompt, "ids": anchors[i:i + batch]},
+        })
+
+    pathway_stmt_idx = []
+    for i in range(0, len(rows), batch):
+        pathway_stmt_idx.append(len(statements))
+        statements.append({
+            "statement": ("UNWIND $rows AS r\n"
+                          "MATCH (s:Chunk {id: r.a}), (d:Chunk {id: r.b})\n"
+                          "MERGE (s)-[p:PATHWAY {of: $prompt}]->(d)\n"
+                          "SET p.dwpc = r.dwpc, p.n_paths = r.n_paths, p.len = r.len\n"
+                          "RETURN count(p) AS merged"),
+            "parameters": {"prompt": prompt, "rows": rows[i:i + batch]},
+        })
+
+    results = post(statements, url=url, auth=auth, db=db)
+
+    matched = 0
+    for idx in anchor_stmt_idx:
+        matched += results[idx]["data"][0]["row"][0]
+    if matched != len(anchors):                                     # X10 shortfall guard
+        missing = [a for a in anchors][:1]
+        raise ValueError(f"anchors: matched {matched} of {len(anchors)}; "
+                         f"first expected id {missing[0] if missing else None}")
+
+    merged = 0
+    for idx in pathway_stmt_idx:
+        merged += results[idx]["data"][0]["row"][0]
+    if merged != len(rows):
+        missing = rows[0] if rows else None
+        raise ValueError(f"pathways: merged {merged} of {len(rows)}; "
+                         f"first expected pair {missing}")
+
+    return {"prompt": prompt, "anchors": len(anchors), "pairs": len(rows),
+            "statements": len(statements),
+            **{k: paths[k] for k in
+               ("n", "edges", "components", "density", "conductance")}}
 
 
 def main(argv=None):
