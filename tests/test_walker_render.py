@@ -343,7 +343,6 @@ def test_mirror_is_the_real_neo4j_browser_under_map():
     assert "http://localhost:7474/browser/" in mirror
     assert 'selectbox("Walk"' not in mirror             # one input field
     assert "st.radio" not in mirror
-    assert "Partitions (dendrite sort)" in mirror
-    assert "dendrite_state" in mirror
-    assert "neovis.js" in src and "bolt://localhost:7687" in src
-    assert "__CYPHER__" in src and "initialCypher" in src
+    # partitions live at the TOP of the Map tab now, before the community map
+    assert "Partitions (dendrite sort)" in src
+    assert src.find("Partitions (dendrite sort)") < src.find('subheader("Community map")')

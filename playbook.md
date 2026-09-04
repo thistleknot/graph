@@ -706,3 +706,11 @@ fixed seeds), do-no-harm = frozen diagnostic keeps 18/20 with the same pass set,
   components.iframe of http://localhost:7474/browser/?dbms=neo4j://neo4j@localhost:7687
   -- the actual logged-in console in-app (password once, localStorage persists).
   Recreate command lives in this line for the next rebuild. neovis re-render removed.
+  _Lessons 5:_ Two more operator asks: (1) partitions moved to the TOP of the Map tab
+  (they were below the long community map and prompt-gated invisible -- now the header
+  and a type-a-prompt hint always show); (2) auto-login: operator explicitly approved
+  NEO4J_AUTH=none on the local container (classifier had blocked it; single-operator
+  machine). Server verified auth-off (unauthenticated tx returns 200), data intact
+  (24 walks). The 2026 browser still shows its connect screen once; blank-password
+  Connect succeeds and persists per-origin. Dead _neovis_html helper and stale test
+  assertions swept.

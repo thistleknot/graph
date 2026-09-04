@@ -865,6 +865,57 @@ with tab_walk:
 
 # ================================================================ MAP
 with tab_map:
+    # ---- PARTITIONS (the operator's standing ask): the dendrite-sorted
+    # chains, each partition's BM25 salient terms laid side by side so the
+    # partitions can be COMPARED -- pregrouped text, same place as the graphs.
+    _wp0 = (st.session_state.get("q") or "").strip()
+    st.markdown("### Partitions (dendrite sort)")
+    if not _wp0:
+        st.info("Type a prompt on the Walk tab -- its dendrite-sorted "
+                "partitions render here, salient terms side by side.")
+    if _wp0:
+        st.caption("Each row is one correlation chain over the walked chunks "
+                   "(correlation sorting.md). Terms are the chain members' own "
+                   "BM25-salient vocabulary, ranked by how many members carry "
+                   "them -- what this partition talks about vs the others.")
+        try:
+            _bnd0, _ = walk_for(str(run.run_id), _wp0)
+            _ws0 = walk_state(str(run.run_id), _wp0, _bnd=_bnd0, _embed=embed)
+            _ds0 = dendrite_state(str(run.run_id), _wp0, _bnd=_bnd0,
+                                  _members=_ws0["term_members"])
+        except Exception as e:                              # noqa: BLE001
+            _ds0 = None
+            st.warning(f"partitions unavailable: {e}")
+        if _ds0 is not None:
+            _sal0 = _ds0["sal"]
+            _rows = []
+            for _ci, _chain in enumerate(_ds0["chunks"]["chains"]):
+                _tc = Counter()
+                _mix = Counter()
+                for _o in _chain:
+                    for _t in (_sal0.get(_o, {}).get("top") or []):
+                        _tc[_t] += 1
+                    _nd0 = gt.node(conn, run, _o)
+                    _mix[gt.source_of(_nd0) or "?"] += 1
+                _rows.append({
+                    "chain": _ci + 1,
+                    "chunks": len(_chain),
+                    "sources": " ".join(f"{k}:{v}" for k, v in
+                                        _mix.most_common()),
+                    "salient terms (carried by N members)":
+                        ", ".join(f"{t}({n})" if n > 1 else t
+                                  for t, n in _tc.most_common(12)),
+                })
+            st.dataframe(_rows, use_container_width=True, hide_index=True)
+            _tchains = _ds0["terms"]["chains"]
+            if _tchains:
+                st.caption("Term chains (terms that rise and fall together "
+                           "across the walked chunks):")
+                for _tch in _tchains:
+                    if len(_tch) > 1:
+                        st.markdown("- `" + " > ".join(_tch) + "`")
+
+
     st.subheader("Community map")
     st.caption(
         "How the run's communities interconnect — pure aggregation over fixed "
@@ -908,105 +959,15 @@ with tab_map:
         use_container_width=True, hide_index=True, height=300)
 
 # ---------------------------------------------------------------- MIRROR (T26)
-def _neovis_html(cypher: str) -> str:
-    """One neovis canvas over bolt :7687 for a literal cypher string. The
-    neo4j browser refuses iframes (X-Frame-Options: DENY, measured), so the
-    mirror renders in-app. No Streamlit widgets in here: everything is
-    client-side, so nothing reruns the script (tabs keep their state)."""
-    return """
-<div id="viz" style="width:100%;height:520px;border:1px solid #ddd"></div>
-<script src="https://unpkg.com/neovis.js@2.1.0"></script>
-<script>
-  const SRC_COLOR = {wiki:"#7f9fc4", quotes:"#e8843c", brown:"#5aa26b"};
-  const viz = new NeoVis.default({
-    containerId: "viz",
-    neo4j: {serverUrl: "bolt://localhost:7687",
-            serverUser: "neo4j", serverPassword: "graphgraph"},
-    visConfig: {physics: {stabilization: {iterations: 200}},
-                edges: {arrows: {to: {enabled: true, scaleFactor: 0.4}}}},
-    labels: {
-      Chunk: {label: "id", size: 12,
-        [NeoVis.NEOVIS_ADVANCED_CONFIG]: {function: {
-          label: (n) => (n.properties.salient || [n.properties.id])[0],
-          color: (n) => SRC_COLOR[n.properties.source] || "#bbbbbb",
-          title: (n) => `#${n.properties.id} ${n.properties.source || ""} ` +
-                        `${(n.properties.salient || []).join(", ")}`}}},
-      Walk: {label: "prompt", size: 28,
-        [NeoVis.NEOVIS_ADVANCED_CONFIG]: {static: {color: "#E45756",
-                                                   shape: "star"}}},
-    },
-    relationships: {
-      PATHWAY: {[NeoVis.NEOVIS_ADVANCED_CONFIG]: {function: {
-        value: (r) => r.properties.dwpc || 0.001,
-        title: (r) => `dwpc=${r.properties.dwpc}` +
-                      (r.properties.ppr ? ` ppr=${r.properties.ppr}` : "")}}},
-      NEXT_IN_CHAIN: {[NeoVis.NEOVIS_ADVANCED_CONFIG]: {static: {
-        color: "#bbbbbb", dashes: true}}},
-      ANCHORS: {[NeoVis.NEOVIS_ADVANCED_CONFIG]: {static: {color: "#E45756"}}},
-    },
-    initialCypher: __CYPHER__,
-  });
-  viz.render();
-</script>
-""".replace("__CYPHER__", json.dumps(cypher))
-
 
 with tab_map:
     # ONE input field for the whole app: the Walk tab's prompt drives the
     # mirror section too. A judged walk lands in neo4j (T17) and shows here.
-    # ---- PARTITIONS (the operator's standing ask): the dendrite-sorted
-    # chains, each partition's BM25 salient terms laid side by side so the
-    # partitions can be COMPARED -- pregrouped text, same place as the graphs.
-    _wp0 = (st.session_state.get("q") or "").strip()
-    if _wp0:
-        st.markdown("### Partitions (dendrite sort)")
-        st.caption("Each row is one correlation chain over the walked chunks "
-                   "(correlation sorting.md). Terms are the chain members' own "
-                   "BM25-salient vocabulary, ranked by how many members carry "
-                   "them -- what this partition talks about vs the others.")
-        try:
-            _bnd0, _ = walk_for(str(run.run_id), _wp0)
-            _ws0 = walk_state(str(run.run_id), _wp0, _bnd=_bnd0, _embed=embed)
-            _ds0 = dendrite_state(str(run.run_id), _wp0, _bnd=_bnd0,
-                                  _members=_ws0["term_members"])
-        except Exception as e:                              # noqa: BLE001
-            _ds0 = None
-            st.warning(f"partitions unavailable: {e}")
-        if _ds0 is not None:
-            _sal0 = _ds0["sal"]
-            _rows = []
-            for _ci, _chain in enumerate(_ds0["chunks"]["chains"]):
-                _tc = Counter()
-                _mix = Counter()
-                for _o in _chain:
-                    for _t in (_sal0.get(_o, {}).get("top") or []):
-                        _tc[_t] += 1
-                    _nd0 = gt.node(conn, run, _o)
-                    _mix[gt.source_of(_nd0) or "?"] += 1
-                _rows.append({
-                    "chain": _ci + 1,
-                    "chunks": len(_chain),
-                    "sources": " ".join(f"{k}:{v}" for k, v in
-                                        _mix.most_common()),
-                    "salient terms (carried by N members)":
-                        ", ".join(f"{t}({n})" if n > 1 else t
-                                  for t, n in _tc.most_common(12)),
-                })
-            st.dataframe(_rows, use_container_width=True, hide_index=True)
-            _tchains = _ds0["terms"]["chains"]
-            if _tchains:
-                st.caption("Term chains (terms that rise and fall together "
-                           "across the walked chunks):")
-                for _tch in _tchains:
-                    if len(_tch) > 1:
-                        st.markdown("- `" + " > ".join(_tch) + "`")
-
     st.markdown("### Mirror")
-    st.caption("The actual neo4j browser, logged-in session and all (connect "
-               "once with neo4j/graphgraph; the browser remembers it). The "
-               "container's CSP was re-issued with frame-ancestors "
-               "http://localhost:8501 -- the stock image sends DENY.")
+    st.caption("The actual neo4j browser, auto-connected (auth disabled on "
+               "this local container; CSP re-issued with frame-ancestors "
+               "http://localhost:8501 -- the stock image sends DENY).")
     import streamlit.components.v1 as _components
     _components.iframe(
-        "http://localhost:7474/browser/?dbms=neo4j://neo4j@localhost:7687&db=neo4j",
+        "http://localhost:7474/browser/",
         height=760, scrolling=True)
