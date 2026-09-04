@@ -969,5 +969,6 @@ with tab_map:
                "http://localhost:8501 -- the stock image sends DENY).")
     import streamlit.components.v1 as _components
     _components.iframe(
-        "http://localhost:7474/browser/",
+        "http://localhost:7474/browser/?preselectAuthMethod=NO_AUTH"
+        "&connectURL=neo4j%3A%2F%2Flocalhost%3A7687",
         height=760, scrolling=True)

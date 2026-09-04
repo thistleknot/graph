@@ -714,3 +714,11 @@ fixed seeds), do-no-harm = frozen diagnostic keeps 18/20 with the same pass set,
   (24 walks). The 2026 browser still shows its connect screen once; blank-password
   Connect succeeds and persists per-origin. Dead _neovis_html helper and stale test
   assertions swept.
+  _Lessons 6:_ Zero-click achieved for FRESH profiles too: the unified console ignores
+  auto-connect params, but the CLASSIC browser honors ?preselectAuthMethod=NO_AUTH&
+  connectURL=..., and classic-vs-new is chosen by a localStorage key -- so the served
+  index.html is patched to seed prefersOldBrowser (patch_neo4j_browser.py regenerates
+  .neo4j-web/<zip>, container bind-mounts it; CSP gains script-src 'unsafe-inline' for
+  the seed). Verified on a wiped profile: iframe lands on 'You have a working connection
+  and server auth is disabled', zero clicks. Full docker run command in the script's
+  docstring.

@@ -21,3 +21,6 @@ neo4j_*.png
 # third-party book companion code (kg-rag, KG+LLMs-in-action, gpml clone);
 # re-download from upstream rather than vendoring -- nested .git + corpora inside
 docs/
+
+# patched neo4j browser zip (regenerate: python patch_neo4j_browser.py); mounted by the container
+.neo4j-web/
