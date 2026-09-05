@@ -14,7 +14,7 @@ Nothing here re-partitions anything. Communities are the run's own stored cids.
 
 Run (PowerShell, from the repo root; needs the `chunkgraph-pg` container,
 which normally stays up -- `docker compose up -d` only if it is not):
-    $env:CHUNKGRAPH_MODEL_DIR = 'C:/Users/user/models/m2v-minilm-l6-256'   # dense signal
+    $env:CHUNKGRAPH_MODEL_DIR = 'C:/Users/user/models/m2v-minilm-l6-256'   # overrides the default ~/models/m2v-minilm-l6-256
     $env:OPENROUTER_API_KEY   = '...'                                       # Reason / Judge
     streamlit run walker_app.py --server.port 8501
 Then open http://localhost:8501. Ctrl+C in that terminal stops it.
@@ -30,6 +30,7 @@ import networkx as nx
 import plotly.graph_objects as go
 import streamlit as st
 
+import config
 import graph_tools as gt
 import interpret
 import pg_store
@@ -43,7 +44,7 @@ PALETTE = ["#4C78A8", "#F58518", "#54A24B", "#E45756", "#72B7B2", "#EECA3B",
            "#BCBD22", "#17BECF"]
 PROV_COLOR = {"both": "#E45756", "dense": "#4C78A8", "sparse": "#9E9E9E"}
 LABEL_FILE = Path(os.environ.get("LABEL_OUT", "community_labels.json"))
-DEFAULT_MODEL_DIR = os.path.expanduser("~/models/m2v-minilm-l6-256")   # used when CHUNKGRAPH_MODEL_DIR is unset
+DEFAULT_MODEL_DIR = config.MODEL_DIR   # used when CHUNKGRAPH_MODEL_DIR is unset
 
 
 def _clip(text: str, n: int) -> str:
@@ -130,7 +131,7 @@ labels = load_labels(str(run.run_id))
 st.sidebar.caption(f"{run.n_chunks} chunks · {run.n_edges} edges · "
                    f"{run.n_communities} communities")
 
-embed = get_embed(os.environ.get("CHUNKGRAPH_MODEL_DIR") or DEFAULT_MODEL_DIR)
+embed = get_embed(config.MODEL_DIR)
 if "__stale_run__" in labels:
     labels = {}                      # written for another run; cid is run-local
 
@@ -969,6 +970,5 @@ with tab_map:
                "http://localhost:8501 -- the stock image sends DENY).")
     import streamlit.components.v1 as _components
     _components.iframe(
-        "http://localhost:7474/browser/?preselectAuthMethod=NO_AUTH"
-        "&connectURL=neo4j%3A%2F%2Flocalhost%3A7687",
+        f"{config.NEO4J_BROWSER}&connectURL=neo4j%3A%2F%2Flocalhost%3A7687",
         height=760, scrolling=True)

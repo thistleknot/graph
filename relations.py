@@ -88,8 +88,9 @@ from psycopg.rows import dict_row
 import entities as ent
 import graph_tools as gt
 from stoplist import _STOP
+import config
 
-DSN = os.environ.get("CHUNKGRAPH_DSN", "postgresql://graph:graph@localhost:5433/graph")
+DSN = config.DSN
 MAX_CONNECTOR_TOKENS = 4   # E11: connector bound AND pair-distance cap, one knob
 MIN_REL_SUPPORT = 3        # E13
 G2_GATE = 10.83            # E13: W17's gate, one significance ruler

@@ -10,7 +10,9 @@ Usage:
 Set CHUNKGRAPH_MODEL_DIR to a local sentence-transformer directory to exercise
 the DENSE arm as well; unset, the run stays sparse-only per R5. The dense arm is
 what makes edge provenance discriminating -- without it every edge is `sparse`
-and the provenance column carries no information.
+and the provenance column carries no information. The walker's default model
+dir is ~/models/m2v-minilm-l6-256 (config.MODEL_DIR); this script deliberately
+does NOT fall back to it -- absent env here means sparse-only, not a default.
 
 Swap `load_docs()` for your own corpus; everything downstream is unchanged.
 """

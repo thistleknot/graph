@@ -340,7 +340,10 @@ def test_mirror_is_the_real_neo4j_browser_under_map():
     assert "tab_mirror" not in src                      # no third tab
     mirror = src.split("MIRROR (T26)")[1]
     assert "components.iframe" in mirror
-    assert "http://localhost:7474/browser/" in mirror
+    # T32: the browser URL comes from config (single source), not a literal
+    import config as _cfg
+    assert "config.NEO4J_BROWSER" in mirror
+    assert _cfg.NEO4J_BROWSER.startswith("http://localhost:7474/browser/")
     assert 'selectbox("Walk"' not in mirror             # one input field
     assert "st.radio" not in mirror
     # partitions live at the TOP of the Map tab now, before the community map

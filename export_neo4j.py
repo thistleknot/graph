@@ -102,12 +102,13 @@ import urllib.request
 from pathlib import Path
 
 import graph_tools as gt
+import config
 
 MIN_TF = 1          # emit a CONTAINS edge at this term frequency or above
 
-NEO4J_HTTP = "http://localhost:7474"        # docker compose maps the HTTP endpoint
-NEO4J_DB = "neo4j"
-NEO4J_AUTH = ("neo4j", "graphgraph")
+NEO4J_HTTP = config.NEO4J_HTTP               # docker compose maps the HTTP endpoint
+NEO4J_DB = config.NEO4J_DB
+NEO4J_AUTH = config.NEO4J_AUTH
 TX_BATCH = 500                              # rows per UNWIND statement
 
 
@@ -254,17 +255,16 @@ def export(conn, run, out: Path, edges: str = "both", min_tf: int = MIN_TF) -> d
             "label": run.label, "run_id": str(run.run_id)}
 
 
-def _tx(statements: list, url: str = NEO4J_HTTP, auth: tuple = NEO4J_AUTH,
+def _tx(statements: list, url: str = NEO4J_HTTP, auth: tuple | None = NEO4J_AUTH,
         db: str = NEO4J_DB, timeout: float = 30.0) -> list:
     """Require: a reachable neo4j HTTP tx endpoint.
     Guarantee: every statement committed, or an exception. Returns results."""
     body = json.dumps({"statements": statements}).encode("utf-8")
-    token = base64.b64encode(f"{auth[0]}:{auth[1]}".encode("utf-8")).decode("ascii")
-    req = urllib.request.Request(
-        f"{url}/db/{db}/tx/commit", data=body,
-        headers={"Content-Type": "application/json",
-                 "Accept": "application/json",
-                 "Authorization": f"Basic {token}"})
+    headers = {"Content-Type": "application/json", "Accept": "application/json"}
+    if auth:
+        token = base64.b64encode(f"{auth[0]}:{auth[1]}".encode("utf-8")).decode("ascii")
+        headers["Authorization"] = f"Basic {token}"
+    req = urllib.request.Request(f"{url}/db/{db}/tx/commit", data=body, headers=headers)
     with urllib.request.urlopen(req, timeout=timeout) as r:
         payload = json.load(r)
     errors = payload.get("errors") or []

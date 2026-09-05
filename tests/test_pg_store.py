@@ -263,7 +263,12 @@ def test_inner_product_ranks_self_first(db, first_run):
 
 
 def test_resave_supersedes_without_deleting(db, first_run):
-    second = pg_store.save(FakeGraph(), LABEL, dsn=db)
+    # T32/T33: inject a deterministic supersede timestamp comfortably ahead of
+    # first_run's edge valid_from -- kills the host-vs-container clock-skew
+    # flake (edge_interval CHECK tripped when docker's now() lagged the host).
+    from datetime import datetime, timedelta, timezone
+    second = pg_store.save(FakeGraph(), LABEL, dsn=db,
+                           now=datetime.now(timezone.utc) + timedelta(seconds=5))
     assert second != first_run
 
     with psycopg.connect(db) as conn, conn.cursor() as cur:

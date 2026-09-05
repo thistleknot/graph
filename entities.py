@@ -116,9 +116,9 @@ from psycopg.rows import dict_row
 from psycopg.rows import tuple_row as _tuple_row
 
 import graph_tools as gt
+import config
 
-DSN = os.environ.get("CHUNKGRAPH_DSN",
-                     "postgresql://graph:graph@localhost:5433/graph")
+DSN = config.DSN
 MIN_JOINT_CHUNKS = 5           # E4
 ENTITY_TYPE = "term_v0"        # E1
 K1, B = 1.5, 0.75              # E5: graph_tools.search's constants, one ruler

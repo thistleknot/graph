@@ -162,8 +162,9 @@ from dataclasses import dataclass, field
 import psycopg
 from psycopg.rows import dict_row
 
-DSN = os.environ.get("CHUNKGRAPH_DSN",
-                     "postgresql://graph:graph@localhost:5433/graph")
+import config
+
+DSN = config.DSN
 
 from stoplist import _STOP                   # R18: one stoplist, no heavy imports
 
@@ -715,8 +716,7 @@ def query_terms(conn, run: RunHandle, cids: list[int], query: str,
 
 _DF_CACHE: dict = {}
 _CT_CACHE: dict = {}
-CACHE_DIR = os.environ.get("CHUNKGRAPH_CACHE",
-                           os.path.join(os.path.expanduser("~"), ".cache", "chunkgraph"))
+CACHE_DIR = config.CACHE_DIR
 
 
 def _disk(key: str):

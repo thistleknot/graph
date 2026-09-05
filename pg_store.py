@@ -20,8 +20,9 @@ import numpy as np
 import psycopg
 from psycopg.types.json import Jsonb
 
-DSN = os.environ.get("CHUNKGRAPH_DSN",
-                     "postgresql://graph:graph@localhost:5433/graph")
+import config
+
+DSN = config.DSN
 
 # Params worth reproducing a run from; mirrors ChunkGraph.__init__.
 _PARAM_ATTRS = ("k_sigma", "M", "H", "K", "LAM", "EPS", "phrases", "chunk_params")   # R17
@@ -44,8 +45,11 @@ def _params(cg) -> dict:
     return p
 
 
-def save(cg, label: str, dsn: str = DSN, min_size: int = 5) -> str:
-    """Returns the new run_id. Idempotent per label: re-running supersedes."""
+def save(cg, label: str, dsn: str = DSN, min_size: int = 5, now=None) -> str:
+    """Returns the new run_id. Idempotent per label: re-running supersedes.
+
+    now: a datetime for the supersede clock; None uses the server's now()
+    (deterministic-clock injection, design 6.21(d); the resave test uses it in T33)."""
     if not hasattr(cg, "chunks"):
         raise ValueError("ChunkGraph has not been fit()")
 
@@ -59,7 +63,8 @@ def save(cg, label: str, dsn: str = DSN, min_size: int = 5) -> str:
             # Retire the incumbent FIRST: graph_run_live_label allows only one
             # live run per label, so inserting before superseding would trip
             # the unique index. Same transaction, so this is atomic.
-            cur.execute("SELECT supersede_label(%s, NULL, now())", (label,))
+            cur.execute("SELECT supersede_label(%s, NULL, COALESCE(%s::timestamptz, now()))",
+                        (label, now))
 
             cur.execute(
                 """INSERT INTO graph_run
@@ -139,7 +144,8 @@ def save(cg, label: str, dsn: str = DSN, min_size: int = 5) -> str:
                     for i in range(E.shape[0]):
                         cp.write_row((run_id, i, _vec_literal(E[i])))
 
-            cur.execute("SELECT supersede_label(%s, %s, now())", (label, run_id))
+            cur.execute("SELECT supersede_label(%s, %s, COALESCE(%s::timestamptz, now()))",
+                        (label, run_id, now))
         conn.commit()
 
     if embed_dim is not None:

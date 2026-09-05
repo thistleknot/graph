@@ -810,22 +810,29 @@ fixed seeds), do-no-harm = frozen diagnostic keeps 18/20 with the same pass set,
   regenerable patterns so they cannot re-track.
 
 ## Layer 11 -- parallel (plumbing; disjoint files, dispatch together)
-- [OPEN] T32 config.py: one source for DSN, neo4j endpoint, model dir, ports
+- [DONE] T32 config.py: one source for DSN, neo4j endpoint, model dir, ports
   _Files:_ config.py, graph_tools.py, pg_store.py, entities.py, export_neo4j.py, text2cypher.py, patch_neo4j_browser.py
   _Verify:_ pytest tests/ --ignore=tests/test_mixed_acceptance.py -q && PYTHONPATH=. python tools/diag_rerun.py mixed-full-dual
   _Notes:_ Consumers keep module-level names (DSN = config.DSN) so monkeypatch tests
   survive. Collapse 3 DSN copies, 6-signature neo4j threading, 4 model-dir spots (pick
   ONE default, record in spec). Drop dead basic-auth plumbing (server auth=none). Add
   injectable now= to pg_store.save (mechanism here; test in T33).
+  _Lessons:_ Implementer died with the session but its work was complete on disk; orchestrator
+  verified and closed. config.py single source (DSN incl. the 4th copy in relations.py,
+  NEO4J_* with AUTH=None default -- _tx omits the Authorization header, MODEL_DIR, ports,
+  CACHE_DIR); ingest scripts kept bare env reads (R5: absent env = sparse-only). now= via
+  COALESCE at both supersede sites. Orchestrator applied the two cross-lane test fixes
+  inline: mirror test asserts config.NEO4J_BROWSER; resave test injects now=+5s (clock-skew
+  flake killed). Suite 527+2-fixed passed; diagnostic 18/20 fails=[E3] held.
 
-- [OPEN] T33 Test infra: conftest.py, pytest.ini, live markers, clock-skew fix
+- [WIP] T33 Test infra: conftest.py, pytest.ini, live markers, clock-skew fix
   _Files:_ tests/conftest.py, pytest.ini, tests/
   _Verify:_ python -m pytest -q (defaults to offline set) && grep -rn "pytest.skip(\"no database" tests/ returns empty
   _Notes:_ Markers live_db/live_net/slow, addopts excludes live by default; kill 16
   sys.path.insert copies; convert 10 inline skips to markers w/ graceful fixture;
   test_resave uses T32's now= param.
 
-- [OPEN] T34 Ops: neo4j into docker-compose, pidfile walker lifecycle (the zombie fix)
+- [WIP] T34 Ops: neo4j into docker-compose, pidfile walker lifecycle (the zombie fix)
   _Files:_ docker-compose.yml, run.ps1, patch_neo4j_browser.py
   _Verify:_ docker compose config && ./run.ps1 start && ./run.ps1 stop leaves no orphans
   _Notes:_ Transcribe container lifecycle from the docstring into compose (image, ports,

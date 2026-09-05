@@ -14,7 +14,10 @@ Usage:
                                      [--wiki N] [--wiki-stride S]
 
 Set CHUNKGRAPH_MODEL_DIR to a local sentence-transformer directory to exercise
-the DENSE arm as well; unset, the run stays sparse-only per R5.
+the DENSE arm as well; unset, the run stays sparse-only per R5. The walker's
+default model dir is ~/models/m2v-minilm-l6-256 (config.MODEL_DIR); this
+script deliberately does NOT fall back to it -- absent env here means
+sparse-only, not a default.
 
 Spec: .spec/specs/graph-explorer/design.md sec 6.14 R20, sec 6.15 R22 - Task: playbook.md T2, T8, T6
 """
