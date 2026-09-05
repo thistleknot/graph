@@ -24,3 +24,12 @@ docs/
 
 # patched neo4j browser zip (regenerate: python patch_neo4j_browser.py); mounted by the container
 .neo4j-web/
+
+# regenerable render/export outputs (see graph3d.py, render_graph.py, label_communities.py)
+graph3d.html
+irl_tank.html
+suite*.png
+graph_brown*.png
+community_labels.json
+trigram.zip
+*.log

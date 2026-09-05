@@ -785,7 +785,7 @@ fixed seeds), do-no-harm = frozen diagnostic keeps 18/20 with the same pass set,
   + is_content refinements. 9/9 relations tests; diagnostic 18/20 held; suite 528 passed.
 
 ## Layer 10 -- sequential (refactor spec + hygiene; plan ibid.)
-- [OPEN] T30 Spec amendments batch: evidence contract, config, walker split, test markers
+- [DONE] T30 Spec amendments batch: evidence contract, config, walker split, test markers
   _Files:_ .spec/specs/graph-explorer/design.md
   _Verify:_ grep -c "evidence.assemble\|config indirection\|live_db" .spec/specs/graph-explorer/design.md
   _Notes:_ Four amendments: evidence.assemble() byte-identical-digest contract; config.py
@@ -793,7 +793,7 @@ fixed seeds), do-no-harm = frozen diagnostic keeps 18/20 with the same pass set,
   walker UI-only split guard (importable without SystemExit/DB); pytest marker taxonomy
   live_db/live_net/slow + injectable clock rule for pg_store.save.
 
-- [OPEN] T31 Hygiene: untrack regenerables, promote diag gate, purge scratch, token
+- [DONE] T31 Hygiene: untrack regenerables, promote diag gate, purge scratch, token
   _Files:_ .gitignore, tools/diag_rerun.py, playbook.md
   _Verify:_ git ls-files | grep -E "[.](png|html|zip)$" returns empty && PYTHONPATH=. python tools/diag_rerun.py mixed-full-dual
   _Notes:_ Sequential -- moves the do-no-harm gate itself. git rm --cached ~17MB
@@ -801,6 +801,13 @@ fixed seeds), do-no-harm = frozen diagnostic keeps 18/20 with the same pass set,
   community_labels.json); git mv .tmp/diag_rerun.py tools/ + re-prove 18/20 fails=[E3];
   purge .tmp/neo4j_export (355MB) + stale one-offs; rotate/remove .env NVIDIA token;
   sweep root png/yml litter.
+  _Lessons:_ Gate moved to tools/diag_rerun.py and re-proven (18/20 fails=[E3]) before
+  anything else. ~17MB untracked (0 tracked binaries remain); .tmp 429MB -> 4MB
+  (neo4j_export purged; stale one-offs deleted per plan -- read_partitions/neo4j_backfill/
+  reason_digest_test go; evidence.assemble makes them trivial to rebuild). .env moved to
+  ~/.env.graph.bak OUTSIDE the repo -- OPERATOR ACTION: rotate the NVIDIA token at the
+  provider; the file sat in plaintext in the working tree. gitignore covers the
+  regenerable patterns so they cannot re-track.
 
 ## Layer 11 -- parallel (plumbing; disjoint files, dispatch together)
 - [OPEN] T32 config.py: one source for DSN, neo4j endpoint, model dir, ports

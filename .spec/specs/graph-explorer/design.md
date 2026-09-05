@@ -2190,3 +2190,43 @@ per-source first. Known v0 ranking caveat: raw LLR favors high-frequency
 collocations ("later that year"); npmi rides on every row so semantic ranking
 is a column choice (E13), and template-level filtering (e.g. GEN-only views)
 already isolates the possessive/genitive class the layer was built for.
+
+### 6.21 Refactor contracts: evidence assembly, config, walker split, test taxonomy (T30, 2026-09-05)
+
+Four contracts governing the refactor campaign (plan:
+C:/Users/user/.claude/plans/luminous-roaming-dongarra.md). Spec lands first;
+each contract is the acceptance criterion for its implementing task.
+
+(a) evidence.assemble() -- ONE assembly for walker, diagnostics, backfill.
+    The ~40-line evidence-assembly block (communities_touched -> kw/concept ->
+    cid_of/src_of/src_counts -> subgraph_embeddings -> dendrite planes ->
+    salient -> resolver -> pathways -> render_digest inputs) exists 5x today.
+    evidence.py SHALL own it as a pure function of (conn, run, bundle, embed);
+    walker caching wraps it, never re-implements it. ACCEPTANCE: render_digest
+    output byte-identical across the frozen 20-row diagnostic before vs after
+    the extraction -- the pass-count alone can mask reordering, so the gate is
+    bytes, not verdicts. Layout-only code (spring positions) stays in the UI.
+
+(b) config.py -- one source for environment facts (config indirection). DSN (3 copies today),
+    neo4j endpoint/db (threaded through 6 signatures), model dir (4 sites,
+    2 divergent defaults -- the winner is ~/models/m2v-minilm-l6-256 expanded
+    per-user, matching walker_app's DEFAULT_MODEL_DIR), ports, cache dir.
+    Consuming modules SHALL keep module-level names (DSN = config.DSN) so
+    existing monkeypatch tests keep their patch points. The neo4j BASIC-AUTH
+    plumbing is DEPRECATED: the local container runs NEO4J_AUTH=none; _tx
+    SHALL omit the Authorization header when auth is None (default), and the
+    hardcoded credential pair leaves the tree.
+
+(c) walker split -- walker_app.py becomes UI wiring only. Extracted logic
+    (digest/resolver/mirror block) SHALL be importable with no DB, no
+    Streamlit session, and no SystemExit; mirror writes live beside
+    assemble() in evidence.py; the mirror catch narrows from Exception to
+    (URLError, RuntimeError, OSError) so programming errors surface instead
+    of reading as an unreachable server.
+
+(d) test taxonomy -- markers live_db / live_net / slow registered in
+    pytest.ini; default addopts excludes live; the 10 inline
+    pytest.skip("no database") sites become markers with a graceful fixture;
+    conftest.py kills the 16 sys.path.insert copies. pg_store.save gains an
+    injectable now= (deterministic clock) so the resave supersede test stops
+    racing the container clock (measured flake: host-vs-docker drift).
