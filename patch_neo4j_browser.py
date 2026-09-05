@@ -10,19 +10,11 @@ iframe params connect with zero clicks (server runs NEO4J_AUTH=none, local).
 
 Usage:
     python patch_neo4j_browser.py            # reads zip from the container
-Then recreate the container:
+Then recreate the container (T34: the full recipe now lives in
+docker-compose.yml's neo4j service -- image, ports, chunkgraph-neo4jdata
+volume, NEO4J_AUTH/CSP env, and this zip's bind-mount):
     docker stop chunkgraph-neo4j; docker rm chunkgraph-neo4j
-    docker run -d --name chunkgraph-neo4j -p 7474:7474 -p 7687:7687 \
-      -v chunkgraph-neo4jdata:/data \
-      -v "<repo>/.neo4j-web/<zipname>:/var/lib/neo4j/web/<zipname>" \
-      -e NEO4J_AUTH=none \
-      -e "NEO4J_dbms_security_http__static__content__security__policy__header=\
-default-src 'self'; script-src 'self' 'unsafe-inline' cdn.segment.com canny.io; \
-img-src 'self' guides.neo4j.com data:; style-src 'self' fonts.googleapis.com \
-'unsafe-inline'; font-src 'self' fonts.gstatic.com; base-uri 'none'; \
-object-src 'none'; frame-ancestors 'self' http://localhost:8501; \
-connect-src 'self' api.canny.io api.segment.io ws: wss: http: https:" \
-      neo4j:latest
+    docker compose up -d neo4j
 """
 import os
 import subprocess

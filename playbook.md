@@ -832,12 +832,33 @@ fixed seeds), do-no-harm = frozen diagnostic keeps 18/20 with the same pass set,
   sys.path.insert copies; convert 10 inline skips to markers w/ graceful fixture;
   test_resave uses T32's now= param.
 
-- [WIP] T34 Ops: neo4j into docker-compose, pidfile walker lifecycle (the zombie fix)
+- [DONE] T34 Ops: neo4j into docker-compose, pidfile walker lifecycle (the zombie fix)
   _Files:_ docker-compose.yml, run.ps1, patch_neo4j_browser.py
   _Verify:_ docker compose config && ./run.ps1 start && ./run.ps1 stop leaves no orphans
   _Notes:_ Transcribe container lifecycle from the docstring into compose (image, ports,
   chunkgraph-neo4jdata volume, NEO4J_AUTH=none, CSP env, .neo4j-web bind-mount). run.ps1
   start/stop/status with .tmp/walker.pid; stop kills recorded PID tree only. Makefile CUT.
+  _Lessons:_ `docker inspect chunkgraph-neo4j` gave the exact live actuals (image
+  neo4j:latest, NEO4J_AUTH=none, full CSP header, binds chunkgraph-neo4jdata:/data +
+  .neo4j-web zip); transcribed verbatim into docker-compose.yml's new `neo4j` service,
+  volume declared `external: true` so compose attaches the SAME volume rather than
+  minting `graph_chunkgraph-neo4jdata`. `docker compose config` confirms this: output
+  volume entry is `chunkgraph-neo4jdata: {name: chunkgraph-neo4jdata, external: true}`
+  with no prefix. Did not touch the running container -- cutover documented as a
+  comment (`docker stop/rm` then `docker compose up -d neo4j`), consistent with the
+  scope fence (no restart of the live container). run.ps1 uses Get-CimInstance
+  Win32_Process ParentProcessId (BFS) to enumerate the streamlit process tree before
+  Stop-Process, since streamlit spawns children that a bare `Stop-Process` on the
+  root pid would orphan. Live cycle (no walker was running beforehand):
+  `./run.ps1 start` -> "walker started, pid 6416, health ok at
+  http://localhost:8501/_stcore/health"; `./run.ps1 status` -> "walker: running (pid
+  6416), health=True"; `./run.ps1 stop` -> "stopped walker tree (pids: 6416, 38176,
+  20204)"; post-stop, `Get-Process -Id 6416,38176,20204` returned nothing and
+  `.tmp/walker.pid` was removed -- zero orphans confirmed. patch_neo4j_browser.py
+  docstring now points at `docker compose up -d neo4j` instead of the inline
+  `docker run` recipe (mechanical docstring edit, no behavior change, tests skipped
+  per scope fence -- tests/ owned by another agent). Makefile: none existed, so
+  "CUT" is a no-op confirmation, not a removal.
 
 ## Layer 12 -- sequential (behavior-touching core)
 - [OPEN] T35 evidence.py::assemble() -- collapse the 5x evidence-assembly duplication

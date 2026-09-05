@@ -39,5 +39,36 @@ services:
       retries: 20
     restart: unless-stopped
 
+  # Transcribed from the live `docker run` actuals (T26/T34 -- zero-click neo4j
+  # console). This does NOT touch the running container: the existing
+  # chunkgraph-neo4j was started by hand and compose does not adopt it. To cut
+  # over:
+  #   docker stop chunkgraph-neo4j; docker rm chunkgraph-neo4j
+  #   docker compose up -d neo4j
+  # The data volume is declared `external: true` below so compose attaches to
+  # the SAME volume the hand-run container already wrote to, rather than
+  # minting a prefixed one and starting from empty.
+  neo4j:
+    image: neo4j:latest
+    container_name: chunkgraph-neo4j
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    environment:
+      NEO4J_AUTH: none
+      NEO4J_dbms_security_http__static__content__security__policy__header: >-
+        default-src 'self'; script-src 'self' 'unsafe-inline' cdn.segment.com canny.io;
+        img-src 'self' guides.neo4j.com data:; style-src 'self' fonts.googleapis.com
+        'unsafe-inline'; font-src 'self' fonts.gstatic.com; base-uri 'none';
+        object-src 'none'; frame-ancestors 'self' http://localhost:8501;
+        connect-src 'self' api.canny.io api.segment.io ws: wss: http: https:
+    volumes:
+      - chunkgraph-neo4jdata:/data
+      # patch_neo4j_browser.py regenerates this zip; see its docstring.
+      - ./.neo4j-web/neo4j-browser-2026.04.18+0.zip:/var/lib/neo4j/web/neo4j-browser-2026.04.18+0.zip
+    restart: unless-stopped
+
 volumes:
   graphdata:
+  chunkgraph-neo4jdata:
+    external: true
