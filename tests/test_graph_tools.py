@@ -1246,3 +1246,21 @@ def test_search_expand_aliases_with_planted_map_surfaces_more_evidence(conn, run
 def test_search_expand_aliases_default_is_false():
     import inspect
     assert inspect.signature(gt.search).parameters["expand_aliases"].default is False
+
+
+def test_shim_reexports_the_whole_public_surface():
+    """T37: the split is invisible to callers. Every name a caller uses must
+    resolve on graph_tools, and be the SAME object the sibling defines."""
+    import types
+    import gt_sql, gt_terms, gt_metrics
+    for mod in (gt_sql, gt_terms, gt_metrics):
+        for name in mod.__dict__:
+            if name.startswith("__") or name == "_gt":
+                continue
+            obj = getattr(mod, name)
+            if isinstance(obj, types.ModuleType):
+                continue                      # imported module (math, os, re, psycopg, config, np)
+            if getattr(obj, "__module__", mod.__name__) != mod.__name__:
+                continue                      # imported helper (dataclass, stoplist._STOP, ...)
+            assert getattr(gt, name, None) is obj, f"{mod.__name__}.{name} not re-exported"
+    assert gt.search is gt_sql.search and gt.llr is gt_terms.llr and gt.ppr is gt_metrics.ppr
