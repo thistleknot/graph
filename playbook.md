@@ -891,7 +891,7 @@ fixed seeds), do-no-harm = frozen diagnostic keeps 18/20 with the same pass set,
   later task, not silently folded in. Full suite: 548 passed, 6 skipped (528+20
   new evidence tests, 6 skips unchanged from baseline).
 
-- [WIP] T36 walker split: walker_core.py UI-free, mirror writes to evidence.py
+- [DONE] T36 walker split: walker_core.py UI-free, mirror writes to evidence.py
   _Files:_ walker_app.py, walker_core.py, evidence.py, tests/test_walker_core.py, tests/test_walker_render.py, tests/test_evidence.py
   _Verify:_ python -c "import walker_core" exits 0 without DB && diagnostic 18/20 && full suite
   _Notes:_ Depends T35 (seam) + T32 (config). Mirror except narrows to
@@ -903,7 +903,7 @@ fixed seeds), do-no-harm = frozen diagnostic keeps 18/20 with the same pass set,
   write"). No `.specs/file-manifest.md` found in this repo tree -- proceeded
   without adding manifest rows.
 
-- [WIP] T37 graph_tools split behind a re-export shim (operator: KEEP)
+- [DONE] T37 graph_tools split behind a re-export shim (operator: KEEP)
   _Files:_ graph_tools.py, gt_sql.py, gt_metrics.py, gt_terms.py, tests/test_graph_tools.py
   _Verify:_ python -c "import graph_tools as gt; gt.pathways" && diagnostic 18/20 && full suite
   _Notes:_ 3 new files at the Article II limit (justified: zero shared imports across
