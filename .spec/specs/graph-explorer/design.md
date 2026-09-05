@@ -2088,3 +2088,105 @@ does something real where the alias table exists; the default stays False becaus
 20-row diagnostic corpus is not that run.
 
 Campaign do-no-harm re-run (T23, 2026-09-03): frozen diagnostic 18/20 on mixed-full-dual, pass set unchanged (FAIL=[E3], KNOWN-FAIL=[A2]), B 48-52% intact.
+
+### 6.20 Relations v0: unsupervised relation detection over sentence windows (T27, 2026-09-05)
+
+The gap this closes: entity_edges (E5) is symmetric, typeless, CHUNK-window
+co-occurrence -- there is no directional or typed association anywhere in the
+store, and gt.tokenize destroys the very tokens a relation needs (possessive
+'s clitics, closed-class connectors, case, order). The raw material exists:
+node.body stores every chunk verbatim, so this layer runs over EXISTING runs
+with no re-ingest. Approach per the operator's brief: Dunning + co-occurrence
+around connector phrases, fully unsupervised, no pretrained models, no LLM --
+the relation label is the corpus's own connector string, not an ontology.
+
+Module: relations.py (new; justification: entities.py's E3 seals its builder
+as read-only-against-attrs, and gt.tokenize is W21-frozen -- both firewalls
+are structural only if relations lives beside them, not inside). Table:
+
+    relations(run_id uuid CASCADE, src int, dst int, template text,
+              connector text, n int, llr real, npmi real, example_ord int,
+              PRIMARY KEY (run_id, src, dst, template),
+              FKs (run_id, src)/(run_id, dst) -> entities)
+
+DDL idempotent in-module (entities pattern); build = DELETE-by-run + COPY (E3
+pattern). Constants: MAX_CONNECTOR_TOKENS=4 (relation phrases fit; doubles as
+the pair-distance cap -- one knob), MIN_REL_SUPPORT=3 (below 3 the 2x2 is
+rare-event dominated; lower than E4's 5 because the G2 gate is a second
+independent floor chunk edges never had), G2_GATE=10.83 (chi^2 p<.001,
+byte-identical to W17's gate -- one significance ruler), MIN_SENT_TOKENS=3
+(fragment floor catching abbreviation splits the guard list misses).
+
+Guards (ASCII bodies pasted into relations.py's docstring unchanged -- spec
+text and docstring are the same bytes, the 6.15 convention):
+
+E10 Relations v0 SHALL be built from node.body verbatim -- the one store that
+    preserves case, punctuation, and order -- via a per-source deterministic
+    sentence splitter (line-per-sentence for brown/quotes; regex boundary scan
+    with an abbreviation guard list, a MIN_SENT_TOKENS fragment floor, and
+    wikitext @-@/@,@/@.@ normalization for wiki and unlabelled sources) and a
+    NEW order-, case-, and clitic-preserving tokenizer rel_tokenize.
+    gt.tokenize and chunkgraph._tok SHALL NOT change: W21 depends on the query
+    tokenizer and the entity vocabulary being the same vocabulary. Relations
+    SHALL be a NEW run-scoped table; the E1 tables' shape survives untouched --
+    no ALTER.
+
+E11 Candidates SHALL be ordered pairs of entity occurrences within ONE
+    sentence whose intervening surface span is at most MAX_CONNECTOR_TOKENS
+    (= 4) tokens -- one constant, serving as both connector bound and
+    pair-distance cap. Entity occurrences SHALL be anchored by greedy
+    longest-match of the run's stored tf vocabulary over the sentence's
+    gt-eligible projection (losslessly reconstructing fit-time Phraser bigram
+    merges, which merged over the stopworded stream), and SHALL aggregate over
+    canonical_id, falling back to entity_id where resolution has not run --
+    never an error.
+
+E12 X's Y and Y of X SHALL normalize to ONE direction-normalized genitive row
+    (src=X, dst=Y, template='GEN'). For every other template, direction SHALL
+    be surface order: src precedes dst. The relation label is the corpus's own
+    connector string -- no ontology, no label inventory. The template tier
+    collapses non-closed-class connector tokens to 'w' (e.g. 'was w in'); the
+    exact surface connector rides beside it (most frequent form, ties by
+    ascending string -- deterministic).
+
+E13 A relations row SHALL be written only where BOTH floors pass: n >=
+    MIN_REL_SUPPORT (= 3) supporting sentences AND Dunning G2 >= 10.83
+    (gt.llr, W17's gate, one ruler) on the pair x template 2x2 over the run's
+    candidate events. Sentence-level NPMI (via entities.npmi_ppmi, sentence
+    dfs, N = run sentence count) SHALL ride on the SAME row, so ranking is a
+    column choice, never a rebuild (E5's law restated).
+
+E14 The builder SHALL print per-stage wall-clock timings (fetch / split /
+    tokenize+match / candidates / score / write) on EVERY build, and NO
+    cardinality bound (an E9-style cap) SHALL be added without a measured
+    stage exceeding Article VII's budget on a live run. E9's scar cuts both
+    ways: chunk windows needed the bound only after 2.47e9 measured slots;
+    sentence windows (~10-20 content tokens, gap-capped pairs) are expected
+    orders smaller, and bounding an unmeasured pass is as much a sin as not
+    bounding a measured one.
+
+Deferred, named [LATER]: neo4j RELATES {template, connector, llr} mirror edge;
+cookbook evidence query; digest relations section. v0 surfaces via the CLI
+(top-15 by llr with resolved names) only.
+
+Reconciliation (T29, 2026-09-05, spec follows shipped -- Article IX). Two E10/E12
+clauses shipped MORE unsupervised than drafted, per the operator's brief: (a) the
+abbreviation "guard list" is not a hand-typed set but derive_abbreviations(), a
+census over the run's own text (a type is an abbreviation where it never appears
+bare -- existence, not a tuned ratio; single-letter and internal-dot forms fall
+out structurally); (b) there is no CONNECTOR_CLOSED word set -- closed-class is
+defined as NOT gt-eligible via one is_content predicate (alpha, len>2, not in
+the R18 stoplist), used identically for the vocabulary projection, the template
+'w' collapse, and the genitive test ("starts with of, no content token").
+
+MEASURED (first live build, mixed-full-dual): sentences=918,707,
+candidate events=22,707,085, distinct pairs=14,547,626, relations rows=328,825.
+Per-stage: fetch 3.5s / split 76.3s / tokenize+match 285.6s / candidates 138.5s
+/ score 197.5s / write 11.0s -- total ~11.9 min. No stage exceeds Article VII's
+per-test bound; the total slightly exceeds 10 min but this is a per-run batch
+build (ingest-class, not test-class), run once per run label. E14 disposition:
+NO bound taken; if a future corpus pushes tokenize+match past budget, measure
+per-source first. Known v0 ranking caveat: raw LLR favors high-frequency
+collocations ("later that year"); npmi rides on every row so semantic ranking
+is a column choice (E13), and template-level filtering (e.g. GEN-only views)
+already isolates the possessive/genitive class the layer was built for.
