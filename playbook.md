@@ -892,10 +892,16 @@ fixed seeds), do-no-harm = frozen diagnostic keeps 18/20 with the same pass set,
   new evidence tests, 6 skips unchanged from baseline).
 
 - [WIP] T36 walker split: walker_core.py UI-free, mirror writes to evidence.py
-  _Files:_ walker_app.py, walker_core.py, evidence.py, tests/test_walker_core.py, tests/test_walker_render.py
+  _Files:_ walker_app.py, walker_core.py, evidence.py, tests/test_walker_core.py, tests/test_walker_render.py, tests/test_evidence.py
   _Verify:_ python -c "import walker_core" exits 0 without DB && diagnostic 18/20 && full suite
   _Notes:_ Depends T35 (seam) + T32 (config). Mirror except narrows to
   (URLError, RuntimeError, OSError). test_walker_render drops the SystemExit hack.
+  Amended _Files: to add tests/test_evidence.py -- the task adds three mirror
+  functions to evidence.py and every existing evidence test lives in that file
+  (per subplan .playbook/T36.subplan.md 0, and CLAUDE.md "a file that needs
+  changing but belongs to no task means the spec is wrong: amend the spec, then
+  write"). No `.specs/file-manifest.md` found in this repo tree -- proceeded
+  without adding manifest rows.
 
 - [WIP] T37 graph_tools split behind a re-export shim (operator: KEEP)
   _Files:_ graph_tools.py, gt_sql.py, gt_metrics.py, gt_terms.py, tests/test_graph_tools.py
@@ -903,3 +909,30 @@ fixed seeds), do-no-harm = frozen diagnostic keeps 18/20 with the same pass set,
   _Notes:_ 3 new files at the Article II limit (justified: zero shared imports across
   concerns; 2-way split leaves a >900-LOC module). Shim keeps every caller untouched --
   may run parallel to T36 (disjoint). Hoist the 5 function-level numpy imports.
+  _Lessons:_ Split landed verbatim (gt_sql 27 names, gt_terms 19, gt_metrics 19), each
+  sibling resolving cross-module calls through a `_gt()` late-binding helper (`import
+  graph_tools; return graph_tools`, called every time -- never a module-level `import
+  graph_tools as _gt`, which would re-enter the half-built shim on first import).
+  This is what keeps `monkeypatch.setattr(gt, "alias_map", ...)` (test_graph_tools.py:1230,
+  test_sampler.py:860) and `monkeypatch.setattr(gt, "CACHE_DIR", ...)`
+  (test_graph_tools.py:652) visible to the sibling that actually calls them.
+  numpy hoisted to gt_terms.py's top (5 sites collapsed); networkx and scipy stay
+  function-level in gt_metrics/gt_terms (single call sites, heaviest imports).
+  Fixed a bug in the subplan's own shim-guard test: `getattr(obj, "__module__",
+  mod.__name__)` does not filter bare imported MODULE objects (math, os, re, psycopg,
+  config, np have no `__module__` attr, so the check silently no-ops on them) --
+  added an explicit `isinstance(obj, types.ModuleType)` skip.
+  Verify, in order: (a) `import gt_sql`/`gt_terms`/`gt_metrics` standalone -- ok; (b) full
+  67-name surface resolution one-liner -- "surface ok 67"; (c) `pytest
+  tests/test_graph_tools.py tests/test_sampler.py -q` -- "189 passed"; (d) `PYTHONPATH=.
+  python tools/diag_rerun.py mixed-full-dual` -- "PASS 18/20 | FAIL ['E3'] |
+  KNOWN-FAIL ['A2']", matching the pre-split baseline exactly; (e) full suite -- "574
+  passed, 6 skipped in 192.21s", no T36 interference. `git status --porcelain` shows
+  only the 5 owned files modified/added plus T36's disjoint concurrent churn
+  (evidence.py, walker_app.py, walker_core.py + their tests) -- zero blast radius outside
+  scope. `.specs/file-manifest.md` still does not exist in this repo; flagging per the
+  subplan rather than inventing one.
+
+Campaign close (2026-09-05): refactor complete, T30-T37 all DONE. Final gates:
+suite 574 passed / 6 skipped; diagnostic 18/20 FAIL=[E3] KNOWN-FAIL=[A2],
+B 48-52% -- unchanged across the entire campaign.
