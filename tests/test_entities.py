@@ -9,17 +9,12 @@ fixture pattern).
 """
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
 import pytest
 
-_REPO_ROOT = str(Path(__file__).resolve().parent.parent)
-_TESTS_DIR = str(Path(__file__).resolve().parent)
-sys.path.insert(0, _REPO_ROOT)
-sys.path.insert(0, _TESTS_DIR)
-
 import entities as ent
+from conftest import require_dsn_db
 
 # ================================================================== 8.1 DB-free
 
@@ -262,7 +257,6 @@ def test_embedding_signal_is_off_by_default_and_degrades_to_empty():
 
 import psycopg
 
-sys.path.insert(0, _TESTS_DIR)
 from test_pg_store import FakeGraph          # noqa: E402  (incumbent stub, extended below)
 
 import pg_store
@@ -319,11 +313,7 @@ def _dsn():
 
 @pytest.fixture(scope="module")
 def db():
-    try:
-        with psycopg.connect(_dsn(), connect_timeout=5) as conn:
-            conn.execute("SELECT 1")
-    except Exception as exc:                      # pragma: no cover
-        pytest.skip(f"no database: {exc}")
+    require_dsn_db(_dsn())
     yield _dsn()
     with psycopg.connect(_dsn(), autocommit=True) as conn:
         conn.execute("DELETE FROM graph_run WHERE label IN (%s, %s, %s)",

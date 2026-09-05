@@ -11,39 +11,31 @@ from __future__ import annotations
 
 import csv
 import json
-import sys
 import urllib.request
 from collections import Counter
 from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
-import psycopg
-
 import export_neo4j
 import graph_tools as gt
+from conftest import require_gt_conn, require_run
+
+pytestmark = pytest.mark.live_db
 
 LABEL = "brown-500-dual"          # the dual-space run: SIMILAR carries 3 provenances
 
 
 @pytest.fixture(scope="module")
 def conn():
-    try:
-        c = gt.connect()
-    except psycopg.OperationalError as e:                # pragma: no cover
-        pytest.skip(f"no database: {e}")
+    c = require_gt_conn()
     yield c
     c.close()
 
 
 @pytest.fixture(scope="module")
 def run(conn):
-    try:
-        return gt.get_run(conn, LABEL)
-    except Exception as e:                               # pragma: no cover
-        pytest.skip(f"no run {LABEL}: {e}")
+    return require_run(conn, LABEL)
 
 
 @pytest.fixture(scope="module")
@@ -610,6 +602,7 @@ def neo4j_up():
         pytest.skip(f"no neo4j at {export_neo4j.NEO4J_HTTP}: {e}")
 
 
+@pytest.mark.live_net
 def test_write_walk_round_trips_against_live_neo4j(neo4j_up):
     picked = export_neo4j._tx(
         [{"statement": "MATCH (c:Chunk) RETURN c.id AS id LIMIT 2",
@@ -803,6 +796,7 @@ def test_digest_transport_errors_raise(monkeypatch):
         export_neo4j.write_digest(_FakeBundle(), _DIGEST, _TOUCHED)
 
 
+@pytest.mark.live_net
 def test_write_digest_round_trips_against_live_neo4j(neo4j_up):
     picked = export_neo4j._tx(
         [{"statement": "MATCH (c:Chunk) RETURN c.id AS id LIMIT 3",

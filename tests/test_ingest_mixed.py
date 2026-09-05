@@ -12,12 +12,9 @@ Spec: .spec/specs/graph-explorer/design.md sec 6.14 R20 - Task: playbook.md T2
 from __future__ import annotations
 
 import collections
-import sys
 from pathlib import Path
 
 import pytest
-
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import ingest_mixed
 

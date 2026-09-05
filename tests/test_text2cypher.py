@@ -8,14 +8,11 @@ Task: playbook.md T20
 """
 import json
 import os
-import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
 
 import pytest
-
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import export_neo4j
 import text2cypher

@@ -9,16 +9,16 @@ Run:  pytest tests/test_graph_tools.py -v      (needs `docker compose up -d`)
 """
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
 import psycopg
 
 import graph_tools as gt
+from conftest import require_gt_conn, require_run
+
+pytestmark = pytest.mark.live_db
 
 LABEL = "brown-50"
 
@@ -32,20 +32,14 @@ HUB_DEGREE = 12
 
 @pytest.fixture(scope="module")
 def conn():
-    try:
-        c = gt.connect()
-    except psycopg.OperationalError as e:                # pragma: no cover
-        pytest.skip(f"no database: {e}")
+    c = require_gt_conn()
     yield c
     c.close()
 
 
 @pytest.fixture(scope="module")
 def run(conn):
-    try:
-        return gt.get_run(conn, LABEL)
-    except LookupError:                                   # pragma: no cover
-        pytest.skip(f"no live run {LABEL!r}")
+    return require_run(conn, LABEL)
 
 
 # ---------------------------------------------------------------- W3

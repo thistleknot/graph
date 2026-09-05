@@ -8,29 +8,22 @@ Run:  pytest tests/test_interpret.py -v      (needs docker compose up -d)
 from __future__ import annotations
 
 import json
-import sys
 from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
-import psycopg
-
 import graph_tools as gt
 import interpret
 import sampler
+from conftest import require_gt_conn, require_run
 
 Q = "a colonial power leaves and the country falls apart"
 
 
 @pytest.fixture(scope="module")
 def live():
-    try:
-        conn = gt.connect()
-        run = gt.get_run(conn, "brown-500-dual")
-    except (psycopg.OperationalError, LookupError) as e:   # pragma: no cover
-        pytest.skip(f"no live run: {e}")
+    conn = require_gt_conn()
+    run = require_run(conn, "brown-500-dual")
     yield conn, run
     conn.close()
 

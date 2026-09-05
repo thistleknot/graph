@@ -21,13 +21,10 @@ Run:  pytest tests/test_gist_walk.py -v
 from __future__ import annotations
 
 import itertools
-import sys
 from pathlib import Path
 
 import numpy as np
 import pytest
-
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from chunkgraph import ChunkGraph
 

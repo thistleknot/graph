@@ -17,17 +17,13 @@ Run:  pytest tests/test_sampler.py -v
 """
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
-import psycopg
-
 import graph_tools as gt
 import sampler as sp
+from conftest import require_gt_conn, require_run
 
 LABEL = "brown-50"
 
@@ -143,11 +139,8 @@ def test_low_temperature_concentrates_on_high_scores():
 # ---------------------------------------------------------------- pipeline
 @pytest.fixture(scope="module")
 def live():
-    try:
-        conn = gt.connect()
-        run = gt.get_run(conn, LABEL)
-    except (psycopg.OperationalError, LookupError) as e:   # pragma: no cover
-        pytest.skip(f"no live run: {e}")
+    conn = require_gt_conn()
+    run = require_run(conn, LABEL)
     yield conn, run
     conn.close()
 
@@ -240,10 +233,7 @@ def test_k_comm_truncates_the_histogram(live):
 
 def _dual(live):
     conn, _ = live
-    try:
-        return conn, gt.get_run(conn, "brown-500-dual")
-    except Exception as e:                                # pragma: no cover
-        pytest.skip(f"no dual run: {e}")
+    return conn, require_run(conn, "brown-500-dual")
 
 
 Q = "jury trial grand jury investigation"

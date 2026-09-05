@@ -8,18 +8,18 @@ Run:  pytest tests/test_pg_store.py -v      (needs `docker compose up -d`)
 """
 from __future__ import annotations
 
-import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
 import psycopg
 
 import pg_store
+from conftest import require_dsn_db
+
+pytestmark = pytest.mark.live_db
 
 LABEL = "pytest_pg_store"
 N = 12          # schema enforces n_chunks >= 10
@@ -140,10 +140,9 @@ def _provision() -> None:
 def db():
     try:
         _provision()
-        with psycopg.connect(_dsn(), connect_timeout=5) as conn:
-            conn.execute("SELECT 1")
     except Exception as exc:                      # pragma: no cover
         pytest.skip(f"no Postgres at {_dsn()}: {exc}")
+    require_dsn_db(_dsn())
     yield _dsn()
     # Teardown: drop our runs, then un-pin the embedding column so a later real
     # ingest into this dev database is not blocked by the stub's dim.

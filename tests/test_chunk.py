@@ -17,14 +17,11 @@ from __future__ import annotations
 import inspect
 import json
 import random
-import sys
 import zlib
 from pathlib import Path
 
 import numpy as np
 import pytest
-
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from chunkgraph import ChunkGraph, _chunk, _paras, derive_chunk_params, derive_chunk_params_by_source, MIN_BLOCK_PAIRS
 

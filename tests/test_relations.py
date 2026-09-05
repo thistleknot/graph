@@ -9,19 +9,14 @@ fixture pattern).
 """
 from __future__ import annotations
 
-import sys
 from collections import Counter
 from pathlib import Path
 
 import pytest
 
-_REPO_ROOT = str(Path(__file__).resolve().parent.parent)
-_TESTS_DIR = str(Path(__file__).resolve().parent)
-sys.path.insert(0, _REPO_ROOT)
-sys.path.insert(0, _TESTS_DIR)
-
 import graph_tools as gt
 import relations as rel
+from conftest import require_dsn_db, require_gt_conn, require_run
 
 # ================================================================== DB-free
 
@@ -196,11 +191,7 @@ def _dsn():
 
 @pytest.fixture(scope="module")
 def db():
-    try:
-        with psycopg.connect(_dsn(), connect_timeout=5) as conn:
-            conn.execute("SELECT 1")
-    except Exception as exc:                      # pragma: no cover
-        pytest.skip(f"no database: {exc}")
+    require_dsn_db(_dsn())
     yield _dsn()
     with psycopg.connect(_dsn(), autocommit=True) as conn:
         conn.execute("DELETE FROM graph_run WHERE label IN (%s, %s)", (LABEL_A, LABEL_B))
@@ -244,17 +235,14 @@ def test_rebuild_replaces_this_run_and_leaves_the_other_alone(db):
     conn_b.close()
 
 
+@pytest.mark.live_db
 def test_live_smoke_mixed_full_dual():
     """T29 pin (2026-09-05): the live build on mixed-full-dual produced 328,825
     rows; the GEN class the layer was built for is present and well-formed
     (e.g. season -[GEN/'of the']-> end, war -[GEN/'of the']-> end). Asserted
     structurally against whatever run is live; skips without it."""
-    import graph_tools as gt
-    try:
-        conn = gt.connect()
-        run = gt.get_run(conn, "mixed-full-dual")
-    except Exception as e:                                  # noqa: BLE001
-        pytest.skip(f"no live run: {e}")
+    conn = require_gt_conn()
+    run = require_run(conn, "mixed-full-dual")
     with conn.cursor() as cur:
         cur.execute("SELECT count(*) FROM relations WHERE run_id=%s",
                     (run.run_id,))

@@ -19,18 +19,15 @@ Run:  pytest tests/test_mixed_acceptance.py -q
 from __future__ import annotations
 
 import os
-import sys
 import warnings
 from collections import Counter
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
-import psycopg
 import pytest
 
 import graph_tools as gt
 import sampler as sp
+from conftest import require_gt_conn
 
 PREFERRED_LABEL = os.environ.get("MIXED_ACCEPTANCE_LABEL", "mixed-full")
 FALLBACK_LABEL = "mixed-smoke"
@@ -46,10 +43,7 @@ REPORT: list[str] = []
 # --------------------------------------------------------------- fixtures
 @pytest.fixture(scope="module")
 def live():
-    try:
-        conn = gt.connect()
-    except psycopg.OperationalError as e:
-        pytest.skip(f"no database: {e}")
+    conn = require_gt_conn()
     run = None
     used_fallback = False
     for label in (PREFERRED_LABEL, FALLBACK_LABEL):

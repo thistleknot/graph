@@ -825,12 +825,20 @@ fixed seeds), do-no-harm = frozen diagnostic keeps 18/20 with the same pass set,
   inline: mirror test asserts config.NEO4J_BROWSER; resave test injects now=+5s (clock-skew
   flake killed). Suite 527+2-fixed passed; diagnostic 18/20 fails=[E3] held.
 
-- [WIP] T33 Test infra: conftest.py, pytest.ini, live markers, clock-skew fix
+- [DONE] T33 Test infra: conftest.py, pytest.ini, live markers, clock-skew fix
   _Files:_ tests/conftest.py, pytest.ini, tests/
   _Verify:_ python -m pytest -q (defaults to offline set) && grep -rn "pytest.skip(\"no database" tests/ returns empty
   _Notes:_ Markers live_db/live_net/slow, addopts excludes live by default; kill 16
   sys.path.insert copies; convert 10 inline skips to markers w/ graceful fixture;
   test_resave uses T32's now= param.
+  _Lessons:_ Implementer yielded on its own background pytest; orchestrator verified and
+  closed. pytest.ini (markers, no default exclusion -- standing gate unchanged at 528/6)
+  + conftest.py (require_gt_conn/require_run helpers, one sys.path setup, 16 per-file
+  inserts deleted, inline no-database skips gone). Orchestrator added testpaths=tests
+  (bare pytest was collecting docs/ vendored book tests -- 2 collection errors) after
+  which -m "not live_db" = 262 passed in 15s, zero DB. Module-level live_db marks are
+  coarse (offline tests inside live modules get deselected) -- granularity is polish,
+  noted not taken.
 
 - [DONE] T34 Ops: neo4j into docker-compose, pidfile walker lifecycle (the zombie fix)
   _Files:_ docker-compose.yml, run.ps1, patch_neo4j_browser.py
@@ -861,7 +869,7 @@ fixed seeds), do-no-harm = frozen diagnostic keeps 18/20 with the same pass set,
   "CUT" is a no-op confirmation, not a removal.
 
 ## Layer 12 -- sequential (behavior-touching core)
-- [OPEN] T35 evidence.py::assemble() -- collapse the 5x evidence-assembly duplication
+- [WIP] T35 evidence.py::assemble() -- collapse the 5x evidence-assembly duplication
   _Files:_ evidence.py, walker_app.py, tools/diag_rerun.py, tests/test_evidence.py
   _Verify:_ digest bytes for all 20 frozen rows identical before/after && PYTHONPATH=. python tools/diag_rerun.py mixed-full-dual && full offline suite
   _Notes:_ STRONGEST gate: byte-pin render_digest across the frozen 20 before the edit,

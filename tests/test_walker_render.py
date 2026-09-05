@@ -14,19 +14,17 @@ Run:  pytest tests/test_walker_render.py -v      (needs `docker compose up -d`)
 """
 from __future__ import annotations
 
-import sys
 import warnings
 from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
 warnings.filterwarnings("ignore")
 
-import psycopg
-
 import graph_tools as gt
+from conftest import require_gt_conn
+
+pytestmark = pytest.mark.live_db
 
 # HUB is derived from the run the app loaded -- see the `hub` fixture; a
 # constant pinned to one ingest broke on the next (ord 1476 on a 51-node run).
@@ -35,10 +33,7 @@ import graph_tools as gt
 @pytest.fixture(scope="module")
 def app():
     """Importing the app runs its script; that is how conn/run get built."""
-    try:
-        gt.connect().close()
-    except psycopg.OperationalError as e:                 # pragma: no cover
-        pytest.skip(f"no database: {e}")
+    require_gt_conn().close()
     try:
         import walker_app
     except SystemExit:                                    # pragma: no cover
