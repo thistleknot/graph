@@ -722,3 +722,126 @@ fixed seeds), do-no-harm = frozen diagnostic keeps 18/20 with the same pass set,
   the seed). Verified on a wiped profile: iframe lands on 'You have a working connection
   and server auth is disabled', zero clicks. Full docker run command in the script's
   docstring.
+
+## Layer 9 -- sequential (relations v0: unsupervised relation detection, operator 2026-09-05; plan C:/Users/user/.claude/plans/luminous-roaming-dongarra.md)
+- [DONE] T27 Spec: relations v0 sentence layer, guards E10-E14 (design.md 6.20)
+  _Files:_ .spec/specs/graph-explorer/design.md
+  _Verify:_ grep -c "E1[0-4]" .spec/specs/graph-explorer/design.md
+  _Notes:_ Article IX. E10 sentence layer + rel_tokenize (gt.tokenize W21-frozen, no ALTER
+  on E1 tables); E11 candidates (ordered pairs, MAX_CONNECTOR_TOKENS=4 one-knob, greedy
+  vocab longest-match anchoring, canonical_id aggregation); E12 genitive unification
+  (X's Y == Y of X -> (src=X,dst=Y,'GEN'), else surface order); E13 dual floor
+  (MIN_REL_SUPPORT=3 AND G2>=10.83 via gt.llr, NPMI on same row); E14 per-stage timings,
+  no unmeasured bounds. Schema: relations(run_id,src,dst,template,connector,n,llr,npmi,
+  example_ord) PK(run_id,src,dst,template).
+
+- [DONE] T28 relations.py: splitter, rel_tokenize, anchoring, candidates, scoring, table
+  _Files:_ relations.py, tests/test_relations.py
+  _Verify:_ pytest tests/test_relations.py -q
+  _Notes:_ THE one new file (entities.py E3 sealed read-only-against-attrs; gt.tokenize
+  frozen). Reuses entities.npmi_ppmi + gt.llr + gt.corpus_index + entities DDL/COPY
+  patterns. Per-source split (brown/quotes line-per-sentence; wiki regex scanner with
+  abbrev guard + MIN_SENT_TOKENS=3 + @-@/@,@/@.@ normalization). 7+ tests per plan:
+  possessive unification both surfaces, plural possessive + case bit, splitter guards,
+  phrase-spans-stopwords, direction, LLR gate + floor planted, per-run rebuild isolation.
+  Timings printed from the build function (E14).
+  _Lessons:_ sonnet -- pytest tests/test_relations.py -q: 8/8 green, DB-backed rebuild
+  test ran live against :5433 (up), not skipped. Two deliberate refinements over the
+  spec's literal wording, both from the subplan, both implemented as directed:
+  (1) E12's "closed-class connectors" -> `is_content` (isalpha, len>2, not in
+  stoplist._STOP) is the ONLY gate; no CONNECTOR_CLOSED constant exists anywhere in
+  relations.py (asserted by test_template_collapses_content_to_w). (2) E10's
+  "abbreviation guard list" -> derive_abbreviations() is a per-run census over
+  node.body (a token is an abbreviation where it never appears bare in the corpus);
+  zero hand-typed abbreviation set. Both resolutions follow the operator's ruling
+  ("that's a supervised smell") and are documented in relations.py's own docstring
+  paragraph after the pasted E10-E14 guards, so T29's Article IX close can reconcile
+  design.md's prose ("abbreviation guard list", "closed-class connectors") against
+  what actually shipped. One incidental finding while building the splitter test: the
+  abbreviation census is a pure existence test on the SAMPLE it's given -- a word
+  appearing exactly once, right before a period, with no other bare occurrence in that
+  same sample, is flagged as an abbreviation even when it plainly isn't (e.g. "today"
+  in a two-sentence test fixture). This is the algorithm behaving exactly as specified
+  (no ratio, no tuning), not a defect; it just needs a large-enough sample per type to
+  avoid false positives, same as any corpus-driven signal. No code change from this --
+  noted for T29, since a live full run has ample repetition per abbreviation candidate.
+  Sprawl review: nothing to collapse (single new module, no incumbent duplicated).
+  No hand-typed word list was added anywhere in relations.py.
+
+- [DONE] T29 Live measured build on mixed-full-dual, smoke pin, Article IX close
+  _Files:_ playbook.md, tests/test_relations.py
+  _Verify:_ PYTHONPATH=. python relations.py mixed-full-dual && pytest tests/test_relations.py -q
+  _Notes:_ Record per-stage timings verbatim in _Lessons:. E14 decision point: bound
+  NOTHING unless a stage measurably overruns Article VII; per-source measurement before
+  any lever. Pin the smoke test to the live top-20 (expect a GEN row, 's/of connector).
+  Name [LATER] rows: neo4j RELATES edge, cookbook query, digest section.
+  _Lessons:_ MEASURED: sentences=918,707, events=22.7M, pairs=14.5M, relations=328,825.
+  Stages: fetch 3.5s / split 76.3s / tokenize+match 285.6s / candidates 138.5s / score
+  197.5s / write 11.0s (~11.9 min total -- ingest-class batch, no stage over budget, E14:
+  no bound taken). GEN class present and correct (season-[GEN/'of the']->end,
+  war-[GEN/'of the']->end; E12 possessor direction verified). Raw-LLR top skews to
+  frequency collocations ('later that year'); npmi column + template filters carry the
+  semantic ranking (spec caveat recorded). Spec reconciled to the shipped derived-census
+  + is_content refinements. 9/9 relations tests; diagnostic 18/20 held; suite 528 passed.
+
+## Layer 10 -- sequential (refactor spec + hygiene; plan ibid.)
+- [OPEN] T30 Spec amendments batch: evidence contract, config, walker split, test markers
+  _Files:_ .spec/specs/graph-explorer/design.md
+  _Verify:_ grep -c "evidence.assemble\|config indirection\|live_db" .spec/specs/graph-explorer/design.md
+  _Notes:_ Four amendments: evidence.assemble() byte-identical-digest contract; config.py
+  single-source w/ module-level monkeypatch indirection + NEO4J basic-auth deprecation;
+  walker UI-only split guard (importable without SystemExit/DB); pytest marker taxonomy
+  live_db/live_net/slow + injectable clock rule for pg_store.save.
+
+- [OPEN] T31 Hygiene: untrack regenerables, promote diag gate, purge scratch, token
+  _Files:_ .gitignore, tools/diag_rerun.py, playbook.md
+  _Verify:_ git ls-files | grep -E "[.](png|html|zip)$" returns empty && PYTHONPATH=. python tools/diag_rerun.py mixed-full-dual
+  _Notes:_ Sequential -- moves the do-no-harm gate itself. git rm --cached ~17MB
+  (graph3d.html, irl_tank.html, trigram.zip, suite*.png, graph_brown*.png,
+  community_labels.json); git mv .tmp/diag_rerun.py tools/ + re-prove 18/20 fails=[E3];
+  purge .tmp/neo4j_export (355MB) + stale one-offs; rotate/remove .env NVIDIA token;
+  sweep root png/yml litter.
+
+## Layer 11 -- parallel (plumbing; disjoint files, dispatch together)
+- [OPEN] T32 config.py: one source for DSN, neo4j endpoint, model dir, ports
+  _Files:_ config.py, graph_tools.py, pg_store.py, entities.py, export_neo4j.py, text2cypher.py, patch_neo4j_browser.py
+  _Verify:_ pytest tests/ --ignore=tests/test_mixed_acceptance.py -q && PYTHONPATH=. python tools/diag_rerun.py mixed-full-dual
+  _Notes:_ Consumers keep module-level names (DSN = config.DSN) so monkeypatch tests
+  survive. Collapse 3 DSN copies, 6-signature neo4j threading, 4 model-dir spots (pick
+  ONE default, record in spec). Drop dead basic-auth plumbing (server auth=none). Add
+  injectable now= to pg_store.save (mechanism here; test in T33).
+
+- [OPEN] T33 Test infra: conftest.py, pytest.ini, live markers, clock-skew fix
+  _Files:_ tests/conftest.py, pytest.ini, tests/
+  _Verify:_ python -m pytest -q (defaults to offline set) && grep -rn "pytest.skip(\"no database" tests/ returns empty
+  _Notes:_ Markers live_db/live_net/slow, addopts excludes live by default; kill 16
+  sys.path.insert copies; convert 10 inline skips to markers w/ graceful fixture;
+  test_resave uses T32's now= param.
+
+- [OPEN] T34 Ops: neo4j into docker-compose, pidfile walker lifecycle (the zombie fix)
+  _Files:_ docker-compose.yml, run.ps1, patch_neo4j_browser.py
+  _Verify:_ docker compose config && ./run.ps1 start && ./run.ps1 stop leaves no orphans
+  _Notes:_ Transcribe container lifecycle from the docstring into compose (image, ports,
+  chunkgraph-neo4jdata volume, NEO4J_AUTH=none, CSP env, .neo4j-web bind-mount). run.ps1
+  start/stop/status with .tmp/walker.pid; stop kills recorded PID tree only. Makefile CUT.
+
+## Layer 12 -- sequential (behavior-touching core)
+- [OPEN] T35 evidence.py::assemble() -- collapse the 5x evidence-assembly duplication
+  _Files:_ evidence.py, walker_app.py, tools/diag_rerun.py, tests/test_evidence.py
+  _Verify:_ digest bytes for all 20 frozen rows identical before/after && PYTHONPATH=. python tools/diag_rerun.py mixed-full-dual && full offline suite
+  _Notes:_ STRONGEST gate: byte-pin render_digest across the frozen 20 before the edit,
+  diff after (pass-count can mask reordering). walker_app 3 sites + diag_rerun rewired
+  (other .tmp copies deleted in T31). First-ever tests for this block.
+
+- [OPEN] T36 walker split: walker_core.py UI-free, mirror writes to evidence.py
+  _Files:_ walker_app.py, walker_core.py, evidence.py, tests/test_walker_core.py, tests/test_walker_render.py
+  _Verify:_ python -c "import walker_core" exits 0 without DB && diagnostic 18/20 && full suite
+  _Notes:_ Depends T35 (seam) + T32 (config). Mirror except narrows to
+  (URLError, RuntimeError, OSError). test_walker_render drops the SystemExit hack.
+
+- [OPEN] T37 graph_tools split behind a re-export shim (operator: KEEP)
+  _Files:_ graph_tools.py, gt_sql.py, gt_metrics.py, gt_terms.py, tests/test_graph_tools.py
+  _Verify:_ python -c "import graph_tools as gt; gt.pathways" && diagnostic 18/20 && full suite
+  _Notes:_ 3 new files at the Article II limit (justified: zero shared imports across
+  concerns; 2-way split leaves a >900-LOC module). Shim keeps every caller untouched --
+  may run parallel to T36 (disjoint). Hoist the 5 function-level numpy imports.
