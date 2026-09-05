@@ -31,6 +31,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 import config
+import evidence
 import graph_tools as gt
 import interpret
 import pg_store
@@ -71,20 +72,7 @@ def get_conn():
 def get_embed(model_dir: str | None):
     """model2vec static embedder for query-conditioned terms (design 6.1).
     None when no model dir: ranking degrades to lexical-then-unsupervised."""
-    if not model_dir:
-        return None
-    try:
-        import numpy as np
-        from model2vec import StaticModel
-        sm = StaticModel.from_pretrained(model_dir)
-    except Exception:
-        return None
-
-    def embed(texts):
-        E = np.asarray(sm.encode(list(texts), show_progress_bar=False),
-                       dtype=np.float32)
-        return E / (np.linalg.norm(E, axis=1, keepdims=True) + 1e-12)
-    return embed
+    return evidence.load_embed(model_dir)
 
 
 @st.cache_data(ttl=30)
@@ -313,66 +301,39 @@ def draw_term_graph(terms_cond: dict, terms_unsup: dict, members: dict, height=5
     return fig
 
 
+def plane(out):
+    """Spring-lays-out one dendrite_sort plane (chunk or term). Closure-free
+    (reads only its argument and module-level `nx`) -- lifted out of the old
+    `_dendrite_state` unchanged. Layout-only: the digest never reads pos/
+    backbone/chain_of, only `dendrite_sort`'s own `names`/`r`/`sig`/`chains`,
+    so no spring layout touches the byte-pinned digest (design 6.21(a))."""
+    G = nx.Graph()
+    G.add_nodes_from(out["names"])
+    idx = {n_: i for i, n_ in enumerate(out["names"])}
+    for a in out["names"]:
+        for b in out["names"]:
+            if a < b and out["sig"][idx[a], idx[b]]:
+                G.add_edge(a, b, weight=abs(out["r"][idx[a], idx[b]]))
+    pos = nx.spring_layout(G, weight="weight", seed=7, k=1.3)
+    backbone = [(c[i], c[i + 1]) for c in out["chains"] for i in range(len(c) - 1)]
+    sig_edges = [(a, b, G[a][b]["weight"]) for a, b in G.edges()]
+    chain_of = {n_: ci for ci, c in enumerate(out["chains"]) for n_ in c}
+    return {"pos": pos, "backbone": backbone, "sig": sig_edges,
+            "chain_of": chain_of, "chains": out["chains"]}
+
+
 @st.cache_data(show_spinner=False, max_entries=16)
-def dendrite_state(run_id: str, q: str, _bnd=None, _members=None):
-    """See _dendrite_state; cache wrapper keyed by (run, prompt)."""
-    return _dendrite_state(_bnd, _members)
-
-
-def _dendrite_state(bnd, members):
-    """Both planes of the 3D layers view, dendrite-sorted (correlation
-    sorting.md; design: two 2D slices in 3D space, like two NN layers).
-
-    Chunk plane: each walked chunk's variable is its dense-cosine profile
-    against every other walked chunk; Pearson over those profiles with
-    n = #chunks gives the significance-gated correlation graph and chains.
-    Term plane: each drawn term's variable is its tf*idf column over the
-    walked chunks (the SAME term-document matrix, read from the other end).
-    Layouts are per-plane spring over |r| of significant links, seed 7."""
-    import numpy as np
-    ords = list(bnd.sampled)
-    E, kept = gt.subgraph_embeddings(conn, run, ords)
-    if len(kept) < 5:
+def dendrite_state(run_id: str, q: str, _ev=None):
+    """Layout wrapper over Evidence.dendrite (raw dendrite_sort output);
+    cache wrapper keyed by (run, prompt). None when the walk kept <5
+    embeddings. Output shape is byte-for-byte what the old _dendrite_state
+    returned, so draw_layers3d, the 3D tab and the Map partitions block are
+    untouched by the split."""
+    d = _ev.dendrite
+    if d is None:
         return None
-    S = E @ E.T
-    ch = gt.dendrite_sort(S, kept)
-    # term pool: the walked chunks' OWN salient vocabulary (top-3 each) plus
-    # the community-drawn sets -- the subgraph on its own terms.
-    sal = gt.chunk_salient(conn, run, kept, k=3)
-    pool = sorted({t for o in kept for t in (sal.get(o, {}).get("top") or [])}
-                  | set(members))
-    counts = {o: Counter(gt.tokenize(gt.node(conn, run, o)["body"])) for o in kept}
-    def present(t, o):
-        return all(p in counts[o] for p in t.split("_"))
-    mem = {t: {o for o in kept if present(t, o)} for t in pool}
-    dfs = {t: len(mem[t]) for t in pool}
-    # tf of a phrase term = min part count (all parts must co-occur)
-    X = np.array([[min(counts[o].get(p, 0) for p in t.split("_")) *
-                   (np.log(len(kept) / dfs[t]) if dfs[t] else 0.0)
-                   for t in pool] for o in kept])
-    tm = gt.dendrite_sort(X, pool, min_support=4)
-    members = mem
-
-    def plane(out):
-        G = nx.Graph()
-        G.add_nodes_from(out["names"])
-        idx = {n_: i for i, n_ in enumerate(out["names"])}
-        for a in out["names"]:
-            for b in out["names"]:
-                if a < b and out["sig"][idx[a], idx[b]]:
-                    G.add_edge(a, b, weight=abs(out["r"][idx[a], idx[b]]))
-        pos = nx.spring_layout(G, weight="weight", seed=7, k=1.3)
-        backbone = [(c[i], c[i + 1]) for c in out["chains"] for i in range(len(c) - 1)]
-        sig_edges = [(a, b, G[a][b]["weight"]) for a, b in G.edges()]
-        chain_of = {n_: ci for ci, c in enumerate(out["chains"]) for n_ in c}
-        return {"pos": pos, "backbone": backbone, "sig": sig_edges,
-                "chain_of": chain_of, "chains": out["chains"]}
-    tix = {t: j for j, t in enumerate(pool)}
-    oix = {o: i for i, o in enumerate(kept)}
-    cross = [(o, t, float(X[oix[o], tix[t]])) for t in tm["names"]
-             for o in (members.get(t) or []) if o in set(kept)]
-    return {"chunks": plane(ch), "terms": plane(tm), "kept": kept, "cross": cross,
-            "sal": sal}
+    return {"chunks": plane(d["chunks"]), "terms": plane(d["terms"]),
+            "kept": d["kept"], "cross": d["cross"], "sal": d["sal"]}
 
 
 def draw_layers3d(state, cid_of, src_of, height=700):
@@ -396,8 +357,7 @@ def draw_layers3d(state, cid_of, src_of, height=700):
     seg3(cp["backbone"], cp["pos"], 0.0, "rgba(228,87,86,0.75)", 3)
     seg3([(a, b) for a, b, _ in tp["sig"]], tp["pos"], 1.0, "rgba(150,150,150,0.25)", 1)
     seg3(tp["backbone"], tp["pos"], 1.0, "rgba(76,120,168,0.85)", 3)
-    ws_ = sorted(w for _, _, w in state["cross"]) or [0.0]
-    q3 = ws_[int(0.75 * (len(ws_) - 1))]
+    q3, _ = evidence.top_quartile(state["cross"])
     for strong, color, width in ((True, "rgba(90,90,160,0.55)", 2.5),
                                  (False, "rgba(120,120,170,0.10)", 1)):
         xs, ys, zs = [], [], []
@@ -491,40 +451,9 @@ def walk_for(run_id: str, q: str):
 @st.cache_data(show_spinner=False, max_entries=32)
 def walk_state(run_id: str, q: str, _bnd=None, _embed=None):
     """Everything the tab shows that is computed, not model-authored: keyed by
-    (run, prompt); the underscore args are inputs Streamlit must not hash."""
-    bnd = _bnd
-    touched = gt.communities_touched(conn, run, bnd.sampled)
-    cm = {c["cid"]: c for c in gt.community_metrics(conn, run)["communities"]}
-    for t in touched:
-        m = cm.get(t["cid"])
-        if m:
-            t["density"], t["conductance"] = m["density"], m["conductance"]
-    cids = [t["cid"] for t in touched]
-    concept = gt.community_terms(conn, run, cids, k=3)
-    terms = gt.query_terms(conn, run, cids, q, k=3, embed=_embed)
-    cid_of = {o: gt.node(conn, run, o)["cid"] for o in bnd.sampled}
-    in_cid = {c: [o for o in bnd.sampled if cid_of[o] == c] for c in cids}
-    xedges: dict = {}
-    for e in gt.subgraph_edges(conn, run, bnd.sampled):
-        ca, cb = cid_of.get(e["src"]), cid_of.get(e["dst"])
-        if ca is not None and cb is not None and ca != cb:
-            key = (min(ca, cb), max(ca, cb))
-            xedges[key] = xedges.get(key, 0) + 1
-    medoids = {c: (gt.local_medoid(conn, run, in_cid[c], weights=bnd.scores),
-                   gt.community(conn, run, c)["medoid"]) for c in cids}
-    med_ords = sorted({o for pair in medoids.values() for o in pair})
-    # term graph data (W10 extension): where each drawn term lives among the
-    # walked chunks, so terms can be graphed by co-occurrence. A phrase term
-    # counts as present when all its parts are in the chunk's token set.
-    drawn = sorted({t for ts in terms.values() for t in ts}
-                   | {t for ts in concept.values() for t in ts})
-    toks = {o: set(gt.tokenize(gt.node(conn, run, o)["body"])) for o in bnd.sampled}
-    term_members = {t: {o for o, s in toks.items()
-                        if all(p in s for p in t.split("_"))} for t in drawn}
-    return {"touched": touched, "cids": cids, "concept": concept, "terms": terms,
-            "cid_of": cid_of, "in_cid": in_cid, "xedges": xedges, "medoids": medoids,
-            "salient": gt.chunk_salient(conn, run, med_ords, k=3),
-            "term_members": term_members}
+    (run, prompt); the underscore args are inputs Streamlit must not hash.
+    Thin wrapper over evidence.assemble (design 6.21(a))."""
+    return evidence.assemble(conn, run, _bnd, embed=_embed)
 
 
 # ================================================================ WALK
@@ -539,50 +468,19 @@ with tab_walk:
             # once per (run, prompt): a button click reruns the script and
             # must not redo the walk.
             ws = walk_state(str(run.run_id), q, _bnd=bnd, _embed=embed)
-            touched, cids, concept, terms = ws["touched"], ws["cids"], ws["concept"], ws["terms"]
-            cid_of, in_cid, xedges, medoids, salient = (ws["cid_of"], ws["in_cid"], ws["xedges"],
-                                                          ws["medoids"], ws["salient"])
+            touched, cids, concept, terms = ws.touched, ws.cids, ws.concept, ws.terms
+            cid_of, in_cid, xedges, medoids, salient = (ws.cid_of, ws.in_cid, ws.xedges,
+                                                          ws.medoids, ws.salient)
 
             # ---- 1. the model's answer, right under the prompt (I13: one call)
-            pa_anchors = sorted({o for pair in medoids.values() for o in pair}
-                                | {max(in_cid[c], key=lambda o: bnd.scores.get(o, 0))
-                                   for c in cids if in_cid[c]})
-            pw = gt.pathways(conn, run, bnd.sampled, pa_anchors)
+            pw = ws.pathways
             if st.button("Reason + judge this walk", key="btn_assess",
                          help="ONE model call: hypothesis -> premises -> evaluate -> answer, "
                               "plus a verdict per retrieved chunk; sees the subgraph map"):
                 with st.spinner("one call: reasoning over briefs + judging every chunk ..."):
-                    ds_ = dendrite_state(str(run.run_id), q, _bnd=bnd,
-                                         _members=ws["term_members"])
-                    digest = None
-                    if ds_ is not None:
-                        src_counts: dict = {}
-                        for o in ds_["kept"]:
-                            c_ = cid_of.get(o)
-                            s_ = gt.source_of(gt.node(conn, run, o)) or "unlabelled"
-                            src_counts.setdefault(c_, {})
-                            src_counts[c_][s_] = src_counts[c_].get(s_, 0) + 1
-                        kw = {c_: (gt.community(conn, run, c_)["keywords"] or [])
-                              for c_ in cids}
-                        cset = {t for ts_ in terms.values() for t in ts_}
-                        uset = {t for ts_ in concept.values() for t in ts_}
-                        ws_ = sorted(w for _, _, w in ds_["cross"]) or [0.0]
-                        q3 = ws_[int(0.75 * (len(ws_) - 1))]
-                        strong = [b for b in ds_["cross"] if b[2] >= q3]
-                        # I12 amendment (2026-09-03): resolve bare chunk ordinals
-                        # to "source:top_term" so the model can cite digest ids
-                        # (interpret.reason cited 0 on B3 with bare ordinals).
-                        # ds_["sal"] is the salient-term lookup _dendrite_state
-                        # already computed over ds_["kept"] -- reused as-is,
-                        # zero additional chunk_salient calls.
-                        sal_ = ds_["sal"]
-                        resolver = {o: f"{gt.source_of(gt.node(conn, run, o)) or 'unlabelled'}:"
-                                       f"{(sal_.get(o, {}).get('top') or ['?'])[0]}"
-                                    for o in ds_["kept"]}
-                        digest = interpret.render_digest(
-                            touched, kw, src_counts, ds_["chunks"]["chains"],
-                            ds_["terms"]["chains"], cset, uset, strong, pw, resolver,
-                            metrics={t["cid"]: t for t in touched if "density" in t})
+                    ds_ = dendrite_state(str(run.run_id), q, _ev=ws)
+                    digest = ws.digest
+                    kw = ws.kw          # the mirror payload below still reads it
                     st.session_state["assess"] = (q, interpret.reason(
                         conn, run, bnd, terms, concept, embed=embed,
                         judge=True, pw=pw, digest=digest))
@@ -733,7 +631,7 @@ with tab_walk:
                                "(the walk's prompt-conditioned BM25 vocabulary vs the "
                                "global unsupervised concept, both = purple). Edges = "
                                "co-occurrence within the walked chunks.")
-                    tfig = draw_term_graph(terms, concept, ws["term_members"])
+                    tfig = draw_term_graph(terms, concept, ws.term_members)
                     if tfig is not None:
                         st.plotly_chart(tfig, use_container_width=True)
                     else:
@@ -745,8 +643,7 @@ with tab_walk:
                                "chain backbones (correlation sorting, significance-gated "
                                "with n = walked chunks); faint verticals = membership. "
                                "Short vertical edges mean the two Louvain worlds agree.")
-                    ds = dendrite_state(str(run.run_id), q, _bnd=bnd,
-                                        _members=ws["term_members"])
+                    ds = dendrite_state(str(run.run_id), q, _ev=ws)
                     if ds is None:
                         st.info("Walk too small (or no stored embeddings) for the "
                                 "layered view.")
@@ -882,8 +779,7 @@ with tab_map:
         try:
             _bnd0, _ = walk_for(str(run.run_id), _wp0)
             _ws0 = walk_state(str(run.run_id), _wp0, _bnd=_bnd0, _embed=embed)
-            _ds0 = dendrite_state(str(run.run_id), _wp0, _bnd=_bnd0,
-                                  _members=_ws0["term_members"])
+            _ds0 = dendrite_state(str(run.run_id), _wp0, _ev=_ws0)
         except Exception as e:                              # noqa: BLE001
             _ds0 = None
             st.warning(f"partitions unavailable: {e}")

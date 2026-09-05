@@ -9,12 +9,15 @@ sampler.ef_evidence() only. It contains no BM25, no anchor allocation, no walk
 logic of its own -- those live in sampler.py / graph_tools.py and are observed
 here through the return values (bundle, tele).
 
-Usage: PYTHONPATH=. python .tmp/diag_rerun.py <run-label>
+Usage: PYTHONPATH=. python tools/diag_rerun.py <run-label>
 """
 import json
 import sys
 import time
+from pathlib import Path
 
+import config
+import evidence
 import graph_tools as gt
 import sampler
 
@@ -249,18 +252,52 @@ def run_row(conn, run, rid, prompt, knobs):
     else:
         rec["verdict"] = "ERROR"
 
-    return rec
+    return rec, bundle
+
+
+def _write_pin_digest(pin_dir, rid, conn, run, bundle, embed):
+    """T35 opt-in: write ev.digest (or the byte-pin sentinel) to <pin_dir>/<rid>.txt.
+    Never touches rec, verdicts, printing, or diag_rerun_last.json -- see
+    .playbook/T35.subplan.md sec.4. Same header convention as .tmp/pin_digest.py."""
+    Path(pin_dir).mkdir(parents=True, exist_ok=True)
+    n_sampled = len(bundle.sampled)
+    kept_n = "?"
+    try:
+        if not bundle.sampled:
+            body = "__NO_SAMPLE__\n"
+            kept_n = 0
+        else:
+            ev = evidence.assemble(conn, run, bundle, embed=embed)
+            if ev.dendrite is None:
+                _, kept = gt.subgraph_embeddings(conn, run, bundle.sampled)
+                kept_n = len(kept)
+                body = f"__NO_DIGEST__ kept={kept_n}\n"
+            else:
+                kept_n = len(ev.dendrite["kept"])
+                body = ev.digest
+    except Exception as e:                              # noqa: BLE001
+        body = f"__ERROR__ {e!r}\n"
+    header = (f"# rid={rid} run_id={run.run_id} embed={'on' if embed else 'off'} "
+              f"n_sampled={n_sampled} kept={kept_n}\n")
+    (Path(pin_dir) / f"{rid}.txt").write_text(header + body, encoding="utf-8")
 
 
 def main():
-    if len(sys.argv) not in (2, 3) or (len(sys.argv) == 3 and sys.argv[2] != "--expand-aliases"):
-        print("usage: PYTHONPATH=. python .tmp/diag_rerun.py <run-label> [--expand-aliases]",
-              file=sys.stderr)
+    argv = sys.argv[1:]
+    expand_aliases = "--expand-aliases" in argv
+    pin_dir = None
+    if "--pin-digest" in argv:
+        i = argv.index("--pin-digest")
+        if i + 1 < len(argv):
+            pin_dir = argv[i + 1]
+    positional = [a for a in argv if a not in ("--expand-aliases", "--pin-digest", pin_dir)]
+    if len(positional) != 1 or ("--pin-digest" in argv and not pin_dir):
+        print("usage: PYTHONPATH=. python tools/diag_rerun.py <run-label> "
+              "[--expand-aliases] [--pin-digest <dir>]", file=sys.stderr)
         sys.exit(2)
-    label = sys.argv[1]
+    label = positional[0]
     # T21: applied at call time, not to the frozen ROWS constants themselves --
     # merged into each row's knobs dict just before ef_evidence runs.
-    expand_aliases = len(sys.argv) == 3
 
     exit_code = 0
     try:
@@ -272,18 +309,23 @@ def main():
 
     print(f"run_id={run.run_id} label={run.label} n_chunks={run.n_chunks}")
 
+    embed = evidence.load_embed(config.MODEL_DIR) if pin_dir else None
+
     results = []
     fail_ids, known_fail_ids = [], []
     n_pass = 0
     for rid, prompt, knobs in ROWS:
         row_knobs = {**knobs, "expand_aliases": True} if expand_aliases else knobs
         try:
-            rec = run_row(conn, run, rid, prompt, row_knobs)
+            rec, bundle = run_row(conn, run, rid, prompt, row_knobs)
         except Exception as e:
             print(f"{rid}: ERROR {e!r}")
             results.append({"id": rid, "verdict": "ERROR", "error": repr(e)})
             exit_code = 2
             continue
+
+        if pin_dir:
+            _write_pin_digest(pin_dir, rid, conn, run, bundle, embed)
 
         v = rec["verdict"]
         if v in ("PASS", "CHANGED (now passes)"):

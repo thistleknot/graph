@@ -869,20 +869,35 @@ fixed seeds), do-no-harm = frozen diagnostic keeps 18/20 with the same pass set,
   "CUT" is a no-op confirmation, not a removal.
 
 ## Layer 12 -- sequential (behavior-touching core)
-- [WIP] T35 evidence.py::assemble() -- collapse the 5x evidence-assembly duplication
+- [DONE] T35 evidence.py::assemble() -- collapse the 5x evidence-assembly duplication
   _Files:_ evidence.py, walker_app.py, tools/diag_rerun.py, tests/test_evidence.py
   _Verify:_ digest bytes for all 20 frozen rows identical before/after && PYTHONPATH=. python tools/diag_rerun.py mixed-full-dual && full offline suite
   _Notes:_ STRONGEST gate: byte-pin render_digest across the frozen 20 before the edit,
   diff after (pass-count can mask reordering). walker_app 3 sites + diag_rerun rewired
   (other .tmp copies deleted in T31). First-ever tests for this block.
+  _Lessons:_ real count was 3 live walker_app sites (walk_state, _dendrite_state,
+  assess block), not 5x -- the other two were .tmp/ copies T31 already deleted; grep
+  confirmed before writing anything. Byte-pin instrument proved stable first:
+  before-vs-before2 20/20 SAME, embed=on (CHUNKGRAPH_MODEL_DIR resolved). Post-
+  extraction before-vs-after (.tmp/pin_digest.py --diff) 20/20 SAME across all 20
+  frozen rows. `tools/diag_rerun.py mixed-full-dual` unchanged: PASS 18/20 | FAIL
+  ['E3'] | KNOWN-FAIL ['A2'] -- both with and without --pin-digest. New
+  --pin-digest flag never touches rec/verdicts/printing/diag_rerun_last.json (only
+  reads `bundle`, now returned from run_row). Sprawl review: collapsed 3 (both
+  `top_quartile` copies in walker_app + `get_embed`'s body onto
+  `evidence.load_embed`) / nothing else to collapse. `interpret.community_briefs`
+  (interpret.py:568-573) rebuilds touched/cid_of/local_medoid on its own and is
+  **left unclaimed and untouched** -- no T35 task names it; recorded here for a
+  later task, not silently folded in. Full suite: 548 passed, 6 skipped (528+20
+  new evidence tests, 6 skips unchanged from baseline).
 
-- [OPEN] T36 walker split: walker_core.py UI-free, mirror writes to evidence.py
+- [WIP] T36 walker split: walker_core.py UI-free, mirror writes to evidence.py
   _Files:_ walker_app.py, walker_core.py, evidence.py, tests/test_walker_core.py, tests/test_walker_render.py
   _Verify:_ python -c "import walker_core" exits 0 without DB && diagnostic 18/20 && full suite
   _Notes:_ Depends T35 (seam) + T32 (config). Mirror except narrows to
   (URLError, RuntimeError, OSError). test_walker_render drops the SystemExit hack.
 
-- [OPEN] T37 graph_tools split behind a re-export shim (operator: KEEP)
+- [WIP] T37 graph_tools split behind a re-export shim (operator: KEEP)
   _Files:_ graph_tools.py, gt_sql.py, gt_metrics.py, gt_terms.py, tests/test_graph_tools.py
   _Verify:_ python -c "import graph_tools as gt; gt.pathways" && diagnostic 18/20 && full suite
   _Notes:_ 3 new files at the Article II limit (justified: zero shared imports across
