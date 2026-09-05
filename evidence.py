@@ -11,11 +11,13 @@ is independent of every spring layout.
 """
 from __future__ import annotations
 
+import urllib.error
 from collections import Counter
 from dataclasses import dataclass, field
 
 import numpy as np
 
+import export_neo4j as xn_mod
 import graph_tools as gt
 import interpret
 
@@ -207,3 +209,49 @@ def assemble(conn, run, bundle, *, embed=None) -> Evidence:
         term_members=term_members, pa_anchors=pa_anchors, pathways=pw,
         dendrite=dendrite, src_counts=src_counts, kw=kw, cset=cset, uset=uset,
         strong=strong, resolver=resolver, metrics=metrics, digest=digest)
+
+
+# ---- mirror writes (T36, design 6.21(c)) ----
+
+def digest_payload(ds: dict | None) -> dict | None:
+    """The three keys export_neo4j.write_digest reads out of dendrite_state's
+    output. None in -> None out: a walk that kept <5 embeddings mirrors its
+    walk but has no digest to mirror."""
+    if ds is None:
+        return None
+    return {"chunks": ds["chunks"], "sal": ds["sal"], "kept": ds["kept"]}
+
+
+def community_payload(touched: list, kw: dict) -> list[dict]:
+    """One row per touched community for write_digest's CommunitySummary
+    upsert. density/conductance are absent on communities community_metrics
+    did not cover -- .get keeps them None rather than raising."""
+    return [{"cid": t["cid"], "keywords": kw.get(t["cid"], []),
+             "size": t["size"], "hits": t["hits"],
+             "density": t.get("density"), "conductance": t.get("conductance")}
+            for t in touched]
+
+
+def mirror_walk(bundle, ev: Evidence, ds: dict | None, *, prompt: str,
+                xn=None) -> str | None:
+    """Best-effort neo4j mirror of a judged walk (T17). Returns None on
+    success, the error text when the mirror is unreachable or the server
+    rejected the transaction.
+
+    Require: write_walk before write_digest (write_digest MATCHes the Walk node).
+    Guarantee: never raises for a transport or server-side failure.
+    Maintain: a PROGRAMMING error is NOT swallowed. design 6.21(c) narrows the
+    catch from bare Exception to (URLError, RuntimeError, OSError) so a
+    TypeError/KeyError/AttributeError in the payload surfaces as a traceback
+    instead of reading to the operator as an unreachable server.
+    """
+    xn = xn or xn_mod
+    try:
+        xn.write_walk(bundle, ev.pathways, prompt=prompt)
+        d = digest_payload(ds)
+        if d is not None:
+            xn.write_digest(bundle, d,
+                            community_payload(ev.touched, ev.kw), prompt=prompt)
+    except (urllib.error.URLError, RuntimeError, OSError) as e:   # design 6.21(c)
+        return str(e)
+    return None

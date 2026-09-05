@@ -32,7 +32,13 @@ pytestmark = pytest.mark.live_db
 
 @pytest.fixture(scope="module")
 def app():
-    """Importing the app runs its script; that is how conn/run get built."""
+    """Importing the app runs its script; that is how conn/run get built.
+
+    The SystemExit catch stays after the T36 split: walker_app is still a
+    Streamlit script that calls st.stop() at import when no live run exists.
+    §6.21(c)'s no-SystemExit requirement is met by walker_core, which
+    tests/test_walker_core.py imports at module scope with the DB down.
+    """
     require_gt_conn().close()
     try:
         import walker_app

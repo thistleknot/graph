@@ -21,9 +21,7 @@ Then open http://localhost:8501. Ctrl+C in that terminal stops it.
 """
 from __future__ import annotations
 
-import json
 import os
-from collections import Counter
 from pathlib import Path
 
 import networkx as nx
@@ -36,6 +34,7 @@ import graph_tools as gt
 import interpret
 import pg_store
 import sampler
+import walker_core
 
 st.set_page_config(page_title="ChunkGraph Walker", layout="wide")
 
@@ -46,17 +45,6 @@ PALETTE = ["#4C78A8", "#F58518", "#54A24B", "#E45756", "#72B7B2", "#EECA3B",
 PROV_COLOR = {"both": "#E45756", "dense": "#4C78A8", "sparse": "#9E9E9E"}
 LABEL_FILE = Path(os.environ.get("LABEL_OUT", "community_labels.json"))
 DEFAULT_MODEL_DIR = config.MODEL_DIR   # used when CHUNKGRAPH_MODEL_DIR is unset
-
-
-def _clip(text: str, n: int) -> str:
-    """Never cut inside a word (design 6.3). Clip at the last whitespace
-    before n and mark the cut; short text is returned untouched."""
-    text = text or ""
-    if len(text) <= n:
-        return text
-    head = text[:n]
-    cut = head.rsplit(None, 1)[0] if " " in head else head
-    return cut + " …"
 
 
 def cid_color(cid):
@@ -83,15 +71,7 @@ def load_labels(run_id: str) -> dict:
     same numbers. A labels file drafted against another run is not merely
     stale, it is wrong -- it put "early electrical science history" on the
     Moroccan elections. Labels apply only when the file names THIS run."""
-    if not LABEL_FILE.exists():
-        return {}
-    try:
-        data = json.loads(LABEL_FILE.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return {}
-    if str(data.get("run_id")) != str(run_id):
-        return {"__stale_run__": data.get("run_id")}
-    return {c["cid"]: c for c in data.get("communities", []) if c.get("label")}
+    return walker_core.load_labels(LABEL_FILE, run_id)
 
 
 def cid_badge(cid, labels) -> str:
@@ -479,31 +459,10 @@ with tab_walk:
                               "plus a verdict per retrieved chunk; sees the subgraph map"):
                 with st.spinner("one call: reasoning over briefs + judging every chunk ..."):
                     ds_ = dendrite_state(str(run.run_id), q, _ev=ws)
-                    digest = ws.digest
-                    kw = ws.kw          # the mirror payload below still reads it
-                    st.session_state["assess"] = (q, interpret.reason(
-                        conn, run, bnd, terms, concept, embed=embed,
-                        judge=True, pw=pw, digest=digest))
-                    # T17: every judged walk lands in the neo4j mirror --
-                    # best-effort, never blocks the answer (design.md I14 sect).
-                    if os.environ.get("NEO4J_MIRROR", "1") != "0":
-                        try:
-                            import export_neo4j as xn
-                            xn.write_walk(bnd, pw, prompt=q)
-                            if ds_ is not None:
-                                xn.write_digest(
-                                    bnd,
-                                    {"chunks": ds_["chunks"], "sal": ds_["sal"],
-                                     "kept": ds_["kept"]},
-                                    [{"cid": t["cid"],
-                                      "keywords": kw.get(t["cid"], []),
-                                      "size": t["size"], "hits": t["hits"],
-                                      "density": t.get("density"),
-                                      "conductance": t.get("conductance")}
-                                     for t in touched],
-                                    prompt=q)
-                        except Exception as e:              # noqa: BLE001
-                            st.warning(f"neo4j mirror skipped: {e}")
+                    rr_, mirror_err = walker_core.assess(conn, run, bnd, ws, ds_, q, embed=embed)
+                    st.session_state["assess"] = (q, rr_)
+                    if mirror_err:
+                        st.warning(f"neo4j mirror skipped: {mirror_err}")
 
             got = st.session_state.get("assess")
             has_answer = False
@@ -562,7 +521,7 @@ with tab_walk:
                                 st.markdown(
                                     f"<span style='color:{colour}'>●</span> `#{o}` · {nd['doc_id']} · "
                                     f"c{nd['cid']} · walk {bnd.scores.get(o, 0):.2f} — <i>{why.get(o, '')}</i><br>"
-                                    f"<span style='opacity:.75;font-size:.88em'>{_clip(interpret.excerpt(nd['body'], q, 300, embed), 300)}</span>",
+                                    f"<span style='opacity:.75;font-size:.88em'>{walker_core.clip(interpret.excerpt(nd['body'], q, 300, embed), 300)}</span>",
                                     unsafe_allow_html=True)
                     neutral = [v for v in rr["verdicts"]
                                if v["verdict"] == "neutral" and v["ord"] in set(rr["shown"])]
@@ -648,8 +607,7 @@ with tab_walk:
                         st.info("Walk too small (or no stored embeddings) for the "
                                 "layered view.")
                     else:
-                        src_of = {o: gt.source_of(gt.node(conn, run, o))
-                                  for o in ds["kept"]}
+                        src_of = walker_core.src_of_map(conn, run, ds["kept"])
                         st.plotly_chart(draw_layers3d(ds, cid_of, src_of),
                                         use_container_width=True)
                         ct, tt = ds["chunks"]["chains"], ds["terms"]["chains"]
@@ -702,7 +660,7 @@ with tab_walk:
                             st.caption("salient: " + ", ".join(sal["kept"][:14])
                                        + (f" … (+{sal['n_kept'] - 14})" if sal["n_kept"] > 14 else ""))
                             st.markdown(f"<span style='opacity:.75;font-size:.86em'>"
-                                        f"{_clip(interpret.excerpt(nd['body'], q, 600, embed), 600)}</span>",
+                                        f"{walker_core.clip(interpret.excerpt(nd['body'], q, 600, embed), 600)}</span>",
                                         unsafe_allow_html=True)
                     mine = in_cid[c]
                     st.caption("retrieved here (walk score): " + ", ".join(
@@ -720,7 +678,7 @@ with tab_walk:
                         st.markdown(
                             f"`#{x['ord']}` c{x['cid']} → {reach} · {x['n_foreign_edges']} edges<br>"
                             f"<span style='opacity:.75;font-size:.88em'>"
-                            f"{_clip(interpret.excerpt(nd['body'], q, 220, embed), 220)}</span>",
+                            f"{walker_core.clip(interpret.excerpt(nd['body'], q, 220, embed), 220)}</span>",
                             unsafe_allow_html=True)
 
                 st.markdown("#### Pathways between ideas")
@@ -758,7 +716,7 @@ with tab_walk:
                             f"**#{o}** · {nd['doc_id']} · c{nd['cid']} · "
                             f"walk {bnd.scores.get(o, 0):.2f} · {terms_i}<br>"
                             f"<span style='opacity:.75;font-size:.86em'>"
-                            f"{_clip(interpret.excerpt(nd['body'], q, 300, embed), 300)}</span>",
+                            f"{walker_core.clip(interpret.excerpt(nd['body'], q, 300, embed), 300)}</span>",
                             unsafe_allow_html=True)
 
 # ================================================================ MAP
@@ -784,25 +742,8 @@ with tab_map:
             _ds0 = None
             st.warning(f"partitions unavailable: {e}")
         if _ds0 is not None:
-            _sal0 = _ds0["sal"]
-            _rows = []
-            for _ci, _chain in enumerate(_ds0["chunks"]["chains"]):
-                _tc = Counter()
-                _mix = Counter()
-                for _o in _chain:
-                    for _t in (_sal0.get(_o, {}).get("top") or []):
-                        _tc[_t] += 1
-                    _nd0 = gt.node(conn, run, _o)
-                    _mix[gt.source_of(_nd0) or "?"] += 1
-                _rows.append({
-                    "chain": _ci + 1,
-                    "chunks": len(_chain),
-                    "sources": " ".join(f"{k}:{v}" for k, v in
-                                        _mix.most_common()),
-                    "salient terms (carried by N members)":
-                        ", ".join(f"{t}({n})" if n > 1 else t
-                                  for t, n in _tc.most_common(12)),
-                })
+            _rows = walker_core.partition_rows(
+                _ds0, walker_core.src_of_map(conn, run, _ds0["kept"]))
             st.dataframe(_rows, use_container_width=True, hide_index=True)
             _tchains = _ds0["terms"]["chains"]
             if _tchains:

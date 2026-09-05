@@ -9,6 +9,7 @@ Run:  pytest tests/test_evidence.py -v      (live_db tests need docker compose u
 from __future__ import annotations
 
 import dataclasses
+import urllib.error
 
 import pytest
 
@@ -185,3 +186,99 @@ def test_assemble_field_contract(conn, run):
         assert hasattr(ev, f.name)
     assert set(ev.in_cid) == set(ev.cids)
     assert set(ev.cid_of) == set(bnd.sampled)
+
+
+# ---- mirror writes (6.21(c)) ----
+
+def _base_evidence(**overrides):
+    base = dict(
+        touched=[], cids=[], concept={}, terms={}, cid_of={}, in_cid={},
+        xedges={}, medoids={}, salient={}, term_members={}, pa_anchors=[],
+        pathways={"pairs": []}, dendrite=None, src_counts={}, kw={}, cset=set(),
+        uset=set(), strong=[], resolver={}, metrics={}, digest="D",
+    )
+    base.update(overrides)
+    return evidence.Evidence(**base)
+
+
+class _StubXn:
+    def __init__(self, raise_on=None, exc=None):
+        self.calls = []
+        self.raise_on = raise_on
+        self.exc = exc
+
+    def write_walk(self, bundle, pathways, *, prompt=None):
+        self.calls.append(("write_walk", bundle, pathways, prompt))
+        if self.raise_on == "write_walk":
+            raise self.exc
+
+    def write_digest(self, bundle, digest, touched, *, prompt=None):
+        self.calls.append(("write_digest", bundle, digest, touched, prompt))
+        if self.raise_on == "write_digest":
+            raise self.exc
+
+
+def test_digest_payload_none_in_none_out():
+    assert evidence.digest_payload(None) is None
+
+
+def test_digest_payload_returns_exactly_the_three_keys():
+    ds = {"chunks": {"c": 1}, "sal": {"s": 2}, "kept": [1, 2], "cross": "extra"}
+    out = evidence.digest_payload(ds)
+    assert out == {"chunks": ds["chunks"], "sal": ds["sal"], "kept": ds["kept"]}
+    assert out["chunks"] is ds["chunks"]
+    assert "cross" not in out
+
+
+def test_community_payload_shapes_six_keys_with_and_without_metrics():
+    touched = [{"cid": 1, "size": 20, "hits": 5, "density": 0.03, "conductance": 0.8},
+               {"cid": 2, "size": 9, "hits": 2}]
+    kw = {1: ["jury", "trial"]}
+    out = evidence.community_payload(touched, kw)
+    assert len(out) == 2
+    assert set(out[0]) == {"cid", "keywords", "size", "hits", "density", "conductance"}
+    assert out[0] == {"cid": 1, "keywords": ["jury", "trial"], "size": 20,
+                      "hits": 5, "density": 0.03, "conductance": 0.8}
+    assert out[1] == {"cid": 2, "keywords": [], "size": 9, "hits": 2,
+                      "density": None, "conductance": None}
+
+
+def test_mirror_walk_success_calls_write_walk_before_write_digest():
+    ev = _base_evidence(pathways={"pairs": []}, touched=[], kw={})
+    ds = {"chunks": {}, "sal": {}, "kept": []}
+    xn = _StubXn()
+    err = evidence.mirror_walk("bundle", ev, ds, prompt="q", xn=xn)
+    assert err is None
+    names = [c[0] for c in xn.calls]
+    assert names == ["write_walk", "write_digest"]
+    assert xn.calls[0][3] == "q" and xn.calls[1][4] == "q"
+
+
+def test_mirror_walk_with_ds_none_skips_write_digest():
+    ev = _base_evidence()
+    xn = _StubXn()
+    err = evidence.mirror_walk("bundle", ev, None, prompt="q", xn=xn)
+    assert err is None
+    names = [c[0] for c in xn.calls]
+    assert names == ["write_walk"]
+
+
+@pytest.mark.parametrize("exc", [
+    urllib.error.URLError("refused"),
+    RuntimeError("neo4j tx error, deadlock"),
+    OSError("timed out"),
+])
+def test_mirror_walk_catches_transport_and_server_errors(exc):
+    ev = _base_evidence()
+    xn = _StubXn(raise_on="write_walk", exc=exc)
+    err = evidence.mirror_walk("bundle", ev, None, prompt="q", xn=xn)
+    assert err == str(exc)
+
+
+def test_mirror_walk_does_not_swallow_programming_errors():
+    """The narrowing gate (6.21(c)): a TypeError in the payload path is a bug,
+    not an unreachable server, and must surface as a traceback."""
+    ev = _base_evidence()
+    xn = _StubXn(raise_on="write_walk", exc=TypeError("payload bug"))
+    with pytest.raises(TypeError):
+        evidence.mirror_walk("bundle", ev, None, prompt="q", xn=xn)
