@@ -2353,3 +2353,20 @@ initialize from it; WHEN a walk runs, the URL's ?q= SHALL be updated to match,
 so any session's current view is a link another browser session can open and
 see the same populated results (walk/LLM state is cached process-wide per
 (run, prompt), so the second session renders from cache).
+
+**P14 (colored cards, one figure -- T46, 2026-09-05; supersedes P4's
+side-by-side FIGURES and P11's st.code rendering; every other P4/P11 rule
+stands).** (a) The Groups panel SHALL show ONE spring figure, full width: the
+walked subgraph in GLOBAL cid colors with hulls. The relative-louvain figure
+is removed; its computation stays, feeding the splits/merges divergence text
+in the digests -- the text is where the comparison earns its keep. (b) Every
+group digest renders as a COLORED CARD: background = the group's figure color
+at alpha ~0.10, left border 4px solid full hue, color chip + id header,
+monospace body -- same group_color palette as the figure, one hue per group
+everywhere. Local-only groups take the hue of their dominant overlapping cid.
+(c) The four section panels carry distinct accents (Answer green, Judged
+evidence blue, Groups violet, Partitions amber). (d) Each partition chain row
+is tinted by its dominant community's color. (e) Cards are HTML via
+st.markdown(unsafe_allow_html=True) with ESCAPED content; the digest text
+stays byte-identical to group_digest's output (P11(g): the LLM artifact and
+the human view never fork).

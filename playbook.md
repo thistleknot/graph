@@ -1024,3 +1024,22 @@ Source: operator screenshots + plan, 2026-09-05.
   disaster", screenshot each panel, surface to operator
   _Files:_ (none -- verification only)
   _Verify:_ playwright screenshots of :8501
+
+## Layer 15 -- sequential (colored factbook, one figure)
+Source: operator phone review, 2026-09-05 ("all one color... left panel is
+adding no utility").
+
+- [DONE] T46 Spec 6.22 P14: colored digest cards, one full-width global figure
+  (relative louvain becomes text-only), section accents, tinted chain rows
+  _Files:_ .spec/specs/graph-explorer/design.md
+  _Verify:_ grep -c "P14" .spec/specs/graph-explorer/design.md
+
+- [WIP] T47 Colored cards: walker_core.digest_card (pure HTML, escaped,
+  text byte-identical to group_digest), walker_app one-figure Groups panel +
+  card loop + section accents + tinted chain rows
+  _Files:_ walker_core.py, walker_app.py, tests/test_walker_core.py, tests/test_walker_render.py
+  _Verify:_ python -m pytest tests/test_walker_core.py tests/test_walker_render.py -q && PYTHONPATH=. python tools/diag_rerun.py mixed-full-dual
+
+- [OPEN] T48 Live look: >=3 distinct card hues in the DOM, screenshots to operator
+  _Files:_ (none -- verification only)
+  _Verify:_ playwright screenshots of :8501
