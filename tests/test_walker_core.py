@@ -877,7 +877,7 @@ def test_walk3d_html_escapes_script_close_and_degrades_without_the_cdn():
     assert "</script>" not in m.group(1)
     assert "<\\/b>" in m.group(1)   # the `</` guard fires on every `</`, not just `</script>`
 
-    assert doc.count("onerror=") == 2
+    assert doc.count("onerror=") == 3   # three + force-graph + spritetext
     assert "3D scene unavailable" in doc
 
 
@@ -899,3 +899,14 @@ def test_walk3d_html_hides_controls_when_no_paths_and_no_umap():
     umap_btn2 = doc_full[doc_full.index('id="umapbtn"'):doc_full.index('>', doc_full.index('id="umapbtn"'))]
     assert "display:none" not in path_btn2
     assert "display:none" not in umap_btn2
+
+
+def test_walk3d_html_loads_three_before_spritetext():
+    """three-spritetext's UMD reads global THREE (absent from 3d-force-graph's
+    private bundle): live console receipt was 'reading LinearFilter'. The
+    plain three UMD script tag must precede both other libs."""
+    h = walker_core.walk3d_html({"nodes": [], "links": [], "sprites": [],
+                                 "paths": [], "has_umap": False})
+    assert walker_core.WALK3D_THREE_URL in h
+    assert h.index(walker_core.WALK3D_THREE_URL) < h.index(walker_core.WALK3D_FG_URL)
+    assert h.index(walker_core.WALK3D_THREE_URL) < h.index(walker_core.WALK3D_ST_URL)

@@ -672,6 +672,11 @@ def chain_communities(chains, cid_of, *, width=110) -> list:
 # ---------- 3D scene builder (T53, design 6.22 P16(a)-(h) + (i) umap) ----------
 
 WALK3D_FG_URL = "https://cdn.jsdelivr.net/npm/3d-force-graph@1.73.4/dist/3d-force-graph.min.js"
+# three-spritetext's UMD build reads the global THREE, which 3d-force-graph
+# bundles privately -- so plain three UMD loads FIRST (<= 0.159: later
+# releases dropped the UMD build). Console receipt for this ordering:
+# "Cannot read properties of undefined (reading 'LinearFilter')" (T54 live).
+WALK3D_THREE_URL = "https://cdn.jsdelivr.net/npm/three@0.158.0/build/three.min.js"
 WALK3D_ST_URL = "https://cdn.jsdelivr.net/npm/three-spritetext@1.8.2/dist/three-spritetext.min.js"
 
 
@@ -818,6 +823,7 @@ html,body{margin:0;background:#0f1117;color:#e6e8ef;font:12px/1.4 system-ui}
 <button id="umapbtn" style="${hide_umap}">layout: force</button>
 </div>
 <div id="err"></div>
+<script src="${three_url}" onerror="window.__w3dfail=1"></script>
 <script src="${fg_url}" onerror="window.__w3dfail=1"></script>
 <script src="${st_url}" onerror="window.__w3dfail=1"></script>
 <script id="w3d-data" type="application/json">${data_json}</script>
@@ -1012,6 +1018,7 @@ def walk3d_html(payload: dict, *, height: int = 700) -> str:
         muted=MUTED,
         hide_path="display:none" if not payload.get("paths") else "",
         hide_umap="display:none" if not payload.get("has_umap") else "",
+        three_url=WALK3D_THREE_URL,
         fg_url=WALK3D_FG_URL,
         st_url=WALK3D_ST_URL,
         data_json=data_json,
