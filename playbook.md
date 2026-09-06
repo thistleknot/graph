@@ -982,8 +982,13 @@ sense of the key subgraph analysis").
   pytest: 20 passed in 83.61s. diag_rerun: PASS 18/20 | FAIL ['E3'] |
   KNOWN-FAIL ['A2'] (byte-pinned digest unchanged).
 
-- [OPEN] T41 Live look: run a real query through the restarted walker, screenshot
+- [DONE] T41 Live look: run a real query through the restarted walker, screenshot
   the Analysis tab, verify P1-P8 visually (images first, shading, LH/RH louvain,
   auto-LLM narration present) -- surface the screenshot to the operator
   _Files:_ (none -- verification only)
   _Verify:_ playwright screenshot of :8501 with a prompt run
+  _Lessons:_ live run 'the end of the war in europe': auto-LLM fired (grounded
+    answer, cite #8709), two tabs only, partitions+groups+shading all render;
+    mirror-skip warning proved the narrowed except path (neo4j was down; now up
+    via compose after removing the stale hand-run container). Group relation
+    counts are GLOBAL supports per P5 semantics -- can read as inflated.
