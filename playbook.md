@@ -1127,6 +1127,6 @@ categorization mindset"). Plan approved.
   _Lessons:_ implementer yielded on its own background diag; orchestrator
     verified (32 passed; 18/20 FAIL=[E3]) and closed per standing recovery law.
 
-- [WIP] T59 Live look: zone screenshots to operator
+- [DONE] T59 Live look: zone screenshots to operator
   _Files:_ (none -- verification only)
   _Verify:_ playwright screenshots of :8501
