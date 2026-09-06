@@ -2437,3 +2437,23 @@ details expander move to a single compact row at the top of the main area
 (selector left, stats muted beside it, details in a popover); degraded-mode
 warnings render inline under that row. Nothing else may reintroduce
 st.sidebar.
+
+**P18 (feng-shui zones -- T57, 2026-09-06; supersedes P10's ORDER clause;
+P10's bordered-panel, accent, and factbook contracts stand).** Every element
+of the Analysis tab belongs to exactly ONE category, and placement follows
+category: VERDICT (what the corpus said: hero answer, hypothesis+premises,
+KPI stat row), EVIDENCE (why believe it: judged pill rows, neutral expander,
+reason-vs-judge, raw model I/O), STRUCTURE (shape of the walked knowledge:
+3D explorer, 2D walk spring, LH/RH louvain pair, term graph, factbook grid),
+LENSES (alternative readings: dendrite partitions + chain communities + term
+chains), REFERENCE (run-level, prompt-independent: community map + quotient
+links + run stats/details). The legacy medoids/anchors/one-degree-out block
+is a WALK TRACE -- diagnostic, not evidence. Layout: Zone 1 = VERDICT left |
+EVIDENCE right (st.columns ~[1.1,1]); Zone 2 = STRUCTURE full width, figure
+sub-tabs with 3D FIRST and default, louvain pair as its own sub-tab,
+factbook grid beneath in the same panel; Zone 3 = LENSES left | REFERENCE
+right (~[1.4,1]), the community map sitting beside the chain lines that cite
+its cids; the redundant global-map image tab merges into the community-map
+slot; the walk trace renders LAST as a collapsed expander. RULE: any future
+element names its category BEFORE it lands; an element with no category has
+no place on the tab.

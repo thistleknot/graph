@@ -1109,3 +1109,22 @@ force layout chosen over embedding PCA).
   present to operator before any implementation
   _Files:_ playbook.md (next layer)
   _Verify:_ operator review
+
+## Layer 18 -- sequential (feng-shui zones, T56 resolved)
+Source: operator, 2026-09-06 ("holistic feng-shui redesign, top-down
+categorization mindset"). Plan approved.
+
+- [DONE] T57 Spec 6.22 P18: five categories (VERDICT/EVIDENCE/STRUCTURE/
+  LENSES/REFERENCE) + zone layout; supersedes P10 order clause
+  _Files:_ .spec/specs/graph-explorer/design.md
+  _Verify:_ grep -c "P18" .spec/specs/graph-explorer/design.md
+
+- [OPEN] T58 Zone re-placement in walker_app: verdict|evidence columns, 3D
+  first sub-tab, louvain pair as own sub-tab, community map to Zone 3 right,
+  global-map tab merged away, walk trace collapsed at bottom. Placement only.
+  _Files:_ walker_app.py, tests/test_walker_render.py
+  _Verify:_ python -m pytest tests/test_walker_render.py -q && PYTHONPATH=. python tools/diag_rerun.py mixed-full-dual
+
+- [OPEN] T59 Live look: zone screenshots to operator
+  _Files:_ (none -- verification only)
+  _Verify:_ playwright screenshots of :8501
