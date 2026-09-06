@@ -1140,12 +1140,18 @@ evidence, llm-as-judge sufficiency call, on-the-fly depth/hops).
   _Files:_ .spec/specs/graph-explorer/design.md
   _Verify:_ grep -c "6.23" .spec/specs/graph-explorer/design.md
 
-- [WIP] T61 react.py: sufficiency judge + action proposal + bounded loop over
+- [DONE] T61 react.py: sufficiency judge + action proposal + bounded loop over
   sampler.ef_evidence knobs (ef/k_anchor/rings/aliases/reformulated query),
   evidence accumulation with per-iteration provenance; A8 score-stats
   history (params -> mean/sdev/entails) fed to the proposer + tests
   _Files:_ react.py, tests/test_react.py
   _Verify:_ python -m pytest tests/test_react.py -q
+  _Lessons:_ 15 passed in 177.61s (live smoke skips clean against the down DB,
+  ~3min is gt.connect()'s own timeout, not a defect here); added A9 derived
+  metrics (precision_proxy, contradiction_rate, gold_recall_evidence via a
+  pure gold_recall() helper) to stats()/IterationRecord/history table per the
+  post-subplan spec addition -- no extra LLM calls, no edits outside the two
+  owned files.
 
 - [OPEN] T62 Wire-in: zero-entail answer gate in the hero (immediate fix) +
   react loop engaged when insufficient; iteration trace in the EVIDENCE zone
