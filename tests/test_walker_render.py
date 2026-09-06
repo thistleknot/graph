@@ -267,6 +267,45 @@ def test_reason_and_judge_disagreement_is_shown():
     assert "#12" not in info                                    # agreed on: not a disagreement
 
 
+def test_panels_render_digests_and_chain_communities():
+    """6.22 P10-P12 (T44): Groups panel prints st.code factbook digests instead
+    of styled dataframes, and the Partitions panel prints one chain-community
+    line per chain. Injected `assess`; no model call, same shape as
+    test_reason_and_judge_disagreement_is_shown."""
+    from streamlit.testing.v1 import AppTest
+    q = "jury trial grand jury investigation"
+    rr = {"ok": True, "backend": "test", "answer": "A #11.", "briefs": [{}], "briefs_text": "b",
+          "hypotheses": [], "hypothesis": "", "why": "", "foreign": [], "stages": {},
+          "self_contradicting": [], "supported_ids": [11, 12], "cited": [11],
+          "premises": [{"text": "p", "ids": [11, 12], "verdict": "supports", "why": ""}],
+          "shown": [11, 12, 13], "entailed": [12, 13], "contradicts": [],
+          "coverage": 1.0, "evidence": "",
+          "verdicts": [{"ord": 11, "verdict": "neutral", "why": "about lunch counters"},
+                       {"ord": 12, "verdict": "entails", "why": "yes"},
+                       {"ord": 13, "verdict": "entails", "why": "yes"}]}
+    try:
+        at = AppTest.from_file("walker_app.py", default_timeout=240)
+        at.session_state["assess"] = (q, rr)
+        at.run()
+        at.text_input("q").set_value(q).run()
+    except Exception as e:                                # pragma: no cover
+        pytest.skip(f"app could not start (no db?): {e}")
+    errs = [e.value for e in at.exception]
+    assert not errs, f"Analysis tab raised: {errs}"
+    try:
+        codes = [c.value for c in at.code]
+    except AttributeError:                                # pragma: no cover
+        codes = [c.value for c in at.get("code")]
+    digests = [c for c in codes if "terms(dwpc):" in c]
+    assert digests, "no factbook digest rendered"
+    import re
+    assert any(re.search(r"terms\(dwpc\):.*\b\d+\.\d\b", d) for d in digests), \
+        "P11(a): every dwpc term shows a 1-decimal score"
+    assert all(d.splitlines()[0].startswith(("g", "c")) for d in digests)
+    md = " ".join(m.value for m in at.markdown)
+    assert re.search(r"chain \d+ · `c", md), "P12: no chain community line"
+
+
 def test_draw_global_map_labels_communities_by_keywords(app):
     """Map tab's prompt-independent community map: every community drawn, sized
     by member count, labelled by its keywords -- not just tables (operator,
@@ -353,3 +392,6 @@ def test_mirror_is_the_neo4j_tab():
     assert src.find("Partitions (dendrite sort)") < src.find('subheader("Community map")')
     assert 'st.tabs(["Analysis", "Neo4j"])' in src
     assert "relative (this walk only)" in src
+    assert src.count("st.container(border=True)") >= 4      # 6.22 P10, four panels
+    assert "style_group_table" not in src                   # P11: no dataframes for groups
+    assert src.find("### Groups") < src.find("### Partitions")   # P10 order

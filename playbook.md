@@ -1011,10 +1011,14 @@ Source: operator screenshots + plan, 2026-09-05.
   undercount by the label's length; overflow from `max_items` must clamp at
   0 (`total - max_items` goes negative when the list is already short).
 
-- [WIP] T44 UI panels: st.container(border=True) x4, st.code digests replace
+- [DONE] T44 UI panels: st.container(border=True) x4, st.code digests replace
   the 4 styled dataframes, chain community lines under partitions
   _Files:_ walker_app.py, tests/test_walker_render.py
   _Verify:_ python -m pytest tests/test_walker_render.py -q && PYTHONPATH=. python tools/diag_rerun.py mixed-full-dual
+  _Lessons:_ sprawl review: collapsed 2 (the two duplicate `src_of_map` calls
+  now share `src_of_all`; `style_group_table` + its lone `import pandas`
+  deleted, dropping pandas from walker_app's import surface). 21 passed;
+  diag gate `PASS 18/20 | FAIL ['E3'] | KNOWN-FAIL ['A2']` unchanged.
 
 - [OPEN] T45 Live look: restart walker, run "how a city rebuilds after a
   disaster", screenshot each panel, surface to operator
