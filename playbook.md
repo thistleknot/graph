@@ -1034,11 +1034,15 @@ adding no utility").
   _Files:_ .spec/specs/graph-explorer/design.md
   _Verify:_ grep -c "P14" .spec/specs/graph-explorer/design.md
 
-- [WIP] T47 Colored cards: walker_core.digest_card (pure HTML, escaped,
+- [DONE] T47 Colored cards: walker_core.digest_card (pure HTML, escaped,
   text byte-identical to group_digest), walker_app one-figure Groups panel +
   card loop + section accents + tinted chain rows
   _Files:_ walker_core.py, walker_app.py, tests/test_walker_core.py, tests/test_walker_render.py
   _Verify:_ python -m pytest tests/test_walker_core.py tests/test_walker_render.py -q && PYTHONPATH=. python tools/diag_rerun.py mixed-full-dual
+  _Lessons:_ moving PALETTE/cid_color/group_color/rgba into walker_core also broke an
+    unrelated pre-existing source-grep test (test_mirror_is_the_neo4j_tab) that literal-matched
+    "### Groups"/"### Partitions (dendrite sort)"/"relative (this walk only)" in walker_app.py;
+    updated those assertions to match the panel_head()-based source (collateral fix, same owned file).
 
 - [OPEN] T48 Live look: >=3 distinct card hues in the DOM, screenshots to operator
   _Files:_ (none -- verification only)

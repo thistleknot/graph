@@ -566,3 +566,53 @@ def test_chain_communities_empty_chain_and_truncation():
     out = walker_core.chain_communities([chain], cid_of, width=110)
     assert len(out[0]) <= 110
     assert "+ " in out[0] and out[0].endswith("more")
+
+
+def test_digest_card_text_is_byte_identical_after_unescaping():
+    import re
+    import html as _html
+    gc = _gc(gid=0, members=[1, 2, 3], size=3)
+    src_of = {1: "wiki", 2: "wiki", 3: "brown"}
+    txt = walker_core.group_digest(gc, {"mentions": {}, "names": {}, "corpus": {},
+                                         "corpus_total": 0}, src_of)
+    card = walker_core.digest_card(txt, "#4C78A8")
+    body = re.search(r"<pre[^>]*>(.*)</pre>", card, re.S).group(1)
+    assert _html.unescape(body) == txt
+
+
+def test_digest_card_escapes_html_in_the_body():
+    import html as _html
+    txt = '<script>alert("x")</script> & <b>'
+    card = walker_core.digest_card(txt, "#4C78A8")
+    assert "<script>" not in card
+    assert "&lt;script&gt;" in card
+    assert "&amp;" in card
+    import re
+    body = re.search(r"<pre[^>]*>(.*)</pre>", card, re.S).group(1)
+    assert _html.unescape(body) == txt
+
+
+def test_digest_card_carries_the_hue_as_border_and_tint():
+    card = walker_core.digest_card("g0 . 1 chunks", "#4C78A8")
+    assert "border-left:4px solid #4C78A8" in card
+    assert walker_core.rgba("#4C78A8", 0.10) in card
+
+
+def test_card_color_local_group_takes_dominant_cid_hue():
+    assert walker_core.card_color(
+        {"kind": "merged", "gid": 0, "cids": [(6, 36)]}) == walker_core.cid_color(6)
+    assert walker_core.card_color(
+        {"kind": "local", "gid": 1, "cids": [(0, 28), (12, 8)]}) == walker_core.cid_color(0)
+    assert walker_core.card_color(
+        {"kind": "global", "gid": 6, "cids": []}) == walker_core.cid_color(6)
+
+
+def test_card_color_local_group_with_no_overlap_falls_back_to_gid():
+    assert walker_core.card_color(
+        {"kind": "local", "gid": 3, "cids": []}) == walker_core.cid_color(3)
+
+
+def test_rgba_and_cid_color_moved_into_core():
+    assert walker_core.cid_color(None) == "#DDDDDD"
+    assert walker_core.rgba("#4C78A8", 0.1) == "rgba(76,120,168,0.1)"
+    assert walker_core.cid_color(0) == walker_core.cid_color(len(walker_core.PALETTE))

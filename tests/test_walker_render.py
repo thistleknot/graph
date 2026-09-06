@@ -268,10 +268,9 @@ def test_reason_and_judge_disagreement_is_shown():
 
 
 def test_panels_render_digests_and_chain_communities():
-    """6.22 P10-P12 (T44): Groups panel prints st.code factbook digests instead
-    of styled dataframes, and the Partitions panel prints one chain-community
-    line per chain. Injected `assess`; no model call, same shape as
-    test_reason_and_judge_disagreement_is_shown."""
+    """6.22 P10-P12 + P14 (T47): the Groups panel renders ONE spring figure and
+    per-group COLORED CARDS (HTML, not st.code); the Partitions panel prints one
+    tinted chain-community row per chain."""
     from streamlit.testing.v1 import AppTest
     q = "jury trial grand jury investigation"
     rr = {"ok": True, "backend": "test", "answer": "A #11.", "briefs": [{}], "briefs_text": "b",
@@ -292,18 +291,20 @@ def test_panels_render_digests_and_chain_communities():
         pytest.skip(f"app could not start (no db?): {e}")
     errs = [e.value for e in at.exception]
     assert not errs, f"Analysis tab raised: {errs}"
+    md = " ".join(m.value for m in at.markdown)
+    assert "terms(dwpc):" in md, "no factbook digest rendered"
+    import re, html as _html
+    assert "border-left:4px solid #" in md, "P14(b): no colored card border"
+    assert re.search(r"terms\(dwpc\):.*?\b\d+\.\d\b", md), \
+        "P11(a): every dwpc term shows a 1-decimal score"
     try:
         codes = [c.value for c in at.code]
     except AttributeError:                                # pragma: no cover
         codes = [c.value for c in at.get("code")]
-    digests = [c for c in codes if "terms(dwpc):" in c]
-    assert digests, "no factbook digest rendered"
-    import re
-    assert any(re.search(r"terms\(dwpc\):.*\b\d+\.\d\b", d) for d in digests), \
-        "P11(a): every dwpc term shows a 1-decimal score"
-    assert all(d.splitlines()[0].startswith(("g", "c")) for d in digests)
-    md = " ".join(m.value for m in at.markdown)
-    assert re.search(r"chain \d+ · `c", md), "P12: no chain community line"
+    assert not [c for c in codes if "terms(dwpc):" in c], \
+        "P14(e) supersedes P11's st.code: digests are cards now"
+    assert re.search(r"chain \d+ · <code>c", md), "P12/P14(d): no tinted chain row"
+    assert "relative (this walk only)" not in md, "P14(a): relative figure not removed"
 
 
 def test_draw_global_map_labels_communities_by_keywords(app):
@@ -388,13 +389,12 @@ def test_mirror_is_the_neo4j_tab():
     assert 'selectbox("Walk"' not in mirror             # one input field
     assert "st.radio" not in mirror
     # partitions live inside Analysis, before the community map
-    assert "Partitions (dendrite sort)" in src
-    assert src.find("Partitions (dendrite sort)") < src.find('subheader("Community map")')
+    assert 'panel_head("Partitions", "dendrite sort")' in src
+    assert src.find('panel_head("Partitions"') < src.find('subheader("Community map")')
     assert 'st.tabs(["Analysis", "Neo4j"])' in src
-    assert "relative (this walk only)" in src
     assert src.count("st.container(border=True)") >= 4      # 6.22 P10, four panels
     assert "style_group_table" not in src                   # P11: no dataframes for groups
-    assert src.find("### Groups") < src.find("### Partitions")   # P10 order
+    assert src.find('panel_head("Groups")') < src.find('panel_head("Partitions"')   # P10 order
 
 
 def test_query_param_seeds_prompt_source():

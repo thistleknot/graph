@@ -21,6 +21,7 @@ Then open http://localhost:8501. Ctrl+C in that terminal stops it.
 """
 from __future__ import annotations
 
+import html
 import os
 from pathlib import Path
 
@@ -38,17 +39,26 @@ import walker_core
 
 st.set_page_config(page_title="ChunkGraph Walker", layout="wide")
 
-PALETTE = ["#4C78A8", "#F58518", "#54A24B", "#E45756", "#72B7B2", "#EECA3B",
-           "#B279A2", "#FF9DA6", "#9D755D", "#BAB0AC", "#1F77B4", "#FF7F0E",
-           "#2CA02C", "#D62728", "#9467BD", "#8C564B", "#E377C2", "#7F7F7F",
-           "#BCBD22", "#17BECF"]
+PALETTE = walker_core.PALETTE
+cid_color = walker_core.cid_color
+group_color = walker_core.group_color
+rgba = walker_core.rgba
 PROV_COLOR = {"both": "#E45756", "dense": "#4C78A8", "sparse": "#9E9E9E"}
 LABEL_FILE = Path(os.environ.get("LABEL_OUT", "community_labels.json"))
 DEFAULT_MODEL_DIR = config.MODEL_DIR   # used when CHUNKGRAPH_MODEL_DIR is unset
 
+ACCENT = {"Answer": "#2a7", "Judged evidence": "#4C78A8",
+          "Groups": "#B279A2", "Partitions": "#E8A33D"}   # P14(c)
 
-def cid_color(cid):
-    return "#DDDDDD" if cid is None else PALETTE[int(cid) % len(PALETTE)]
+
+def panel_head(title, sub=""):
+    """Accent bar + section title, rendered inside a bordered panel (P14(c))."""
+    c = ACCENT[title]
+    st.markdown(
+        f'<div style="border-left:4px solid {c};padding-left:.6rem;margin:.1rem 0 .5rem">'
+        f'<div style="font-size:1.25rem;font-weight:700;color:{c}">{html.escape(title)}</div>'
+        + (f'<div style="opacity:.7;font-size:.85rem">{html.escape(sub)}</div>' if sub else "")
+        + "</div>", unsafe_allow_html=True)
 
 
 @st.cache_resource
@@ -419,19 +429,6 @@ def draw_global_map(comms, qrows, height=560):
     return fig
 
 
-def group_color(gid):
-    """Alias so the intent reads at every call site: `cid_color` IS the one
-    palette, shared by stored cids and ephemeral louvain gids alike (P6)."""
-    return cid_color(gid)
-
-
-def rgba(hex_color, a):
-    """Plotly rejects 8-digit hex (#RRGGBBAA); alpha must be rgba()."""
-    h = hex_color.lstrip("#")
-    r, g, b = (int(h[i:i + 2], 16) for i in (0, 2, 4))
-    return f"rgba({r},{g},{b},{a})"
-
-
 def _monotone_chain_hull(points):
     """Pure-python convex hull (Andrew's monotone chain), no scipy dependency."""
     pts = sorted(set(points))
@@ -618,7 +615,7 @@ with tab_analysis:
             if got and got[0] == q:
                 rr = got[1]
                 with st.container(border=True):            # P10 panel 1 — Answer
-                    st.markdown("### Answer")
+                    panel_head("Answer")
                     if not rr["ok"]:
                         st.warning(f"Stopped: {rr['error']}")
                     else:
@@ -658,7 +655,7 @@ with tab_analysis:
                 with st.container(border=True):            # P10 panel 2 — Judged evidence
                     # ---- the judge channel of the same call
                     if rr.get("verdicts"):
-                        st.markdown("### Judged evidence")
+                        panel_head("Judged evidence")
                         st.caption(f"judged {rr['coverage']:.0%} of {len(rr['shown'])} shown · "
                                    f"{len(rr['entailed'])} entail · "
                                    f"{len(rr['contradicts'])} contradict")
@@ -716,7 +713,7 @@ with tab_analysis:
                                 st.markdown(f"**{name}**"); st.code(txt, language="json")
 
             with st.container(border=True):                # P10 panel 3 — Groups
-                st.markdown("### Groups")
+                panel_head("Groups")
                 # ---- figures: alternate whole-walk views of one thing, kept
                 # as a sub-tab strip rather than stacked (P9 continuity -- see
                 # T40 subplan for the full justification).
@@ -765,19 +762,15 @@ with tab_analysis:
                     st.image(interpret.render_walk_image(conn, run, bnd, pw),
                              use_container_width=True)
 
-                L, R = st.columns(2)                       # LH/RH springs, UNCHANGED
-                for col, title, groups, note in (
-                        (L, "relative (this walk only)", rel_groups,
-                         "Louvain re-run on the walked subgraph. These ids are EPHEMERAL — a view, "
-                         "never persisted, never joined to a stored cid, never stable across reruns."),
-                        (R, "global communities (stored cids)", glob_groups,
-                         "The run's own ingest-time cids, restricted to the walked chunks.")):
-                    with col:
-                        st.markdown(f"**{title}**"); st.caption(note)
-                        pal = {g: group_color(g) for g in set(groups.values())}
-                        gfig = draw_group_graph(sorted(groups), ai["edges"], groups, pal, sal=salient)
-                        if gfig is not None:
-                            st.plotly_chart(gfig, use_container_width=True)
+                st.caption("The walked subgraph in GLOBAL community colors, with hulls. "
+                           "Louvain re-run on this walk alone is no longer drawn -- where "
+                           "the two partitions disagree is named in the digests below "
+                           "(`splits`/`merges`), which is where the comparison is legible.")
+                pal = {g: group_color(g) for g in set(glob_groups.values())}
+                gfig = draw_group_graph(sorted(glob_groups), ai["edges"], glob_groups,
+                                        pal, sal=salient, height=520)
+                if gfig is not None:
+                    st.plotly_chart(gfig, use_container_width=True)
 
                 # ---- P11 factbook digests, same panel, largest group first
                 rel_rows = walker_core.group_classes(rel_groups, ai["ents"], ai["rels"],
@@ -794,16 +787,17 @@ with tab_analysis:
                 for _i, _e in enumerate(merged):
                     _txt = walker_core.group_digest(_e["row"], ai["ents"], src_of_all,
                                                     prefix=_e["prefix"], marker=_e["marker"])
+                    _card = walker_core.digest_card(_txt, walker_core.card_color(_e))
                     if _i < 8:
-                        st.code(_txt, language="text")
+                        st.markdown(_card, unsafe_allow_html=True)
                     else:
-                        _rest.append(_txt)
+                        _rest.append(_card)
                 if _rest:
                     with st.expander(f"{len(_rest)} more groups"):
-                        st.code("\n\n".join(_rest), language="text")
+                        st.markdown("".join(_rest), unsafe_allow_html=True)
 
             with st.container(border=True):                # P10 panel 4 — Partitions
-                st.markdown("### Partitions (dendrite sort)")
+                panel_head("Partitions", "dendrite sort")
                 st.caption("Each row is one correlation chain over the walked chunks "
                            "(correlation sorting.md). Terms are the chain members' own "
                            "BM25-salient vocabulary, ranked by how many members carry "
@@ -817,7 +811,16 @@ with tab_analysis:
                     _clines = walker_core.chain_communities(ds["chunks"]["chains"], cid_of)
                     st.caption("Each chain's global communities (cid:count):")
                     for _row, _line in zip(_rows, _clines):
-                        st.markdown(f"- chain {_row['chain']} · `{_line}`")
+                        _tok = (_line.split(" ") or ["c?"])[0].split(":")[0]
+                        _cid = int(_tok[1:]) if _tok[1:].isdigit() else None
+                        _c = cid_color(_cid)
+                        st.markdown(
+                            f'<div style="background:{rgba(_c, 0.10)};'
+                            f'border-left:4px solid {_c};border-radius:4px;'
+                            f'padding:.25rem .6rem;margin:.2rem 0;font-size:.85rem">'
+                            f'chain {html.escape(str(_row["chain"]))} · '
+                            f'<code>{html.escape(_line)}</code></div>',
+                            unsafe_allow_html=True)
                     _tchains = ds["terms"]["chains"]
                     if _tchains:
                         st.caption("Term chains (terms that rise and fall together "

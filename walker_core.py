@@ -10,6 +10,7 @@ state here. Spring layout deliberately stays in walker_app (design 6.21(a)).
 """
 from __future__ import annotations
 
+import html
 import json
 import os
 from collections import Counter
@@ -18,6 +19,28 @@ from pathlib import Path
 import evidence
 import graph_tools as gt
 import interpret
+
+PALETTE = ["#4C78A8", "#F58518", "#54A24B", "#E45756", "#72B7B2", "#EECA3B",
+           "#B279A2", "#FF9DA6", "#9D755D", "#BAB0AC", "#1F77B4", "#FF7F0E",
+           "#2CA02C", "#D62728", "#9467BD", "#8C564B", "#E377C2", "#7F7F7F",
+           "#BCBD22", "#17BECF"]
+
+
+def cid_color(cid):
+    return "#DDDDDD" if cid is None else PALETTE[int(cid) % len(PALETTE)]
+
+
+def group_color(gid):
+    """Alias so the intent reads at every call site: `cid_color` IS the one
+    palette, shared by stored cids and ephemeral louvain gids alike (P6)."""
+    return cid_color(gid)
+
+
+def rgba(hex_color, a):
+    """Plotly rejects 8-digit hex (#RRGGBBAA); alpha must be rgba()."""
+    h = hex_color.lstrip("#")
+    r, g, b = (int(h[i:i + 2], 16) for i in (0, 2, 4))
+    return f"rgba({r},{g},{b},{a})"
 
 
 def clip(text: str, n: int) -> str:
@@ -400,6 +423,34 @@ def group_digest(gc, ents, src_of=None, *, prefix="g", marker=None, width=110,
     return "\n".join([header, terms_line, ent_line, rel_line])
 
 
+def digest_card(text: str, color: str, *, alpha: float = 0.10) -> str:
+    """Wrap one `group_digest` string as a colored HTML card (P14(b)/(e)).
+
+    The card is background = `color` at `alpha`, a 4px solid left border in the
+    full hue, a header row carrying a color chip + the digest's own id token, and
+    a monospace body. The body text is `html.escape`d and otherwise UNTOUCHED:
+    `strip_tags(card) == text` must hold byte for byte, because the same string is
+    the artifact a downstream LLM pass consumes (P11(g) -- the human view and the
+    machine view never fork).
+
+    Spec: .spec/specs/graph-explorer/design.md 6.22 P14(b)/(e)
+    Task: playbook.md T47
+    """
+    ident = (text.splitlines() or [""])[0].split(" ")[0]
+    body = html.escape(text)
+    return (
+        f'<div style="background:{rgba(color, alpha)};'
+        f'border-left:4px solid {color};border-radius:4px;'
+        f'padding:.5rem .7rem;margin:.35rem 0">'
+        f'<div style="font-weight:600;font-size:.86rem;margin-bottom:.3rem">'
+        f'<span style="display:inline-block;width:.7rem;height:.7rem;'
+        f'border-radius:2px;background:{color};margin-right:.45rem;'
+        f'vertical-align:middle"></span>{html.escape(ident)}</div>'
+        f'<pre style="margin:0;font-size:.78rem;line-height:1.35;'
+        f'white-space:pre-wrap;overflow-x:auto">{body}</pre></div>'
+    )
+
+
 def dedup_groups(rel_rows, glob_rows) -> list:
     """Merge the relative and global `group_classes` panels into ONE
     annotated list the UI iterates once, instead of rendering the same
@@ -458,6 +509,22 @@ def dedup_groups(rel_rows, glob_rows) -> list:
 
     out.sort(key=lambda e: (-e["size"], e["prefix"], e["gid"]))
     return out
+
+
+def card_color(entry) -> str:
+    """The ONE hue for a dedup_groups row: a merged row (member set == a global
+    cid) and a global row use their own cid; a local-only row borrows its
+    DOMINANT overlapping cid's hue -- `cids` is already ordered by overlap
+    descending, cid ascending. A local group overlapping nothing falls back to
+    its own ephemeral gid, which is the figure's color for it anyway.
+
+    Spec: .spec/specs/graph-explorer/design.md 6.22 P14(b)
+    Task: playbook.md T47
+    """
+    if entry["kind"] == "global":
+        return cid_color(entry["gid"])
+    cids = entry.get("cids") or []
+    return cid_color(cids[0][0]) if cids else cid_color(entry["gid"])
 
 
 def chain_communities(chains, cid_of, *, width=110) -> list:
