@@ -1065,7 +1065,7 @@ Source: operator reference image (dark SaaS dashboard), 2026-09-05.
     verified (85 passed; diag 18/20 FAIL=[E3]) and closed per the standing
     cross-session recovery law.
 
-- [WIP] T51 Live look: dark render, stat row, card grid, pills -- screenshots
+- [DONE] T51 Live look: dark render, stat row, card grid, pills -- screenshots
   to operator
   _Files:_ (none -- verification only)
   _Verify:_ playwright screenshots of :8501
