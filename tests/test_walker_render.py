@@ -304,7 +304,8 @@ def test_panels_render_digests_and_chain_communities():
     assert not [c for c in codes if "terms(dwpc):" in c], \
         "P14(e) supersedes P11's st.code: digests are cards now"
     assert re.search(r"chain \d+ · <code>c", md), "P12/P14(d): no tinted chain row"
-    assert "relative (this walk only)" not in md, "P14(a): relative figure not removed"
+    assert "relative (this walk only)" in md, \
+        "P14(a) reversed (operator): the LH relative spring is back beside the global RH"
     assert re.search(r"height:3px", md), "P15(c): no card top accent bar"
 
 

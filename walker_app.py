@@ -813,15 +813,26 @@ with tab_analysis:
                     st.image(interpret.render_walk_image(conn, run, bnd, pw),
                              use_container_width=True)
 
-                st.caption("The walked subgraph in GLOBAL community colors, with hulls. "
-                           "Louvain re-run on this walk alone is no longer drawn -- where "
-                           "the two partitions disagree is named in the digests below "
-                           "(`splits`/`merges`), which is where the comparison is legible.")
-                pal = {g: group_color(g) for g in set(glob_groups.values())}
-                gfig = draw_group_graph(sorted(glob_groups), ai["edges"], glob_groups,
-                                        pal, sal=salient, height=520)
-                if gfig is not None:
-                    st.plotly_chart(gfig, use_container_width=True)
+                # P14(a) REVERSED (operator 2026-09-05): the left-right pair
+                # reads as one comparison -- both springs return, relative LH,
+                # global RH. The splits/merges text in the digests stays too.
+                L, R = st.columns(2)
+                for col, title, groups, note in (
+                        (L, "relative (this walk only)", rel_groups,
+                         "Louvain re-run on the walked subgraph. These ids are "
+                         "EPHEMERAL — a view, never persisted, never joined to a "
+                         "stored cid, never stable across reruns."),
+                        (R, "global communities (stored cids)", glob_groups,
+                         "The run's own ingest-time cids, restricted to the "
+                         "walked chunks.")):
+                    with col:
+                        st.markdown(f"**{title}**")
+                        st.caption(note)
+                        pal = {g: group_color(g) for g in set(groups.values())}
+                        gfig = draw_group_graph(sorted(groups), ai["edges"],
+                                                groups, pal, sal=salient)
+                        if gfig is not None:
+                            st.plotly_chart(gfig, use_container_width=True)
 
                 # ---- P11 factbook digests, same panel, largest group first
                 rel_rows = walker_core.group_classes(rel_groups, ai["ents"], ai["rels"],

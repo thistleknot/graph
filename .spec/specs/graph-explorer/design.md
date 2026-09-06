@@ -2393,3 +2393,10 @@ type, citation ids as small violet pills, model line as muted caption.
 (f) All colors from ONE palette module (walker_core): the group hues stay
 P6-consistent; UI chrome hues (violet primary, green/red/amber status) are
 named constants beside them, not scattered literals.
+
+P14(a) REVERSED (operator, 2026-09-05: "the way they were left to right was
+very informative"). The Groups panel returns to TWO side-by-side spring
+figures -- relative louvain LH, global cids RH, per the original P4 layout --
+AND keeps the splits/merges divergence text in the digests. Both views ship;
+neither substitutes for the other. Every other P14 rule (colored cards,
+section accents, tinted chain rows, escaped HTML) stands.
