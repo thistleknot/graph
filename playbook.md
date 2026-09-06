@@ -1047,3 +1047,22 @@ adding no utility").
 - [DONE] T48 Live look: >=3 distinct card hues in the DOM, screenshots to operator
   _Files:_ (none -- verification only)
   _Verify:_ playwright screenshots of :8501
+
+## Layer 16 -- sequential (dark dashboard skin)
+Source: operator reference image (dark SaaS dashboard), 2026-09-05.
+
+- [DONE] T49 Spec 6.22 P15: dark theme, KPI stat cards, card-grid factbooks,
+  pill badges, dark plotly -- a SKIN; every P10-P14 content contract stands
+  _Files:_ .spec/specs/graph-explorer/design.md
+  _Verify:_ grep -c "P15" .spec/specs/graph-explorer/design.md
+
+- [OPEN] T50 Implement the skin: .streamlit/config.toml dark theme, stat row,
+  group cards in st.columns(3) grid with badges, judged-evidence pill rows,
+  plotly dark template, answer hero card
+  _Files:_ .streamlit/config.toml, walker_core.py, walker_app.py, tests/test_walker_core.py, tests/test_walker_render.py
+  _Verify:_ python -m pytest tests/test_walker_core.py tests/test_walker_render.py -q && PYTHONPATH=. python tools/diag_rerun.py mixed-full-dual
+
+- [OPEN] T51 Live look: dark render, stat row, card grid, pills -- screenshots
+  to operator
+  _Files:_ (none -- verification only)
+  _Verify:_ playwright screenshots of :8501

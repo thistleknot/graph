@@ -2370,3 +2370,26 @@ is tinted by its dominant community's color. (e) Cards are HTML via
 st.markdown(unsafe_allow_html=True) with ESCAPED content; the digest text
 stays byte-identical to group_digest's output (P11(g): the LLM artifact and
 the human view never fork).
+
+**P15 (dark dashboard skin -- T49, 2026-09-05; a SKIN over P10-P14, whose
+content contracts all stand: digest text byte-identical, one figure, dedup,
+dwpc scores, chain lines).** Reference: operator-supplied dark SaaS dashboard.
+(a) THEME: .streamlit/config.toml sets base="dark", near-black canvas
+(~#0f1117), darker sidebar, violet primary (~#7c5cff); plotly figures use
+template "plotly_dark" with transparent paper/plot backgrounds so cards show
+through. (b) KPI STAT ROW: directly under the prompt, four gradient stat
+cards (icon, big number, one-line caption, thin accent bar): chunks walked,
+communities touched, entail/contradict counts, model + briefs/judged counts.
+Numbers come from already-computed state (P7: no new queries). (c) CARD GRID:
+group factbook cards render in a responsive st.columns(3) grid (largest
+groups first, row-major), each card: header row (color chip + id + size),
+BADGE PILL for the global relationship (= c6 -> solid pill in the group hue;
+splits/merges -> outlined amber pill), monospace digest body, hue accent
+bar at the card top. (d) JUDGED EVIDENCE ROWS: each judged chunk renders as a
+dark rounded row -- id + source + community chip left, snippet middle, a
+colored pill right (entails green, contradicts red, neutral gray) with the
+walk score. (e) ANSWER HERO: the answer renders in one hero card: large
+type, citation ids as small violet pills, model line as muted caption.
+(f) All colors from ONE palette module (walker_core): the group hues stay
+P6-consistent; UI chrome hues (violet primary, green/red/amber status) are
+named constants beside them, not scattered literals.
