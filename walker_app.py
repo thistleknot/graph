@@ -115,44 +115,52 @@ def cid_badge(cid, labels) -> str:
 
 conn = get_conn()
 
-# ---------------------------------------------------------------- sidebar
-st.sidebar.title("ChunkGraph Walker")
-
+# ------------------------------------------------- top row (P17: no sidebar)
 runs = gt.list_runs(conn)
 live = [r for r in runs if r["superseded_at"] is None]
 if not live:
     st.error("No live runs in the database.")
     st.stop()
 
-label = st.sidebar.selectbox("Run", [r["label"] for r in live])
+_c_title, _c_run, _c_stats, _c_details = st.columns([2.2, 1.6, 3.2, 1.0],
+                                                    vertical_alignment="bottom")
+with _c_title:
+    st.markdown(f'<div style="font-size:1.35rem;font-weight:700;'
+                f'color:{PRIMARY}">ChunkGraph Walker</div>',
+                unsafe_allow_html=True)
+with _c_run:
+    label = st.selectbox("Run", [r["label"] for r in live],
+                         label_visibility="collapsed")
 run = gt.get_run(conn, label)
 labels = load_labels(str(run.run_id))
-st.sidebar.caption(f"{run.n_chunks} chunks · {run.n_edges} edges · "
-                   f"{run.n_communities} communities")
+with _c_stats:
+    st.caption(f"{run.n_chunks} chunks · {run.n_edges} edges · "
+               f"{run.n_communities} communities")
 
 embed = get_embed(config.MODEL_DIR)
 if "__stale_run__" in labels:
     labels = {}                      # written for another run; cid is run-local
 
-# Only a degraded signal is worth a line on its own; the rest is under details.
-if not run.dense:
-    st.sidebar.warning("Sparse-only run: anchors are lexical, no dense edges.")
-if embed is None:
-    st.sidebar.warning("No embedding model found: query-conditioned terms are "
-                       "lexical only. Set CHUNKGRAPH_MODEL_DIR.")
+with _c_details:
+    with st.popover("details"):
+        st.caption(f"run `{run.run_id}`")
+        st.caption("retrieval: " + (f"fused, embed_dim {run.embed_dim}" if run.dense else "sparse-only"))
+        st.caption("query terms: " + ("lexical + dense" if embed else "lexical only"))
+        if run.single_provenance:
+            st.caption(f"every edge is **{run.single_provenance}** "
+                       f"({run.provenance[run.single_provenance]}); nothing here is fused")
+        st.caption(f"draft labels: {len(labels)} loaded (italic = model-authored)"
+                   if labels else "draft labels: none for this run")
+        mix = gt.run_sources(conn, run)
+        if mix:
+            st.caption("sources: " + gt.format_source_mix(mix))
 
-with st.sidebar.expander("details"):
-    st.caption(f"run `{run.run_id}`")
-    st.caption("retrieval: " + (f"fused, embed_dim {run.embed_dim}" if run.dense else "sparse-only"))
-    st.caption("query terms: " + ("lexical + dense" if embed else "lexical only"))
-    if run.single_provenance:
-        st.caption(f"every edge is **{run.single_provenance}** "
-                   f"({run.provenance[run.single_provenance]}); nothing here is fused")
-    st.caption(f"draft labels: {len(labels)} loaded (italic = model-authored)"
-               if labels else "draft labels: none for this run")
-    mix = gt.run_sources(conn, run)
-    if mix:
-        st.caption("sources: " + gt.format_source_mix(mix))
+# Only a degraded signal is worth an inline line of its own (P17).
+if not run.dense:
+    st.warning("Sparse-only run: anchors are lexical, no dense edges.")
+if embed is None:
+    st.warning("No embedding model found: query-conditioned terms are "
+               "lexical only. Set CHUNKGRAPH_MODEL_DIR.")
 
 def draw_subgraph(ords, trail, current=None, height=340):
     """Shared renderer: nodes coloured by STORED cid, trail dotted."""

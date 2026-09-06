@@ -1099,7 +1099,7 @@ force layout chosen over embedding PCA).
   needs `[(a,b,w) for (a,b),w in ai["edges"].items()]`. 27 passed; diag gate
   PASS 18/20 | FAIL ['E3'] | KNOWN-FAIL ['A2'] (unchanged).
 
-- [OPEN] T55 Remove the sidebar (P17): run selector + stats + details popover
+- [DONE] T55 Remove the sidebar (P17): run selector + stats + details popover
   as a compact top row; warnings inline; no st.sidebar anywhere
   _Files:_ walker_app.py, tests/test_walker_render.py
   _Verify:_ python -m pytest tests/test_walker_render.py -q && PYTHONPATH=. python tools/diag_rerun.py mixed-full-dual

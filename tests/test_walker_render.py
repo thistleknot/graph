@@ -516,3 +516,11 @@ def test_query_param_seeds_prompt_source():
     widget = src.index('st.text_input("Prompt"')
     assert seed < widget, "?q= seed must run before the prompt widget mounts"
     assert 'st.query_params["q"] = q' in src, "running prompt must write back to the URL"
+
+
+def test_no_sidebar_anywhere():
+    """P17: the walker renders without a Streamlit sidebar -- run selector,
+    stats and details live in the top row of the main area."""
+    src = open("walker_app.py", encoding="utf-8").read()
+    assert "st.sidebar" not in src, "P17: st.sidebar must not reappear"
+    assert 'st.popover("details")' in src, "details popover missing from top row"
