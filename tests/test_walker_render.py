@@ -305,6 +305,82 @@ def test_panels_render_digests_and_chain_communities():
         "P14(e) supersedes P11's st.code: digests are cards now"
     assert re.search(r"chain \d+ · <code>c", md), "P12/P14(d): no tinted chain row"
     assert "relative (this walk only)" not in md, "P14(a): relative figure not removed"
+    assert re.search(r"height:3px", md), "P15(c): no card top accent bar"
+
+
+def test_stat_row_renders_four_tiles():
+    """P15(b): the KPI stat row shows four tiles, every number already in
+    scope (P7 -- no new query)."""
+    from streamlit.testing.v1 import AppTest
+    q = "jury trial grand jury investigation"
+    rr = {"ok": True, "backend": "test", "answer": "A #11.", "briefs": [{}], "briefs_text": "b",
+          "hypotheses": [], "hypothesis": "", "why": "", "foreign": [], "stages": {},
+          "self_contradicting": [], "supported_ids": [11, 12], "cited": [11],
+          "premises": [{"text": "p", "ids": [11, 12], "verdict": "supports", "why": ""}],
+          "shown": [11, 12, 13], "entailed": [12, 13], "contradicts": [],
+          "coverage": 1.0, "evidence": "",
+          "verdicts": [{"ord": 11, "verdict": "neutral", "why": "about lunch counters"},
+                       {"ord": 12, "verdict": "entails", "why": "yes"},
+                       {"ord": 13, "verdict": "entails", "why": "yes"}]}
+    try:
+        at = AppTest.from_file("walker_app.py", default_timeout=240)
+        at.session_state["assess"] = (q, rr)
+        at.run()
+        at.text_input("q").set_value(q).run()
+    except Exception as e:                                # pragma: no cover
+        pytest.skip(f"app could not start (no db?): {e}")
+    errs = [e.value for e in at.exception]
+    assert not errs, f"Analysis tab raised: {errs}"
+    md = " ".join(m.value for m in at.markdown)
+    assert "chunks walked" in md
+    assert "communities" in md
+    assert "entail / contradict" in md
+    assert "test" in md
+
+
+def test_judged_rows_carry_verdict_pills():
+    """P15(d): judged evidence rows carry a verdict pill (border-radius:999px)."""
+    from streamlit.testing.v1 import AppTest
+    q = "jury trial grand jury investigation"
+    rr = {"ok": True, "backend": "test", "answer": "A #11.", "briefs": [{}], "briefs_text": "b",
+          "hypotheses": [], "hypothesis": "", "why": "", "foreign": [], "stages": {},
+          "self_contradicting": [], "supported_ids": [11, 12], "cited": [11],
+          "premises": [{"text": "p", "ids": [11, 12], "verdict": "supports", "why": ""}],
+          "shown": [11, 12, 13], "entailed": [12, 13], "contradicts": [],
+          "coverage": 1.0, "evidence": "",
+          "verdicts": [{"ord": 11, "verdict": "neutral", "why": "about lunch counters"},
+                       {"ord": 12, "verdict": "entails", "why": "yes"},
+                       {"ord": 13, "verdict": "entails", "why": "yes"}]}
+    try:
+        at = AppTest.from_file("walker_app.py", default_timeout=240)
+        at.session_state["assess"] = (q, rr)
+        at.run()
+        at.text_input("q").set_value(q).run()
+    except Exception as e:                                # pragma: no cover
+        pytest.skip(f"app could not start (no db?): {e}")
+    errs = [e.value for e in at.exception]
+    assert not errs, f"Analysis tab raised: {errs}"
+    md = " ".join(m.value for m in at.markdown)
+    import walker_core
+    assert walker_core.GOOD in md
+    assert md.count("border-radius:999px") >= 2
+
+
+def test_figures_are_dark_and_transparent(app, ords, hub):
+    """P15(a): every plotly figure carries the dark template with a
+    transparent paper ground."""
+    j = app.draw_subgraph(ords, [], hub).to_plotly_json()
+    assert j["layout"]["template"]
+    assert j["layout"]["paper_bgcolor"] == "rgba(0,0,0,0)"
+
+    with app.conn.cursor() as cur:
+        cur.execute("""SELECT cid, size, keywords, medoid_text
+                         FROM community WHERE run_id = %s ORDER BY size DESC""",
+                    (app.run.run_id,))
+        comms = cur.fetchall()
+    j2 = app.draw_global_map(comms, gt.quotient(app.conn, app.run, limit=200)).to_plotly_json()
+    assert j2["layout"]["template"]
+    assert j2["layout"]["paper_bgcolor"] == "rgba(0,0,0,0)"
 
 
 def test_draw_global_map_labels_communities_by_keywords(app):
@@ -395,6 +471,12 @@ def test_mirror_is_the_neo4j_tab():
     assert src.count("st.container(border=True)") >= 4      # 6.22 P10, four panels
     assert "style_group_table" not in src                   # P11: no dataframes for groups
     assert src.find('panel_head("Groups")') < src.find('panel_head("Partitions"')   # P10 order
+    assert "st.columns(3)" in src                            # P15(c) grid
+    assert "st.columns(4)" in src                            # P15(b) stat row
+    assert "walker_core.stat_card" in src and "walker_core.hero_answer" in src
+    assert "walker_core.evidence_row" in src
+    assert 'plot_bgcolor="white"' not in src                 # no light-theme regression
+    assert src.count("return dark(fig)") >= 5                # every figure treated
 
 
 def test_query_param_seeds_prompt_source():

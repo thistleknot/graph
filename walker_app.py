@@ -43,12 +43,14 @@ PALETTE = walker_core.PALETTE
 cid_color = walker_core.cid_color
 group_color = walker_core.group_color
 rgba = walker_core.rgba
+PRIMARY, GOOD, BAD, WARN, MUTED = (walker_core.PRIMARY, walker_core.GOOD,
+                                   walker_core.BAD, walker_core.WARN, walker_core.MUTED)
 PROV_COLOR = {"both": "#E45756", "dense": "#4C78A8", "sparse": "#9E9E9E"}
 LABEL_FILE = Path(os.environ.get("LABEL_OUT", "community_labels.json"))
 DEFAULT_MODEL_DIR = config.MODEL_DIR   # used when CHUNKGRAPH_MODEL_DIR is unset
 
-ACCENT = {"Answer": "#2a7", "Judged evidence": "#4C78A8",
-          "Groups": "#B279A2", "Partitions": "#E8A33D"}   # P14(c)
+ACCENT = {"Answer": GOOD, "Judged evidence": PRIMARY,
+          "Groups": "#B279A2", "Partitions": WARN}   # P14(c), P15(f)
 
 
 def panel_head(title, sub=""):
@@ -59,6 +61,24 @@ def panel_head(title, sub=""):
         f'<div style="font-size:1.25rem;font-weight:700;color:{c}">{html.escape(title)}</div>'
         + (f'<div style="opacity:.7;font-size:.85rem">{html.escape(sub)}</div>' if sub else "")
         + "</div>", unsafe_allow_html=True)
+
+
+def dark(fig):
+    """P15(a): one dark treatment for every plotly figure -- plotly_dark template
+    with fully transparent paper/plot grounds so the panel card shows through.
+    Applied at each draw_* return so a direct caller (tests) and the app get the
+    identical figure. `None` passes through, since every draw_* may return None.
+
+    Spec: .spec/specs/graph-explorer/design.md 6.22 P15(a)
+    Task: playbook.md T50
+    """
+    if fig is None:
+        return None
+    fig.update_layout(template="plotly_dark",
+                      paper_bgcolor="rgba(0,0,0,0)",
+                      plot_bgcolor="rgba(0,0,0,0)",
+                      font=dict(color="#e6e8ee"))
+    return fig
 
 
 @st.cache_resource
@@ -170,7 +190,7 @@ def draw_subgraph(ords, trail, current=None, height=340):
             size=[26 if o == current else 15 for o in ords],
             color=[cid_color(meta[o]["cid"]) for o in ords],
             line=dict(width=[3 if o == current else 1 for o in ords],
-                      color="#222")),
+                      color="#0f1117")),
         hovertext=[f"#{o} · {interpret.chunk_label(meta[o], titles)} · {cid_badge(meta[o]['cid'], labels)}"
                    f"<br>{meta[o]['body'][:120]}…" for o in ords],
         hoverinfo="text"))
@@ -178,7 +198,7 @@ def draw_subgraph(ords, trail, current=None, height=340):
                       margin=dict(l=0, r=0, t=0, b=0),
                       xaxis=dict(visible=False), yaxis=dict(visible=False),
                       plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)")
-    return fig
+    return dark(fig)
 
 
 def community_panel(ords):
@@ -214,7 +234,7 @@ def draw_communities(touched, terms, xedges, height=520):
     fig = go.Figure()
     if ex:
         fig.add_trace(go.Scatter(x=ex, y=ey, mode="lines",
-                                 line=dict(color="#bbb", width=1.2),
+                                 line=dict(color="rgba(160,160,175,0.35)", width=1.2),
                                  hoverinfo="none", showlegend=False))
     mx = max(t["hits"] for t in touched)
 
@@ -233,13 +253,12 @@ def draw_communities(touched, terms, xedges, height=520):
         textfont=dict(size=12),
         marker=dict(size=[14 + 40 * t["hits"] / mx for t in touched],
                     color=[cid_color(t["cid"]) for t in touched],
-                    line=dict(color="#333", width=1)),
+                    line=dict(color="#0f1117", width=1)),
         hovertext=[_hover(t) for t in touched],
         hoverinfo="text", showlegend=False))
     fig.update_layout(height=height, margin=dict(l=10, r=10, t=10, b=10),
-                      xaxis=dict(visible=False), yaxis=dict(visible=False),
-                      plot_bgcolor="white")
-    return fig
+                      xaxis=dict(visible=False), yaxis=dict(visible=False))
+    return dark(fig)
 
 
 def draw_term_graph(terms_cond: dict, terms_unsup: dict, members: dict, height=560):
@@ -267,7 +286,7 @@ def draw_term_graph(terms_cond: dict, terms_unsup: dict, members: dict, height=5
     for a, b, d in G.edges(data=True):
         fig.add_trace(go.Scatter(
             x=[pos[a][0], pos[b][0]], y=[pos[a][1], pos[b][1]], mode="lines",
-            line=dict(color="#bbb", width=0.6 + 3.5 * d["weight"] / wmax),
+            line=dict(color="rgba(160,160,175,0.35)", width=0.6 + 3.5 * d["weight"] / wmax),
             hoverinfo="none", showlegend=False))
     groups = (("both sets", [t for t in drawn if t in cond and t in unsup], "#B279A2"),
               ("walk (prompt-conditioned BM25)", [t for t in drawn if t in cond and t not in unsup], "#E45756"),
@@ -281,14 +300,13 @@ def draw_term_graph(terms_cond: dict, terms_unsup: dict, members: dict, height=5
             mode="markers+text", name=name,
             text=ts, textposition="top center", textfont=dict(size=11),
             marker=dict(size=[10 + 26 * len(members[t]) / dfmax for t in ts],
-                        color=color, line=dict(color="#333", width=1)),
+                        color=color, line=dict(color="#0f1117", width=1)),
             hovertext=[f"{t} · in {len(members[t])} walked chunks" for t in ts],
             hoverinfo="text", showlegend=True))
     fig.update_layout(height=height, margin=dict(l=10, r=10, t=10, b=10),
                       xaxis=dict(visible=False), yaxis=dict(visible=False),
-                      plot_bgcolor="white",
                       legend=dict(orientation="h", y=-0.02))
-    return fig
+    return dark(fig)
 
 
 def plane(out):
@@ -367,7 +385,7 @@ def draw_layers3d(state, cid_of, src_of, height=700):
         z=[0.0] * len(ords), mode="markers", name="chunks",
         marker=dict(size=5, color=[cid_color(cid_of.get(o, 0)) for o in ords],
                     symbol=[sym.get(src_of.get(o)) or "circle" for o in ords],
-                    line=dict(color="#222", width=1)),
+                    line=dict(color="#0f1117", width=1)),
         hovertext=[f"#{o} · c{cid_of.get(o)} · {src_of.get(o) or 'unlabelled'}"
                    for o in ords],
         hoverinfo="text"))
@@ -377,16 +395,17 @@ def draw_layers3d(state, cid_of, src_of, height=700):
         z=[1.0] * len(ts), mode="markers+text", name="terms", text=ts,
         textfont=dict(size=9),
         marker=dict(size=4, color=["#B279A2" for _ in ts],
-                    line=dict(color="#222", width=1)),
+                    line=dict(color="#0f1117", width=1)),
         hovertext=[f"{t} · chain {tp['chain_of'].get(t)}" for t in ts],
         hoverinfo="text"))
     fig.update_layout(height=height, margin=dict(l=0, r=0, t=10, b=0),
                       scene=dict(xaxis=dict(visible=False), yaxis=dict(visible=False),
                                  zaxis=dict(visible=False, range=[-0.15, 1.2]),
                                  aspectmode="manual",
-                                 aspectratio=dict(x=1.5, y=1.5, z=0.65)),
+                                 aspectratio=dict(x=1.5, y=1.5, z=0.65),
+                                 bgcolor="rgba(0,0,0,0)"),
                       legend=dict(orientation="h", y=0.02))
-    return fig
+    return dark(fig)
 
 
 def draw_global_map(comms, qrows, height=560):
@@ -407,7 +426,7 @@ def draw_global_map(comms, qrows, height=560):
     for a, b, d in G.edges(data=True):
         fig.add_trace(go.Scatter(
             x=[pos[a][0], pos[b][0]], y=[pos[a][1], pos[b][1]], mode="lines",
-            line=dict(color="#bbb", width=0.8 + 4.0 * d["weight"] / wmax),
+            line=dict(color="rgba(160,160,175,0.35)", width=0.8 + 4.0 * d["weight"] / wmax),
             hoverinfo="none", showlegend=False))
     smax = max(c["size"] for c in comms)
     fig.add_trace(go.Scatter(
@@ -419,14 +438,13 @@ def draw_global_map(comms, qrows, height=560):
         textfont=dict(size=11),
         marker=dict(size=[14 + 44 * c["size"] / smax for c in comms],
                     color=[cid_color(c["cid"]) for c in comms],
-                    line=dict(color="#333", width=1)),
+                    line=dict(color="#0f1117", width=1)),
         hovertext=[f"c{c['cid']} · {c['size']} chunks · "
                    + ", ".join((c["keywords"] or [])[:5]) for c in comms],
         hoverinfo="text", showlegend=False))
     fig.update_layout(height=height, margin=dict(l=10, r=10, t=10, b=10),
-                      xaxis=dict(visible=False), yaxis=dict(visible=False),
-                      plot_bgcolor="white")
-    return fig
+                      xaxis=dict(visible=False), yaxis=dict(visible=False))
+    return dark(fig)
 
 
 def _monotone_chain_hull(points):
@@ -518,13 +536,13 @@ def draw_group_graph(ords, edges, groups, pal, sal=None, height=420):
         mode="markers+text", text=[str(o) for o in ords],
         textposition="top center", textfont=dict(size=9),
         marker=dict(size=15, color=[pal.get(groups.get(o)) for o in ords],
-                    line=dict(width=1, color="#222")),
+                    line=dict(width=1, color="#0f1117")),
         hovertext=[_hover(o) for o in ords], hoverinfo="text"))
     fig.update_layout(shapes=_hull_shapes(pos, groups, pal), showlegend=False,
                       height=height, margin=dict(l=0, r=0, t=0, b=0),
                       xaxis=dict(visible=False), yaxis=dict(visible=False),
                       plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)")
-    return fig
+    return dark(fig)
 
 
 tab_analysis, tab_neo4j = st.tabs(["Analysis", "Neo4j"])
@@ -611,6 +629,30 @@ with tab_analysis:
                     if mirror_err:
                         st.warning(f"neo4j mirror skipped: {mirror_err}")
 
+            # ---- P15(b) KPI stat row: every number already in scope, no new
+            # query (P7). Tiles 3/4 degrade gracefully when the model call
+            # failed or has not produced an "ok" result yet.
+            rr_stat = got[1] if (got and got[0] == q and got[1].get("ok")) else None
+            _tiles = [
+                ("🧩", "chunks walked", len(bnd.sampled),
+                 f"depth {tele['depth']} · {tele['stop']}", PRIMARY),
+                ("🫧", "communities", f"{len(touched)}/{run.n_communities}",
+                 f"{len(cids)} in the walk", "#B279A2"),
+                ("✅", "judged",
+                 f"{len(rr_stat['entailed'])} / {len(rr_stat['contradicts'])}"
+                 if rr_stat else "—",
+                 "entail / contradict" if rr_stat else "no answer yet",
+                 (GOOD if not rr_stat["contradicts"] else BAD) if rr_stat else MUTED),
+                ("🧠", "model", rr_stat["backend"] if rr_stat else "—",
+                 (f"{len(rr_stat['briefs'])} briefs · "
+                  f"{len(rr_stat.get('shown', []))} judged") if rr_stat else "no answer yet",
+                 PRIMARY),
+            ]
+            _c1, _c2, _c3, _c4 = st.columns(4)
+            for _col, _args in zip((_c1, _c2, _c3, _c4), _tiles):
+                with _col:
+                    st.markdown(walker_core.stat_card(*_args), unsafe_allow_html=True)
+
             has_answer = False
             if got and got[0] == q:
                 rr = got[1]
@@ -620,12 +662,14 @@ with tab_analysis:
                         st.warning(f"Stopped: {rr['error']}")
                     else:
                         has_answer = True
-                        st.markdown(rr["answer"] or
-                                    "_No premise was judged supported, so there is nothing to "
-                                    "answer from. The premises below say why._")
-                        st.caption(f"{rr['backend']} · one call: {len(rr['briefs'])} community "
-                                   f"briefs + {len(rr.get('shown', []))} chunks judged"
-                                   f"{' · ' + rr['structure_note'] if rr.get('structure_note') else ''}")
+                        st.markdown(walker_core.hero_answer(
+                            rr["answer"] or "No premise was judged supported, so there is "
+                                            "nothing to answer from. The premises below say why.",
+                            rr.get("cited") or [],
+                            f"{rr['backend']} · one call: {len(rr['briefs'])} community briefs + "
+                            f"{len(rr.get('shown', []))} chunks judged"
+                            + (f" · {rr['structure_note']}" if rr.get("structure_note") else "")),
+                            unsafe_allow_html=True)
                     if rr["hypotheses"]:
                         st.markdown("**Hypothesis** " + (rr["hypothesis"] or ""))
                         others = [h for h in rr["hypotheses"] if h != rr["hypothesis"]]
@@ -635,8 +679,8 @@ with tab_analysis:
                             st.caption(f"chosen because: {rr['why']}")
                     if rr["premises"]:
                         st.markdown("**Premises**")
-                        col = {"supports": "#2a7", "contradicts": "#c33",
-                               "insufficient": "#999", "unsupported": "#bbb"}
+                        col = {"supports": GOOD, "contradicts": BAD,
+                               "insufficient": MUTED, "unsupported": "#666a78"}
                         for pr in rr["premises"]:
                             ids = ", ".join(f"#{o}" for o in pr["ids"]) or "no evidence cited"
                             st.markdown(
@@ -660,16 +704,21 @@ with tab_analysis:
                                    f"{len(rr['entailed'])} entail · "
                                    f"{len(rr['contradicts'])} contradict")
                         why = {v["ord"]: v["why"] for v in rr["verdicts"]}
-                        for label, ords_, colour in (("Entails", rr["entailed"], "#2a7"),
-                                                     ("Contradicts", rr["contradicts"], "#c33")):
+                        for label, ords_, verdict_word, colour in (
+                                ("Entails", rr["entailed"], "entails", GOOD),
+                                ("Contradicts", rr["contradicts"], "contradicts", BAD)):
                             if ords_:
                                 st.markdown(f"**{label}**")
                                 for o in ords_:
                                     nd = gt.node(conn, run, o)
-                                    st.markdown(
-                                        f"<span style='color:{colour}'>●</span> `#{o}` · {nd['doc_id']} · "
-                                        f"c{nd['cid']} · walk {bnd.scores.get(o, 0):.2f} — <i>{why.get(o, '')}</i><br>"
-                                        f"<span style='opacity:.75;font-size:.88em'>{walker_core.clip(interpret.excerpt(nd['body'], q, 300, embed), 300)}</span>",
+                                    badge = walker_core.pill(
+                                        f"{verdict_word} · walk {bnd.scores.get(o, 0):.2f}", colour)
+                                    head = (f"#{o} · {nd['doc_id']} · c{nd['cid']} — "
+                                            f"{why.get(o, '')}")
+                                    snippet = walker_core.clip(
+                                        interpret.excerpt(nd['body'], q, 300, embed), 300)
+                                    st.markdown(walker_core.evidence_row(
+                                        head, snippet, badge, cid_color(nd['cid'])),
                                         unsafe_allow_html=True)
                         neutral = [v for v in rr["verdicts"]
                                    if v["verdict"] == "neutral" and v["ord"] in set(rr["shown"])]
@@ -677,9 +726,11 @@ with tab_analysis:
                             with st.expander(f"Neutral ({len(neutral)}) — the model's reason for each"):
                                 for v in neutral:
                                     nd = gt.node(conn, run, v["ord"])
-                                    st.markdown(f"<span style='color:#999'>●</span> `#{v['ord']}` · "
-                                                f"{nd['doc_id']} · c{nd['cid']} — <i>{v['why']}</i>",
-                                                unsafe_allow_html=True)
+                                    badge = walker_core.pill("neutral", MUTED)
+                                    head = f"#{v['ord']} · {nd['doc_id']} · c{nd['cid']} — {v['why']}"
+                                    st.markdown(walker_core.evidence_row(
+                                        head, "", badge, cid_color(nd['cid'])),
+                                        unsafe_allow_html=True)
 
                         # ---- where the two channels disagree (Judge is stricter)
                         sup, ent = set(rr["supported_ids"]), set(rr["entailed"])
@@ -783,18 +834,30 @@ with tab_analysis:
                            "the group), relation templates with corpus-wide support. "
                            "`= c<id>` marks a local group that matches a global "
                            "community; `splits`/`merges` mark where they disagree.")
-                _rest = []
-                for _i, _e in enumerate(merged):
+                _cards = []
+                for _e in merged:
                     _txt = walker_core.group_digest(_e["row"], ai["ents"], src_of_all,
                                                     prefix=_e["prefix"], marker=_e["marker"])
-                    _card = walker_core.digest_card(_txt, walker_core.card_color(_e))
-                    if _i < 8:
-                        st.markdown(_card, unsafe_allow_html=True)
-                    else:
-                        _rest.append(_card)
+                    _mk = _e["marker"] or ""
+                    _outline = ("splits" in _mk) or ("merges" in _mk)   # P15(c): divergence = amber outline
+                    _cards.append(walker_core.digest_card(
+                        _txt, walker_core.card_color(_e),
+                        badge=(_mk or None), badge_outline=_outline))
+
+                # display cap 8 -> 9 (P15(c)) so the inline grid's last row is
+                # full at 3x3; see T50 _Lessons: for the spec-drift note.
+                _grid = _cards[:9]
+                for _r in range(0, len(_grid), 3):      # ROW-MAJOR, largest first
+                    for _col, _card in zip(st.columns(3), _grid[_r:_r + 3]):
+                        with _col:
+                            st.markdown(_card, unsafe_allow_html=True)
+                _rest = _cards[9:]
                 if _rest:
                     with st.expander(f"{len(_rest)} more groups"):
-                        st.markdown("".join(_rest), unsafe_allow_html=True)
+                        for _r in range(0, len(_rest), 3):
+                            for _col, _card in zip(st.columns(3), _rest[_r:_r + 3]):
+                                with _col:
+                                    st.markdown(_card, unsafe_allow_html=True)
 
             with st.container(border=True):                # P10 panel 4 — Partitions
                 panel_head("Partitions", "dendrite sort")
@@ -816,6 +879,7 @@ with tab_analysis:
                         _c = cid_color(_cid)
                         st.markdown(
                             f'<div style="background:{rgba(_c, 0.10)};'
+                            f'border:1px solid {walker_core.BORDER};'
                             f'border-left:4px solid {_c};border-radius:4px;'
                             f'padding:.25rem .6rem;margin:.2rem 0;font-size:.85rem">'
                             f'chain {html.escape(str(_row["chain"]))} · '

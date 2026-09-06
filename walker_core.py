@@ -43,6 +43,112 @@ def rgba(hex_color, a):
     return f"rgba({r},{g},{b},{a})"
 
 
+# ---------- UI chrome palette (P15(f)): one home for the non-group hues ----------
+# Spec: .spec/specs/graph-explorer/design.md 6.22 P15(f)
+# Task: playbook.md T50
+PRIMARY = "#7c5cff"     # violet: accents, citation pills, stat bars
+GOOD    = "#2ea86a"     # entails / supports
+BAD     = "#e5484d"     # contradicts
+WARN    = "#e8a33d"     # splits/merges divergence, Partitions accent
+MUTED   = "#8b8f9e"     # neutral verdicts, captions
+BG_CARD = "#171a23"     # card ground on the near-black canvas
+BG_ROW  = "#141722"     # evidence-row ground
+BORDER  = "#262a35"     # hairline
+
+
+def pill(text: str, color: str, *, outline: bool = False) -> str:
+    """One status/badge pill (P15(c)/(d)/(e)). Solid = filled tint of `color`
+    with a full-hue border; outline = transparent ground, hue text + border.
+    Content is html.escape'd; the pill is a single inline <span> and carries no
+    newline, so it never disturbs a card's <pre> byte contract.
+
+    Spec: .spec/specs/graph-explorer/design.md 6.22 P15(c)/(d)/(e)
+    Task: playbook.md T50
+    """
+    base = ("display:inline-block;padding:.05rem .45rem;border-radius:999px;"
+            "font-size:.72rem;font-weight:600;white-space:nowrap;"
+            f"border:1px solid {color};")
+    fill = "background:transparent;color:{0}".format(color) if outline else \
+        f"background:{rgba(color, 0.18)};color:{color}"
+    return f'<span style="{base}{fill}">{html.escape(text)}</span>'
+
+
+def stat_card(icon: str, label: str, value, caption, color: str = PRIMARY) -> str:
+    """One KPI tile of the P15(b) stat row: icon+label line, big number, muted
+    one-line caption, and a thin accent bar at the bottom in `color`. Pure
+    string builder -- every field is html.escape'd, and the tile is one <div>
+    with NO raw newlines (streamlit re-flows them; T48).
+
+    Spec: .spec/specs/graph-explorer/design.md 6.22 P15(b)
+    Task: playbook.md T50
+    """
+    value = html.escape(str(value))
+    caption = str(caption or "")
+    cap_html = (f'<div style="font-size:.72rem;opacity:.6">{html.escape(caption)}</div>'
+                if caption else "")
+    return (
+        f'<div style="background:linear-gradient(160deg,{rgba(color, 0.16)},{BG_CARD});'
+        f'border:1px solid {BORDER};border-radius:8px;padding:.55rem .7rem;margin:.15rem 0">'
+        f'<div style="font-size:.75rem;opacity:.75">{html.escape(icon)} {html.escape(label)}</div>'
+        f'<div style="font-size:1.5rem;font-weight:700;line-height:1.2">{value}</div>'
+        f'{cap_html}'
+        f'<div style="height:3px;border-radius:2px;background:{color};margin-top:.4rem"></div>'
+        f'</div>'
+    )
+
+
+def evidence_row(head: str, snippet: str, badge: str, color: str) -> str:
+    """One judged-evidence row (P15(d)): dark rounded row, id/source/community
+    text left, snippet beneath, and the pre-built `badge` pill (from `pill`)
+    floated right. `head` and `snippet` are escaped here; `badge` is trusted
+    HTML because `pill` already escaped its own text.
+
+    Spec: .spec/specs/graph-explorer/design.md 6.22 P15(d)
+    Task: playbook.md T50
+    """
+    head_html = html.escape(head).replace("\n", "<br>")
+    snippet_html = html.escape(snippet).replace("\n", "<br>")
+    snippet_div = (f'<div style="font-size:.84rem;opacity:.78;margin-top:.25rem">'
+                   f'{snippet_html}</div>' if snippet else "")
+    return (
+        f'<div style="background:{BG_ROW};border:1px solid {BORDER};'
+        f'border-left:3px solid {color};border-radius:6px;padding:.4rem .6rem;'
+        f'margin:.25rem 0">'
+        f'<div style="display:flex;justify-content:space-between;align-items:center;'
+        f'gap:.5rem"><span>{head_html}</span>{badge}</div>'
+        f'{snippet_div}</div>'
+    )
+
+
+def hero_answer(answer: str, cites, model_line: str, color: str = PRIMARY) -> str:
+    """The P15(e) answer hero: large type, citation ords as small violet pills,
+    model/brief counts as a muted caption. `cites` is an iterable of ords.
+
+    NOTE (accepted cost): the answer body is ESCAPED, so model-authored markdown
+    (**bold**, links) renders literally here where the old st.markdown call
+    rendered it. P15(e) asks for one hero card, and escaping is the P14(e) rule
+    for every card; a markdown-rendered answer cannot live inside a styled div in
+    streamlit. If the operator misses formatted answers, the fallback is to drop
+    the hero wrapper for the body and keep only the pill/caption rows.
+
+    Spec: .spec/specs/graph-explorer/design.md 6.22 P15(e)
+    Task: playbook.md T50
+    """
+    body = html.escape(answer).replace("\n", "<br>")
+    cites = list(cites or [])
+    pills_div = ('<div style="margin-top:.5rem">'
+                 + " ".join(pill(f"#{o}", color) for o in cites) + '</div>') if cites else ""
+    caption_div = (f'<div style="font-size:.76rem;opacity:.6;margin-top:.4rem">'
+                   f'{html.escape(model_line)}</div>') if model_line else ""
+    return (
+        f'<div style="background:linear-gradient(160deg,{rgba(color, 0.14)},{BG_CARD});'
+        f'border:1px solid {BORDER};border-left:4px solid {color};border-radius:8px;'
+        f'padding:.8rem 1rem;margin:.2rem 0">'
+        f'<div style="font-size:1.05rem;line-height:1.55">{body}</div>'
+        f'{pills_div}{caption_div}</div>'
+    )
+
+
 def clip(text: str, n: int) -> str:
     """Never cut inside a word (design 6.3). Clip at the last whitespace
     before n and mark the cut; short text is returned untouched."""
@@ -423,7 +529,8 @@ def group_digest(gc, ents, src_of=None, *, prefix="g", marker=None, width=110,
     return "\n".join([header, terms_line, ent_line, rel_line])
 
 
-def digest_card(text: str, color: str, *, alpha: float = 0.10) -> str:
+def digest_card(text: str, color: str, *, alpha: float = 0.10, badge=None,
+                 badge_outline: bool = False) -> str:
     """Wrap one `group_digest` string as a colored HTML card (P14(b)/(e)).
 
     The card is background = `color` at `alpha`, a 4px solid left border in the
@@ -433,22 +540,31 @@ def digest_card(text: str, color: str, *, alpha: float = 0.10) -> str:
     the artifact a downstream LLM pass consumes (P11(g) -- the human view and the
     machine view never fork).
 
-    Spec: .spec/specs/graph-explorer/design.md 6.22 P14(b)/(e)
-    Task: playbook.md T47
+    `badge`, when given, renders as a `pill` in the header row, right of the
+    ident chip (P15(c)) -- solid in `color` unless `badge_outline`, which uses
+    WARN to flag splits/merges divergence.
+
+    Spec: .spec/specs/graph-explorer/design.md 6.22 P14(b)/(e), P15(c)
+    Task: playbook.md T47, T50
     """
     ident = (text.splitlines() or [""])[0].split(" ")[0]
     # Streamlit's markdown pass re-flows raw newlines even inside <pre>
     # (observed live, T48): explicit <br> is the only break it preserves.
     # strip_tags folds <br> back to \n so the byte-identity contract holds.
     body = html.escape(text).replace("\n", "<br>")
+    badge_html = (pill(badge, WARN if badge_outline else color, outline=badge_outline)
+                  if badge is not None else "")
     return (
-        f'<div style="background:{rgba(color, alpha)};'
+        f'<div style="border:1px solid {BORDER};background:{rgba(color, alpha)};'
         f'border-left:4px solid {color};border-radius:4px;'
         f'padding:.5rem .7rem;margin:.35rem 0">'
-        f'<div style="font-weight:600;font-size:.86rem;margin-bottom:.3rem">'
-        f'<span style="display:inline-block;width:.7rem;height:.7rem;'
+        f'<div style="height:3px;border-radius:2px;background:{color};'
+        f'margin:-.1rem 0 .4rem"></div>'
+        f'<div style="font-weight:600;font-size:.86rem;margin-bottom:.3rem;'
+        f'display:flex;justify-content:space-between;align-items:center">'
+        f'<span><span style="display:inline-block;width:.7rem;height:.7rem;'
         f'border-radius:2px;background:{color};margin-right:.45rem;'
-        f'vertical-align:middle"></span>{html.escape(ident)}</div>'
+        f'vertical-align:middle"></span>{html.escape(ident)}</span>{badge_html}</div>'
         f'<pre style="margin:0;font-size:.78rem;line-height:1.35;'
         f'white-space:pre-wrap;overflow-x:auto">{body}</pre></div>'
     )

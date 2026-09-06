@@ -1,0 +1,14 @@
+# .streamlit/config.toml -- dark dashboard skin for walker_app.
+# Spec: .spec/specs/graph-explorer/design.md 6.22 P15(a)
+# Task: playbook.md T50
+
+[theme]
+base = "dark"
+primaryColor = "#7c5cff"
+backgroundColor = "#0f1117"
+secondaryBackgroundColor = "#161923"
+textColor = "#e6e8ee"
+font = "sans serif"
+
+[server]
+headless = true

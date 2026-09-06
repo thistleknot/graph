@@ -619,3 +619,100 @@ def test_rgba_and_cid_color_moved_into_core():
     assert walker_core.cid_color(None) == "#DDDDDD"
     assert walker_core.rgba("#4C78A8", 0.1) == "rgba(76,120,168,0.1)"
     assert walker_core.cid_color(0) == walker_core.cid_color(len(walker_core.PALETTE))
+
+
+# ---------- P15 dark dashboard skin (T50) ----------
+
+
+def test_streamlit_config_sets_the_dark_theme():
+    """File-content pin, deliberately not an AppTest -- AppTest never applies
+    [theme] (it renders an element tree, not a DOM)."""
+    try:
+        import tomllib
+    except ModuleNotFoundError:                            # py < 3.11
+        import tomli as tomllib
+    from pathlib import Path
+
+    cfg = tomllib.loads(
+        Path(__file__).resolve().parent.parent.joinpath(
+            ".streamlit", "config.toml").read_text(encoding="utf-8"))
+    theme = cfg["theme"]
+    assert theme["base"] == "dark"
+    assert theme["primaryColor"] == "#7c5cff"
+    assert theme["backgroundColor"] == "#0f1117"
+    assert theme["secondaryBackgroundColor"] != theme["backgroundColor"]
+
+
+def test_pill_escapes_and_carries_the_hue():
+    solid = walker_core.pill("<b>x</b> & y", walker_core.GOOD)
+    assert "&lt;b&gt;" in solid
+    assert "<b>x" not in solid
+    assert solid.count(walker_core.GOOD) == 2   # border + color
+    assert walker_core.rgba(walker_core.GOOD, 0.18) in solid
+
+    outline = walker_core.pill("x", walker_core.GOOD, outline=True)
+    assert "background:transparent" in outline
+    assert "rgba(" not in outline
+
+
+def test_pill_has_no_newline():
+    assert "\n" not in walker_core.pill("a", walker_core.PRIMARY)
+
+
+def test_stat_card_escapes_every_field_and_shows_the_value():
+    card = walker_core.stat_card("<i>", "l&", "<v>", "c<a>", walker_core.PRIMARY)
+    assert "<i>" not in card and "&lt;i&gt;" in card
+    assert "l&amp;" in card
+    assert "&lt;v&gt;" in card
+    assert "c&lt;a&gt;" in card
+    assert f"background:{walker_core.PRIMARY}" in card
+    assert "\n" not in card
+
+
+def test_stat_card_accepts_non_string_value():
+    card = walker_core.stat_card("x", "l", 42, "", walker_core.PRIMARY)
+    assert ">42<" in card
+
+
+def test_evidence_row_escapes_head_and_snippet_but_trusts_the_badge():
+    badge = walker_core.pill("entails", walker_core.GOOD)
+    row = walker_core.evidence_row("<i>head</i>", "line one\nline two", badge,
+                                    walker_core.PRIMARY)
+    assert "<span" in row      # the pill's own span survives
+    assert "&lt;i&gt;" in row and "<i>head" not in row
+    assert "line one<br>line two" in row
+
+
+def test_hero_answer_pills_the_citations_and_escapes_the_body():
+    card = walker_core.hero_answer("a<b", [11, 12], "gpt · 2 briefs")
+    assert "#11" in card and "#12" in card
+    assert "<span" in card
+    assert "a&lt;b" in card
+    assert "opacity:.6" in card
+
+
+def test_digest_card_badge_renders_and_body_stays_byte_identical():
+    import html as _html
+    import re
+    gc = _gc(gid=0, members=[1, 2, 3], size=3)
+    src_of = {1: "wiki", 2: "wiki", 3: "brown"}
+    txt = walker_core.group_digest(gc, {"mentions": {}, "names": {}, "corpus": {},
+                                         "corpus_total": 0}, src_of)
+    card = walker_core.digest_card(txt, "#4C78A8", badge="= c6 (global)")
+    assert "= c6 (global)" in card
+    body = re.search(r"<pre[^>]*>(.*)</pre>", card, re.S).group(1)
+    assert _html.unescape(body.replace("<br>", "\n")) == txt
+
+
+def test_digest_card_outline_badge_uses_the_warn_hue():
+    card = walker_core.digest_card("g0 . 1 chunks", "#4C78A8", badge="splits c1, c2",
+                                    badge_outline=True)
+    assert walker_core.WARN in card
+
+
+def test_chrome_palette_constants_are_hex():
+    import re
+    for name in ("PRIMARY", "GOOD", "BAD", "WARN", "MUTED", "BG_CARD", "BG_ROW", "BORDER"):
+        c = getattr(walker_core, name)
+        assert re.match(r"^#[0-9a-fA-F]{6}$", c), f"{name}={c!r} is not hex"
+        walker_core.rgba(c, 0.1)   # must parse without raising
