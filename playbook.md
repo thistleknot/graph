@@ -1079,10 +1079,14 @@ force layout chosen over embedding PCA).
   _Files:_ .spec/specs/graph-explorer/design.md
   _Verify:_ grep -c "P16" .spec/specs/graph-explorer/design.md
 
-- [OPEN] T53 Scene builder: walk3d_payload + walk3d_html in walker_core (pure,
+- [DONE] T53 Scene builder: walk3d_payload + walk3d_html in walker_core (pure,
   escaped, pinned CDN) + DB-free tests; payload carries optional per-node
   umap xyz and the scene a force<->umap toggle (P16(i))
   _Files:_ walker_core.py, tests/test_walker_core.py
+  _Verify:_ python -m pytest tests/test_walker_core.py -q -> 72 passed
+  _Lessons:_ string.Template (not f-string) for the JS/CSS scene doc avoids
+  brace-escaping hell; the `</` -> `<\/` guard fires on every `</` in the
+  dump (e.g. tip's own `</b>`), not just a literal `</script>` in body text.
   _Verify:_ python -m pytest tests/test_walker_core.py -q
 
 - [OPEN] T54 UI wiring: t_3d sub-tab swaps draw_layers3d for components.html

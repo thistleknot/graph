@@ -716,3 +716,186 @@ def test_chrome_palette_constants_are_hex():
         c = getattr(walker_core, name)
         assert re.match(r"^#[0-9a-fA-F]{6}$", c), f"{name}={c!r} is not hex"
         walker_core.rgba(c, 0.1)   # must parse without raising
+
+
+# ---------- P16 3D scene builder (T53) ----------
+
+def _p3(**kw):
+    base = dict(
+        ords=[1, 2, 3],
+        cid_of={1: 1, 2: 2, 3: None},
+        src_of={1: "brown", 2: "wiki", 3: None},
+        scores={1: 0.1, 2: 0.9, 3: 0.5},
+        bodies={1: "hello world", 2: "another body", 3: ""},
+    )
+    base.update(kw)
+    return base
+
+
+def test_walk3d_payload_node_per_ord_with_palette_colour_and_no_label():
+    p = walker_core.walk3d_payload(**_p3())
+    ids = [n["id"] for n in p["nodes"]]
+    assert ids == [1, 2, 3]
+    assert p["nodes"][0]["color"] == walker_core.cid_color(1)
+    assert p["nodes"][1]["color"] == walker_core.cid_color(2)
+    assert p["nodes"][2]["color"] == "#DDDDDD"
+    for n in p["nodes"]:
+        assert "name" not in n and "label" not in n
+
+
+def test_walk3d_payload_size_tracks_walk_score_and_flat_scores_are_uniform():
+    p = walker_core.walk3d_payload(**_p3(ords=[1, 2], scores={1: 0.1, 2: 0.9},
+                                          bodies={1: "a", 2: "b"},
+                                          cid_of={1: 1, 2: 2}, src_of={1: "brown", 2: "wiki"}))
+    sizes = {n["id"]: n["size"] for n in p["nodes"]}
+    assert sizes[2] > sizes[1]
+
+    p2 = walker_core.walk3d_payload(**_p3(ords=[1, 2], scores={1: 0.5, 2: 0.5},
+                                           bodies={1: "a", 2: "b"},
+                                           cid_of={1: 1, 2: 2}, src_of={1: "brown", 2: "wiki"}))
+    assert all(n["size"] == 3.0 for n in p2["nodes"])
+
+
+def test_walk3d_payload_tip_carries_ord_source_cid_score_and_clipped_body():
+    body = "word " * 100   # 500 chars, well past tip_chars=200
+    p = walker_core.walk3d_payload(**_p3(
+        ords=[7], cid_of={7: 2}, src_of={7: "brown"}, scores={7: 0.5},
+        bodies={7: body}))
+    tip = p["nodes"][0]["tip"]
+    body_segment = tip.split("<br>")[-1]
+    assert len(body_segment) <= 210
+    assert body_segment.endswith("…")
+    assert "#7" in tip
+    assert "brown" in tip
+    assert "c2" in tip
+    assert "0.500" in tip
+
+
+def test_walk3d_payload_tip_escapes_html_in_body_and_source():
+    p = walker_core.walk3d_payload(**_p3(
+        ords=[1], cid_of={1: 1}, src_of={1: "brown"}, scores={1: 0.1},
+        bodies={1: '<script>alert("x")</script> & co'}))
+    tip = p["nodes"][0]["tip"]
+    assert "<script>" not in tip
+    assert "&lt;script&gt;" in tip
+    assert "&amp;" in tip
+
+
+def test_walk3d_payload_links_dedup_undirected_and_drop_offgraph_endpoints():
+    edges = [
+        {"src": 1, "dst": 2, "strength": 0.5},
+        {"src": 2, "dst": 1, "strength": 0.5},   # reversed duplicate
+        {"src": 1, "dst": 1, "strength": 1.0},   # self-loop
+        {"src": 1, "dst": 99, "strength": 1.0},  # off-graph endpoint
+        {"src": 2, "dst": 3, "strength": 0.25},
+    ]
+    p = walker_core.walk3d_payload(**_p3(edges=edges))
+    assert p["links"] == [
+        {"source": 1, "target": 2, "w": 0.5},
+        {"source": 2, "target": 3, "w": 0.25},
+    ]
+
+
+def test_walk3d_payload_sprites_use_community_keywords_then_salient_fallback():
+    p = walker_core.walk3d_payload(**_p3(
+        ords=[1, 2, 3], cid_of={1: 1, 2: 2, 3: 2}, src_of={1: "brown", 2: "wiki", 3: "wiki"},
+        scores={1: 0.1, 2: 0.5, 3: 0.9},
+        bodies={1: "a", 2: "b", 3: "c"},
+        kw={1: ["alpha", "beta", "gamma", "delta"]},
+        salient={2: {"top": ["x", "y"]}, 3: {"top": ["y", "z"]}}))
+    sprites = {s["cid"]: s for s in p["sprites"]}
+    assert sprites[1]["text"] == "c1: alpha beta gamma"
+    assert sprites[2]["text"] == "c2: x y z"
+    assert sprites[2]["members"] == [2, 3]
+
+    p2 = walker_core.walk3d_payload(**_p3(
+        ords=[1], cid_of={1: 5}, src_of={1: "brown"}, scores={1: 0.1}, bodies={1: "a"}))
+    assert p2["sprites"][0]["text"] == "c5"
+
+
+def test_walk3d_payload_paths_from_pathways_pairs_filtered_and_ordered():
+    pathways = {"pairs": [
+        {"dwpc": 1.0, "path": [1, 2, 3]},          # fully in-graph
+        {"dwpc": 0.8, "path": [1, 99, 2]},         # partly out, 2 survivors
+        {"dwpc": 0.5, "path": [99, 3]},            # reduced to 1 survivor -> dropped
+    ]}
+    p = walker_core.walk3d_payload(**_p3(pathways=pathways))
+    assert p["paths"] == [[1, 2, 3], [1, 2]]
+
+    p_empty = walker_core.walk3d_payload(**_p3(pathways={"pairs": []}))
+    assert p_empty["paths"] == []
+    p_none = walker_core.walk3d_payload(**_p3(pathways=None))
+    assert p_none["paths"] == []
+
+
+def test_walk3d_payload_umap_present_only_when_every_node_has_coords():
+    umap = {1: (0.0, 0.0, 0.0), 2: (10.0, 0.0, 0.0), 3: (0.0, 10.0, 0.0)}
+    p = walker_core.walk3d_payload(**_p3(umap=umap))
+    assert p["has_umap"] is True
+    for n in p["nodes"]:
+        assert len(n["umap"]) == 3
+        assert all(isinstance(v, float) for v in n["umap"])
+
+    partial = {1: (0.0, 0.0, 0.0), 2: (10.0, 0.0, 0.0)}   # missing ord 3
+    p2 = walker_core.walk3d_payload(**_p3(umap=partial))
+    assert p2["has_umap"] is False
+    assert all("umap" not in n for n in p2["nodes"])
+
+    p3_ = walker_core.walk3d_payload(**_p3(umap=None))
+    assert p3_["has_umap"] is False
+    assert all("umap" not in n for n in p3_["nodes"])
+
+
+def test_walk3d_payload_empty_walk_returns_empty_scene():
+    p = walker_core.walk3d_payload(
+        ords=[], cid_of={}, src_of={}, scores={}, bodies={})
+    assert p == {"nodes": [], "links": [], "sprites": [], "paths": [], "has_umap": False}
+
+
+def test_walk3d_html_pins_the_exact_cdn_versions_and_embeds_parseable_json():
+    import re
+    p = walker_core.walk3d_payload(**_p3())
+    doc = walker_core.walk3d_html(p)
+    assert "3d-force-graph@1.73.4" in doc
+    assert "three-spritetext@1.8.2" in doc
+    assert walker_core.WALK3D_FG_URL in doc
+    assert walker_core.WALK3D_ST_URL in doc
+
+    m = re.search(r'<script id="w3d-data"[^>]*>(.*?)</script>', doc, re.S)
+    raw = m.group(1).replace("<\\/", "</")
+    assert json.loads(raw) == p
+
+
+def test_walk3d_html_escapes_script_close_and_degrades_without_the_cdn():
+    p = walker_core.walk3d_payload(**_p3(
+        ords=[1], cid_of={1: 1}, src_of={1: "brown"}, scores={1: 0.1},
+        bodies={1: "before </script> after"}))
+    doc = walker_core.walk3d_html(p)
+
+    m = __import__("re").search(r'<script id="w3d-data"[^>]*>(.*?)</script>', doc,
+                                 __import__("re").S)
+    assert "</script>" not in m.group(1)
+    assert "<\\/b>" in m.group(1)   # the `</` guard fires on every `</`, not just `</script>`
+
+    assert doc.count("onerror=") == 2
+    assert "3D scene unavailable" in doc
+
+
+def test_walk3d_html_hides_controls_when_no_paths_and_no_umap():
+    p_bare = walker_core.walk3d_payload(**_p3())   # no pathways/umap given
+    assert p_bare["paths"] == [] and p_bare["has_umap"] is False
+    doc_bare = walker_core.walk3d_html(p_bare)
+    path_btn = doc_bare[doc_bare.index('id="pathbtn"'):doc_bare.index('>', doc_bare.index('id="pathbtn"'))]
+    umap_btn = doc_bare[doc_bare.index('id="umapbtn"'):doc_bare.index('>', doc_bare.index('id="umapbtn"'))]
+    assert "display:none" in path_btn
+    assert "display:none" in umap_btn
+
+    p_full = walker_core.walk3d_payload(**_p3(
+        pathways={"pairs": [{"dwpc": 1.0, "path": [1, 2]}]},
+        umap={1: (0.0, 0.0, 0.0), 2: (1.0, 0.0, 0.0), 3: (0.0, 1.0, 0.0)}))
+    assert p_full["paths"] and p_full["has_umap"] is True
+    doc_full = walker_core.walk3d_html(p_full)
+    path_btn2 = doc_full[doc_full.index('id="pathbtn"'):doc_full.index('>', doc_full.index('id="pathbtn"'))]
+    umap_btn2 = doc_full[doc_full.index('id="umapbtn"'):doc_full.index('>', doc_full.index('id="umapbtn"'))]
+    assert "display:none" not in path_btn2
+    assert "display:none" not in umap_btn2

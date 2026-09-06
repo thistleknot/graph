@@ -13,6 +13,7 @@ from __future__ import annotations
 import html
 import json
 import os
+import string
 from collections import Counter
 from pathlib import Path
 
@@ -666,3 +667,352 @@ def chain_communities(chains, cid_of, *, width=110) -> list:
         items = [f"{label}:{n}" for label, n in ordered]
         lines.append(_pack(items, width, sep=" "))
     return lines
+
+
+# ---------- 3D scene builder (T53, design 6.22 P16(a)-(h) + (i) umap) ----------
+
+WALK3D_FG_URL = "https://cdn.jsdelivr.net/npm/3d-force-graph@1.73.4/dist/3d-force-graph.min.js"
+WALK3D_ST_URL = "https://cdn.jsdelivr.net/npm/three-spritetext@1.8.2/dist/three-spritetext.min.js"
+
+
+def _walk3d_body_doc(entry):
+    """Normalise a `bodies` value: either a bare string or a dict carrying
+    'body'/'doc_id'. Missing body -> "", missing doc_id -> None."""
+    if isinstance(entry, dict):
+        return entry.get("body") or "", entry.get("doc_id")
+    return entry or "", None
+
+
+def walk3d_payload(ords, *, cid_of, src_of, scores, bodies, kw=None, salient=None,
+                    pathways=None, edges=None, umap=None, tip_chars=200) -> dict:
+    """Pure data builder for the 3D walk scene (P16(a)-(h), P16(i) umap
+    addendum). Every human string that lands in the payload is escaped HERE,
+    at build time -- `walk3d_html`'s JS only writes it back out (via
+    innerHTML, because the tip already carries our own `<b>`/`<br>` chrome),
+    so this function is the ONLY line of defence against injected HTML.
+
+    Require: plain dicts/lists, no DB handle. Guarantee: pure, deterministic,
+    JSON-serialisable, every string HTML-escaped. Maintain: positions are a
+    VIEW (P16(g)) -- nothing here is persisted or used as a join key.
+
+    Spec: .spec/specs/graph-explorer/design.md 6.22 P16(a)-(h), P16(i)
+    Task: playbook.md T53
+    """
+    ords = list(ords)
+    if not ords:
+        return {"nodes": [], "links": [], "sprites": [], "paths": [], "has_umap": False}
+
+    kw = kw or {}
+    salient = salient or {}
+    pathways = pathways or {}
+    edges = edges or []
+    umap = umap or {}
+    node_set = set(ords)
+
+    all_scores = [scores.get(o, 0.0) for o in ords]
+    lo, hi = min(all_scores), max(all_scores)
+
+    has_umap = bool(umap) and all(o in umap for o in ords)
+    umap_xyz = {}
+    if has_umap:
+        xs = [float(umap[o][0]) for o in ords]
+        ys = [float(umap[o][1]) for o in ords]
+        zs = [float(umap[o][2]) for o in ords]
+        cx, cy, cz = sum(xs) / len(xs), sum(ys) / len(ys), sum(zs) / len(zs)
+        span = max(max(xs) - min(xs), max(ys) - min(ys), max(zs) - min(zs))
+        scale = 200.0 / span if span > 1e-9 else 1.0
+        for o, x, y, z in zip(ords, xs, ys, zs):
+            umap_xyz[o] = [round((x - cx) * scale, 3), round((y - cy) * scale, 3),
+                           round((z - cz) * scale, 3)]
+
+    nodes = []
+    for o in ords:
+        cid = cid_of.get(o)
+        s = scores.get(o, 0.0)
+        size = 3.0 if hi == lo else 1.0 + 5.0 * (s - lo) / (hi - lo)
+        body, doc_id = _walk3d_body_doc(bodies.get(o))
+        source = src_of.get(o)
+
+        line1 = f"<b>#{html.escape(str(o))}</b> · {html.escape(str(source) if source else 'unlabelled')}"
+        if doc_id:
+            line1 += f" · {html.escape(str(doc_id))}"
+        cid_str = f"c{cid}" if cid is not None else "c?"
+        line2 = f"{cid_str} · walk {s:.3f}"
+        body_html = html.escape(clip(body, tip_chars)) if body else ""
+        tip = line1 + "<br>" + line2 + "<br>" + body_html
+
+        node = {"id": o, "cid": cid, "color": cid_color(cid), "size": round(size, 3),
+                "tip": tip}
+        if has_umap:
+            node["umap"] = umap_xyz[o]
+        nodes.append(node)
+
+    seen_links = {}
+    for e in edges:
+        if isinstance(e, dict):
+            a, b, w = e.get("src"), e.get("dst"), e.get("strength")
+        else:
+            a, b, w = e
+        if a is None or b is None or a == b:
+            continue
+        if a not in node_set or b not in node_set:
+            continue
+        key = (a, b) if a < b else (b, a)
+        seen_links.setdefault(key, float(w))
+    links = [{"source": a, "target": b, "w": w}
+             for (a, b), w in sorted(seen_links.items())]
+
+    cid_members = {}
+    for o in ords:
+        c = cid_of.get(o)
+        if c is not None:
+            cid_members.setdefault(c, []).append(o)
+
+    sprites = []
+    for cid in sorted(cid_members):
+        members = cid_members[cid]
+        terms = list(kw.get(cid) or [])[:3]
+        if not terms:
+            seen_terms = set()
+            for o in members:
+                if len(terms) >= 3:
+                    break
+                for t in (salient.get(o, {}).get("top") or []):
+                    if t not in seen_terms:
+                        seen_terms.add(t)
+                        terms.append(t)
+                    if len(terms) >= 3:
+                        break
+        text = f"c{cid}: " + " ".join(terms) if terms else f"c{cid}"
+        sprites.append({"cid": cid, "color": cid_color(cid),
+                         "text": html.escape(text), "members": members})
+
+    paths = []
+    for p in (pathways.get("pairs") or []):
+        path = [o for o in (p.get("path") or []) if o in node_set]
+        if len(path) >= 2:
+            paths.append(path)
+
+    return {"nodes": nodes, "links": links, "sprites": sprites, "paths": paths,
+            "has_umap": has_umap}
+
+
+_WALK3D_TEMPLATE = string.Template("""<!doctype html>
+<meta charset="utf-8">
+<style>
+html,body{margin:0;background:#0f1117;color:#e6e8ef;font:12px/1.4 system-ui}
+#g{width:100%;height:${height}px}
+#tip{position:absolute;display:none;pointer-events:none;background:${bg_card};
+  border:1px solid ${border};border-radius:4px;max-width:320px;padding:.5rem;
+  font-size:.78rem;z-index:10}
+#ctl{position:absolute;top:.5rem;left:.5rem;z-index:10;display:flex;gap:.4rem}
+#ctl button{background:${bg_card};border:1px solid ${border};color:${primary};
+  border-radius:4px;padding:.25rem .55rem;font-size:.72rem;cursor:pointer}
+#err{position:absolute;top:.5rem;left:.5rem;display:none;color:${muted};
+  font-size:.8rem;z-index:10}
+</style>
+<div id="g"></div>
+<div id="tip"></div>
+<div id="ctl">
+<button id="pathbtn" style="${hide_path}">paths: all</button>
+<button id="umapbtn" style="${hide_umap}">layout: force</button>
+</div>
+<div id="err"></div>
+<script src="${fg_url}" onerror="window.__w3dfail=1"></script>
+<script src="${st_url}" onerror="window.__w3dfail=1"></script>
+<script id="w3d-data" type="application/json">${data_json}</script>
+<script>
+try {
+function fail(m){var e=document.getElementById('err');e.style.display='block';
+  e.textContent='3D scene unavailable: '+m;document.getElementById('g').style.display='none';}
+if (window.__w3dfail || typeof ForceGraph3D==='undefined' || typeof SpriteText==='undefined'){
+  fail('could not load the 3d-force-graph libraries (offline?)');
+} else {
+var D = JSON.parse(document.getElementById('w3d-data').textContent);
+var nodeById = {};
+D.nodes.forEach(function(n){ nodeById[n.id] = n; });
+
+var pathSet = {};
+var pathIdx = {};
+D.paths.forEach(function(path, i){
+  for (var k = 0; k < path.length - 1; k++){
+    var a = path[k], b = path[k+1];
+    var key = a < b ? (a + '|' + b) : (b + '|' + a);
+    pathSet[key] = true;
+    pathIdx[key] = i;
+  }
+});
+function linkKey(l){
+  var a = typeof l.source === 'object' ? l.source.id : l.source;
+  var b = typeof l.target === 'object' ? l.target.id : l.target;
+  return a < b ? (a + '|' + b) : (b + '|' + a);
+}
+
+var hotCid = null;
+function rgba(hex, a){
+  var h = hex.replace('#','');
+  var r = parseInt(h.substring(0,2),16), g = parseInt(h.substring(2,4),16), b = parseInt(h.substring(4,6),16);
+  return 'rgba(' + r + ',' + g + ',' + b + ',' + a + ')';
+}
+function col(n){ return (hotCid===null || n.cid===hotCid) ? n.color : rgba(n.color, 0.15); }
+function lcol(l){
+  var an = typeof l.source==='object' ? l.source : nodeById[l.source];
+  var bn = typeof l.target==='object' ? l.target : nodeById[l.target];
+  var base = pathSet[linkKey(l)] ? (an ? an.color : '#8b8f9e') : '#8b8f9e';
+  var dim = hotCid!==null && !(an && an.cid===hotCid) && !(bn && bn.cid===hotCid);
+  return dim ? rgba(base, 0.15) : base;
+}
+function lwidth(l){ return pathSet[linkKey(l)] ? 2.5 : 0.5; }
+
+var pathMode = 'all';
+var pathOne = 0;
+var pathBtn = document.getElementById('pathbtn');
+if (D.paths.length === 0){ pathBtn.style.display = 'none'; }
+pathBtn.addEventListener('click', function(){
+  if (pathMode === 'all'){ pathMode = D.paths.length ? 'one' : 'off'; pathOne = 0; }
+  else if (pathMode === 'one'){ pathOne += 1; if (pathOne >= D.paths.length){ pathMode = 'off'; } }
+  else { pathMode = 'all'; }
+  pathSet = {}; pathIdx = {};
+  var use = pathMode === 'all' ? D.paths : (pathMode === 'one' ? [D.paths[pathOne]] : []);
+  use.forEach(function(path, i){
+    for (var k = 0; k < path.length - 1; k++){
+      var a = path[k], b = path[k+1];
+      var key = a < b ? (a + '|' + b) : (b + '|' + a);
+      pathSet[key] = true; pathIdx[key] = i;
+    }
+  });
+  pathBtn.textContent = pathMode === 'all' ? 'paths: all' :
+    (pathMode === 'one' ? ('paths: one ' + (pathOne+1) + '/' + D.paths.length) : 'paths: off');
+  G.linkWidth(lwidth).linkColor(lcol);
+});
+
+var G = ForceGraph3D()(document.getElementById('g'))
+  .backgroundColor('#0f1117')
+  .graphData({
+    nodes: D.nodes.map(function(n){ return Object.assign({}, n); }),
+    links: D.links.map(function(l){ return {source: l.source, target: l.target, w: l.w}; })
+  })
+  .nodeVal(function(n){ return n.size; })
+  .nodeColor(col)
+  .nodeLabel(null)
+  .nodeOpacity(0.95)
+  .linkColor(lcol)
+  .linkOpacity(0.12)
+  .linkWidth(lwidth);
+
+var tip = document.getElementById('tip');
+document.addEventListener('mousemove', function(ev){
+  tip.style.left = (ev.pageX + 12) + 'px';
+  tip.style.top = (ev.pageY + 12) + 'px';
+});
+G.onNodeHover(function(n){
+  hotCid = n ? n.cid : null;
+  if (n){ tip.style.display = 'block'; tip.innerHTML = n.tip; }
+  else { tip.style.display = 'none'; }
+  G.nodeColor(col).linkColor(lcol);
+  sprites.forEach(function(s){
+    s.sprite.material.opacity = (hotCid===null || s.cid===hotCid) ? 1 : 0.15;
+    s.sprite.material.transparent = true;
+  });
+});
+
+var sprites = D.sprites.map(function(s){
+  var sp = new SpriteText(s.text);
+  sp.color = s.color;
+  sp.textHeight = 27;
+  sp.material.depthWrite = false;
+  G.scene().add(sp);
+  return {sprite: sp, cid: s.cid, members: s.members};
+});
+G.onEngineTick(function(){
+  sprites.forEach(function(s){
+    var mx = 0, my = 0, mz = 0, n = 0;
+    s.members.forEach(function(id){
+      var nd = nodeById[id];
+      if (nd && typeof nd.x === 'number'){ mx += nd.x; my += nd.y; mz += nd.z; n += 1; }
+    });
+    if (n > 0){ s.sprite.position.set(mx/n, my/n, mz/n); }
+  });
+});
+
+var umapBtn = document.getElementById('umapbtn');
+if (!D.has_umap){ umapBtn.style.display = 'none'; }
+var layout = 'force';
+var savedForces = {};
+umapBtn.addEventListener('click', function(){
+  if (layout === 'force'){
+    layout = 'umap';
+    ['charge','link','center'].forEach(function(name){
+      savedForces[name] = G.d3Force(name);
+      G.d3Force(name, null);
+    });
+    var t0 = Date.now();
+    (function animate(){
+      var t = Math.min(1, (Date.now() - t0) / 600);
+      var e = t*t*(3-2*t);
+      D.nodes.forEach(function(n){
+        var nd = nodeById[n.id];
+        if (!nd || !n.umap) return;
+        var sx = nd.__sx===undefined ? nd.x : nd.__sx;
+        var sy = nd.__sy===undefined ? nd.y : nd.__sy;
+        var sz = nd.__sz===undefined ? nd.z : nd.__sz;
+        nd.__sx = sx; nd.__sy = sy; nd.__sz = sz;
+        nd.fx = sx + (n.umap[0]-sx)*e;
+        nd.fy = sy + (n.umap[1]-sy)*e;
+        nd.fz = sz + (n.umap[2]-sz)*e;
+      });
+      G.refresh();
+      if (t < 1){ requestAnimationFrame(animate); }
+    })();
+    umapBtn.textContent = 'layout: umap';
+  } else {
+    layout = 'force';
+    D.nodes.forEach(function(n){
+      var nd = nodeById[n.id];
+      if (!nd) return;
+      nd.fx = undefined; nd.fy = undefined; nd.fz = undefined;
+      nd.__sx = undefined; nd.__sy = undefined; nd.__sz = undefined;
+    });
+    Object.keys(savedForces).forEach(function(name){ G.d3Force(name, savedForces[name]); });
+    G.d3ReheatSimulation();
+    umapBtn.textContent = 'layout: force';
+  }
+});
+
+G.width(document.body.clientWidth).height(${height});
+window.addEventListener('resize', function(){ G.width(document.body.clientWidth); });
+}
+} catch(e) { fail(e.message); }
+</script>
+""")
+
+
+def walk3d_html(payload: dict, *, height: int = 700) -> str:
+    """Render `walk3d_payload`'s dict as a standalone HTML document for
+    `st.components.v1.html(...)` -- an iframe that renders the string
+    VERBATIM as a real HTML document, so (unlike `digest_card`) newlines are
+    legal and wanted here; do not cargo-cult `<br>` into this scene.
+
+    The payload rides inside a `<script type="application/json">` block, not
+    inline JS text, with the `</script>` guard applied to the dump -- that
+    keeps a tip's literal "</script>" from ever closing the data tag early.
+    CDN versions are pinned exactly (P16: "exact versions ... pinned by
+    test"); both tags carry `onerror` so a blocked/offline CDN degrades to a
+    one-line message instead of a blank iframe (P16(h)).
+
+    Spec: .spec/specs/graph-explorer/design.md 6.22 P16(a)-(h), P16(i)
+    Task: playbook.md T53
+    """
+    data_json = json.dumps(payload, separators=(",", ":")).replace("</", "<\\/")
+    return _WALK3D_TEMPLATE.substitute(
+        height=height,
+        bg_card=BG_CARD,
+        border=BORDER,
+        primary=PRIMARY,
+        muted=MUTED,
+        hide_path="display:none" if not payload.get("paths") else "",
+        hide_umap="display:none" if not payload.get("has_umap") else "",
+        fg_url=WALK3D_FG_URL,
+        st_url=WALK3D_ST_URL,
+        data_json=data_json,
+    )
