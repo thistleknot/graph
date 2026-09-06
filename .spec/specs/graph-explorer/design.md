@@ -2512,3 +2512,21 @@ distribution moved under prior settings (e.g. widening ef raised n but
 dropped mean walk score -> the frontier is diluting: reanchor rather than
 widen again). The history table renders in the iteration trace (A1) --
 numbers, not narrative.
+
+**A9 (derived retrieval metrics -- operator, 2026-09-06: ragas-type signal
+without overhead).** Per-iteration metrics are DERIVED from verdicts already
+produced, never from extra LLM calls: precision_proxy = entails / judged
+(clean entailment as the precision signal), contradiction_rate =
+contradicts / judged, coverage = communities touched / communities the
+proposal targeted, and -- WHEN a gold answer is known -- gold_recall_evidence
+(gold terms present in the final evidence bodies) and gold_recall_answer
+(gold terms present in the rendered answer). These ride in the A8 history
+table the proposer sees.
+
+**A10 (gold diagnostic lane).** A NEW agentic diagnostic suite (G-class rows:
+{prompt, gold_terms}) evaluates the graph + agent end to end against
+operator-authored gold -- e.g. "most famous musician of the 1990s" ->
+gold_terms [kurt_cobain, nirvana]. Scored by A9 gold_recall, both evidence
+and answer. Gold rows SHALL be authored against what the corpus verifiably
+contains (checked at authoring time); the FROZEN 20-row do-no-harm set is
+untouched -- this is a second lane, additive (A7).
