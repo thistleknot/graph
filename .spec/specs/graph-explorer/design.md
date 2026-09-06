@@ -2230,3 +2230,58 @@ each contract is the acceptance criterion for its implementing task.
     conftest.py kills the 16 sys.path.insert copies. pg_store.save gains an
     injectable now= (deterministic clock) so the resave supersede test stops
     racing the container clock (measured flake: host-vs-docker drift).
+
+### 6.22 Presentation layer: the one-tab analysis view (T38, 2026-09-05)
+
+Operator directive: "hard to make sense of the key subgraph analysis" -- the
+walk's partition evidence is scattered across two tabs and four sub-tabs.
+This section is the layout and computation contract for the consolidation.
+
+**P1 (single tab).** WHERE the walker renders, there SHALL be exactly TWO
+top-level tabs: **Analysis** (everything) and **Neo4j** (the mirror iframe,
+alone). The Neo4j tab is a declared temporary exception to the one-tab rule:
+the embedded browser is buggy; WHEN it is fixed, the mirror section returns to
+Analysis and the tab is removed. One prompt input drives the whole app (T26
+rule stands).
+
+**P2 (order).** WITHIN Analysis, images PRECEDE partitions: (1) the graph
+figures (walk communities, term graph, 3D, global map), then (2) the partition
+text blocks (correlation-sorted chains, louvain panels, entity/relation
+classes), then (3) evidence/digest. Rationale: the operator scans shape first,
+reads text second.
+
+**P3 (dwpc term ranking).** WHERE a louvain group's terms are listed, they
+SHALL be ranked by DWPC mass: node_dwpc(o) = sum of pairs[i].dwpc over every
+pathway pair whose best path (gt.pathways W15 output) contains chunk o;
+term_dwpc(t) = sum of node_dwpc(o) over member chunks o whose salient vocab
+carries t. Ties break by BM25 salience then lexicographic. Chunks outside
+every best path contribute 0 -- a term with term_dwpc 0 ranks below any
+positive term but keeps its BM25 order within the zero class.
+
+**P4 (relative vs global louvain).** The Analysis tab SHALL show two louvain
+panels side by side: LEFT = louvain re-run on the walked subgraph only
+(python-louvain, fixed seed, edge weight = strength); RIGHT = the global
+ingest-time cids restricted to the walked chunks. The left panel is a VIEW
+ONLY: its partition ids are ephemeral, never persisted, never joined, never
+carried across reruns (steering: subgraph louvain is not a restriction of
+global louvain). The panel header SHALL say "relative (this walk only)" so the
+non-canonical status is visible on screen.
+
+**P5 (classes).** Per louvain group (both panels), the view SHALL list:
+member chunks (ord, source, doc_id), terms ranked per P3, entities ranked by
+lift = (mention share in group) / (mention share in corpus) with a mention
+floor, and relation templates with counts scoped to pairs whose src AND dst
+entities are mentioned in the group's chunks. Queries live in evidence.py /
+walker_core.py, NEVER inline in walker_app (6.21(c) walker split holds).
+
+**P6 (shading).** Groupings SHALL be visually separated by background color:
+in figures, a translucent convex-hull or rect shape behind each community's
+nodes (plotly layout.shapes, alpha <= 0.15, same hue as the group's node
+color); in tables, per-row background by group id (styled dataframe), same
+palette. One palette, defined once, shared by figures and tables so a group
+is the same color everywhere it appears.
+
+**P7 (no recompute).** Every panel is a rendering of already-computed state
+(walk_state / dendrite_state caches). The subgraph louvain of P4 runs at most
+once per (run, prompt) and is cached with the same key. No panel issues its
+own DB queries at render time beyond the evidence.py helpers.

@@ -936,3 +936,24 @@ fixed seeds), do-no-harm = frozen diagnostic keeps 18/20 with the same pass set,
 Campaign close (2026-09-05): refactor complete, T30-T37 all DONE. Final gates:
 suite 574 passed / 6 skipped; diagnostic 18/20 FAIL=[E3] KNOWN-FAIL=[A2],
 B 48-52% -- unchanged across the entire campaign.
+
+## Layer 13 -- sequential (presentation layer: one-tab analysis view)
+Source: operator, 2026-09-05 ("focus on the presentation layer... hard to make
+sense of the key subgraph analysis").
+
+- [DONE] T38 Spec 6.22: single-tab layout contract + dwpc term ranking + relative
+  vs global louvain view rule + entity/relation class panels + group shading
+  _Files:_ .spec/specs/graph-explorer/design.md
+  _Verify:_ grep -c "6.22" .spec/specs/graph-explorer/design.md
+
+- [WIP] T39 Core computations: dwpc-ranked terms per louvain group, subgraph
+  louvain view (ephemeral, never persisted), entities-per-class (lift over
+  mentions x community), relations-per-class (template counts scoped to walk)
+  _Files:_ walker_core.py, evidence.py, tests/test_walker_core.py
+  _Verify:_ python -m pytest tests/test_walker_core.py tests/test_evidence.py -q
+
+- [OPEN] T40 UI restructure: ONE analysis tab (images before partitions, group
+  background shading, louvain relative LH vs global RH columns, entity/relation
+  class tables), neo4j mirror to its OWN tab (temporary: buggy; port back when fixed)
+  _Files:_ walker_app.py
+  _Verify:_ python -m pytest tests/test_walker_render.py -q && PYTHONPATH=. python tools/diag_rerun.py mixed-full-dual
