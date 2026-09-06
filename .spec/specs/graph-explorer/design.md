@@ -2346,3 +2346,10 @@ width (~110 cols) and long tails truncate with a count ("+ 14 more"); at most
 8 group digests render inline, the rest behind an expander. (g) the digest
 text is the same artifact a future LLM reasoning pass consumes -- pregrouped
 text over pixels; no information may live only in the figures.
+
+**P13 (shareable prompt URL, operator 2026-09-05).** WHEN the page loads with a
+?q= query parameter and the session has no prompt yet, the prompt input SHALL
+initialize from it; WHEN a walk runs, the URL's ?q= SHALL be updated to match,
+so any session's current view is a link another browser session can open and
+see the same populated results (walk/LLM state is cached process-wide per
+(run, prompt), so the second session renders from cache).

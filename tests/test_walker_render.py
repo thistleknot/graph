@@ -395,3 +395,14 @@ def test_mirror_is_the_neo4j_tab():
     assert src.count("st.container(border=True)") >= 4      # 6.22 P10, four panels
     assert "style_group_table" not in src                   # P11: no dataframes for groups
     assert src.find("### Groups") < src.find("### Partitions")   # P10 order
+
+
+def test_query_param_seeds_prompt_source():
+    """P13: the app reads ?q= into session state before the prompt input and
+    writes the running prompt back to st.query_params. Source-level pin (an
+    AppTest cannot set query params pre-run in this streamlit version)."""
+    src = open("walker_app.py", encoding="utf-8").read()
+    seed = src.index('st.session_state["q"] = st.query_params["q"]')
+    widget = src.index('st.text_input("Prompt"')
+    assert seed < widget, "?q= seed must run before the prompt widget mounts"
+    assert 'st.query_params["q"] = q' in src, "running prompt must write back to the URL"

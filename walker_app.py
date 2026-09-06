@@ -569,7 +569,14 @@ def assess_for(run_id: str, q: str, _bnd=None, _ws=None, _ds=None, _embed=None):
 
 # ================================================================ ANALYSIS
 with tab_analysis:
+    # P13: a fresh session seeds the prompt from ?q=, and a running walk writes
+    # it back, so the current view is a shareable link (state itself is cached
+    # process-wide per (run, prompt) -- the second browser renders from cache).
+    if "q" not in st.session_state and st.query_params.get("q"):
+        st.session_state["q"] = st.query_params["q"]
     q = st.text_input("Prompt", "", key="q", placeholder="ask the corpus")
+    if q.strip() and st.query_params.get("q") != q:
+        st.query_params["q"] = q
     if q.strip():
         bnd, tele = walk_for(str(run.run_id), q)
         if not bnd.sampled:
