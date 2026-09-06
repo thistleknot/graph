@@ -42,13 +42,20 @@ ROWS = [
 ]
 
 
-def score_row(result, answer_text=None, gold_terms=None):
-    """PURE (A9): pass rule is gold_recall_evidence == 1.0 on the FINAL
-    iteration's accumulated evidence -- all gold terms reached. answer_text is
-    optional (the answer stage can fail independently of the loop)."""
+def score_row(result, answer_text=None, gold_terms=None, bodies=None):
+    """PURE (A9): pass rule is gold recall == 1.0 over the accumulated
+    evidence BODIES (spec A9: "gold terms present in the final evidence
+    bodies") -- the digest-based per-iteration number undermeasures, since a
+    compact digest can omit a term its chunk body carries (first live run:
+    G1 evid=0.00 by digest while the walk had reached cobain chunks).
+    `bodies` is the list of accumulated chunks' body texts; when absent,
+    falls back to the digest-based number. answer_text optional."""
     iters = result["iterations"]
     final = iters[-1]
-    evid = final.gold_recall_evidence if final.gold_recall_evidence is not None else 0.0
+    if bodies is not None and gold_terms:
+        evid = react.gold_recall(bodies, gold_terms)
+    else:
+        evid = final.gold_recall_evidence if final.gold_recall_evidence is not None else 0.0
     ans = react.gold_recall(answer_text, gold_terms) if answer_text else 0.0
     passed = evid == 1.0
     return {"evid": evid, "ans": ans, "n_iters": result["n_iters"],
@@ -66,7 +73,8 @@ def run_row(conn, run, rid, prompt, gold_terms, embed):
     bundle, ev = result.get("bundle"), result.get("ev")
     if bundle is not None and ev is not None:
         try:
-            capped = react.cap_bundle(bundle, 100)          # A5 amendment
+            capped = react.cap_bundle(bundle, 50)           # A5: 100 still elicited
+                                                            # 11K-char answers
             ans = interpret.answer(conn, run, capped, ev.terms, ev.concept, embed=embed)
             answer_text = ans.get("answer") or None
             if not ans.get("ok"):
@@ -74,7 +82,18 @@ def run_row(conn, run, rid, prompt, gold_terms, embed):
         except Exception as e:                                       # noqa: BLE001
             answer_error = f"{type(e).__name__}: {e}"
 
-    sc = score_row(result, answer_text, gold_terms)
+    bodies = None
+    try:
+        ords = result.get("ords") or []
+        if ords:
+            with conn.cursor() as cur:
+                cur.execute("SELECT body FROM node WHERE run_id = %s AND ord = ANY(%s)",
+                            (str(run.run_id), list(ords)))
+                bodies = [r["body"] for r in cur.fetchall()]
+    except Exception:                                        # noqa: BLE001
+        bodies = None                     # fall back to digest-based number
+
+    sc = score_row(result, answer_text, gold_terms, bodies=bodies)
     sc["elapsed_s"] = round(dt, 2)
     sc["answer_error"] = answer_error
     return sc
