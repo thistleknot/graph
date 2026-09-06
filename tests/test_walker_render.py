@@ -579,3 +579,26 @@ def test_walk_trace_is_last_and_collapsed():
     assert "expanded=not has_answer" not in src
     assert "has_answer" not in src, "dead flag left behind"
     assert "expanded=False" in src[i_trace:i_trace + 700]
+
+
+# ------------------------- 6.23 agentic retrieval (T62)
+
+def test_react_engages_only_on_the_insufficient_path():
+    src = _src()
+    assert 'if rr.get("ok") and _entails == 0:' in src
+    assert src.count("react_for(") == 2, "react_for: one def + exactly one call site"
+    assert src.find('_entails == 0') < src.find("rx = react_for(")
+
+
+def test_agentic_trace_lands_in_the_evidence_zone():
+    src = _src()
+    assert (src.find('panel_head("Judged evidence")')
+            < src.find('panel_head("Agentic retrieval")')
+            < src.find('panel_head("Groups")'))
+    assert 'rx["history_table"]' in src
+
+
+def test_hero_passes_through_the_answer_gate():
+    src = _src()
+    assert src.find("walker_core.answer_gate(") < src.find("walker_core.hero_answer(")
+    assert "[] if _gated else" in src, "a gated hero must not pill citations"

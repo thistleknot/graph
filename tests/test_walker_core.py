@@ -691,6 +691,27 @@ def test_hero_answer_pills_the_citations_and_escapes_the_body():
     assert "opacity:.6" in card
 
 
+def test_answer_gate_refuses_to_answer_over_zero_entails():
+    claim = "Kurt Cobain was the most famous musician of the 1990s."
+    gated, text = walker_core.answer_gate(claim, 0, n_iters=3, n_chunks=88)
+    assert gated is True
+    assert "does not answer this" in text
+    assert "88" in text
+    assert "3 agentic iterations" in text
+    assert claim not in text
+
+
+def test_answer_gate_passes_a_supported_answer_through_untouched():
+    assert walker_core.answer_gate("A.", 4, n_iters=0, n_chunks=20) == (False, "A.")
+
+
+def test_answer_gate_points_at_what_the_loop_found():
+    gated, text = walker_core.answer_gate("x", 0, n_iters=2, n_chunks=40, found_entails=3)
+    assert gated is True
+    assert "Agentic retrieval" in text
+    assert "3 entailing" in text
+
+
 def test_digest_card_badge_renders_and_body_stays_byte_identical():
     import html as _html
     import re

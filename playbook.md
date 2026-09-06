@@ -1153,10 +1153,13 @@ evidence, llm-as-judge sufficiency call, on-the-fly depth/hops).
   post-subplan spec addition -- no extra LLM calls, no edits outside the two
   owned files.
 
-- [OPEN] T62 Wire-in: zero-entail answer gate in the hero (immediate fix) +
+- [DONE] T62 Wire-in: zero-entail answer gate in the hero (immediate fix) +
   react loop engaged when insufficient; iteration trace in the EVIDENCE zone
-  _Files:_ walker_app.py, walker_core.py, tests/test_walker_render.py
+  _Files:_ walker_app.py, walker_core.py, tests/test_walker_render.py, tests/test_walker_core.py
   _Verify:_ python -m pytest tests/test_walker_render.py tests/test_walker_core.py -q && PYTHONPATH=. python tools/diag_rerun.py mixed-full-dual
+  _Lessons:_ D3's inject-through-walk_fn/judge_fn seam held exactly as scoped --
+  react_for costs zero extra walks/calls for iteration 0; 111 pytest passed,
+  diag gate unchanged at PASS 18/20 | FAIL ['E3'] | KNOWN-FAIL ['A2'].
 
 - [OPEN] T63 Gold diagnostic lane (A10): tools/diag_agentic.py + G-class rows
   authored against verified corpus content (kurt_cobain/nirvana check first)

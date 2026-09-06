@@ -35,6 +35,7 @@ import evidence
 import graph_tools as gt
 import interpret
 import pg_store
+import react
 import sampler
 import walker_core
 
@@ -534,6 +535,35 @@ def assess_for(run_id: str, q: str, _bnd=None, _ws=None, _ds=None, _embed=None):
     return walker_core.assess(conn, run, _bnd, _ws, _ds, q, embed=_embed)
 
 
+@st.cache_data(show_spinner=False, max_entries=8)
+def react_for(run_id: str, q: str, _bnd=None, _ws=None, _rr=None, _embed=None):
+    """A7: only ever called from the insufficient branch. Iteration 0 is the
+    walk and the judge result the page ALREADY has (D3) -- injected through
+    react's walk_fn/judge_fn seams so the loop costs one walk + one model call
+    per EXTRA iteration and nothing for the base.
+
+    Spec: design.md 6.23 A1-A9 · Task: playbook.md T62
+    """
+    used = {"walk": False, "judge": False}
+
+    def _walk(q_, params):
+        if not used["walk"] and q_ == q and params == react.BASE_PARAMS:
+            used["walk"] = True
+            return _bnd, _ws
+        bnd_, _tele = sampler.ef_evidence(conn, run, q_, seed=0, **params)
+        return bnd_, evidence.assemble(conn, run, bnd_, embed=_embed)
+
+    def _judge(bnd_, ev_):
+        if not used["judge"]:
+            used["judge"] = True
+            return _rr
+        return interpret.reason(conn, run, bnd_, ev_.terms, ev_.concept,
+                                embed=_embed, judge=True, pw=ev_.pathways,
+                                digest=ev_.digest)
+
+    return react.run(conn, run, q, embed=_embed, walk_fn=_walk, judge_fn=_judge)
+
+
 # ================================================================ ANALYSIS
 with tab_analysis:
     # P13: a fresh session seeds the prompt from ?q=, and a running walk writes
@@ -612,6 +642,17 @@ with tab_analysis:
 
             if got and got[0] == q:
                 rr = got[1]
+                _entails = len(rr.get("entailed") or []) if rr.get("ok") else 0
+                rx = None
+                if rr.get("ok") and _entails == 0:      # A7: insufficient path ONLY
+                    with st.spinner("0 entails -- agentic retrieval: re-walking "
+                                    "with new parameters …"):
+                        try:
+                            rx = react_for(str(run.run_id), q, _bnd=bnd, _ws=ws,
+                                           _rr=rr, _embed=embed)
+                        except Exception as e:                        # noqa: BLE001
+                            rx = None
+                            st.warning(f"agentic retrieval skipped: {e}")
                 _z1L, _z1R = st.columns([1.1, 1])          # P18 Zone 1: VERDICT | EVIDENCE
                 with _z1L:
                     with st.container(border=True):            # P10 panel 1 — Answer
@@ -619,13 +660,22 @@ with tab_analysis:
                         if not rr["ok"]:
                             st.warning(f"Stopped: {rr['error']}")
                         else:
-                            st.markdown(walker_core.hero_answer(
+                            _model_line = (
+                                f"{rr['backend']} · one call: {len(rr['briefs'])} "
+                                f"community briefs + {len(rr.get('shown', []))} chunks judged"
+                                + (f" · {rr['structure_note']}" if rr.get("structure_note") else ""))
+                            _gated, _hero_text = walker_core.answer_gate(
                                 rr["answer"] or "No premise was judged supported, so there is "
                                                 "nothing to answer from. The premises below say why.",
-                                rr.get("cited") or [],
-                                f"{rr['backend']} · one call: {len(rr['briefs'])} community briefs + "
-                                f"{len(rr.get('shown', []))} chunks judged"
-                                + (f" · {rr['structure_note']}" if rr.get("structure_note") else "")),
+                                _entails,
+                                n_iters=(rx or {}).get("n_iters", 0),
+                                n_chunks=len(bnd.sampled),
+                                found_entails=len((rx or {}).get("entails", [])))
+                            st.markdown(walker_core.hero_answer(
+                                _hero_text,
+                                [] if _gated else (rr.get("cited") or []),
+                                _model_line,
+                                color=WARN if _gated else PRIMARY),
                                 unsafe_allow_html=True)
                         if rr["hypotheses"]:
                             st.markdown("**Hypothesis** " + (rr["hypothesis"] or ""))
@@ -720,6 +770,37 @@ with tab_analysis:
                             with st.expander("Exactly what the model returned (raw)"):
                                 for name, txt in rr["stages"].items():
                                     st.markdown(f"**{name}**"); st.code(txt, language="json")
+
+                        # ---- A1/A8/A9 iteration transcript. P18: this is
+                        # EVIDENCE (why believe it), so it lands in Zone 1
+                        # right, additive to the base walk's judged rows.
+                        if rx:
+                            panel_head("Agentic retrieval")
+                            st.caption(
+                                f"{rx['n_iters']} iterations beyond the base walk · "
+                                f"stop: {rx['stop_reason']} · union {len(rx['ords'])} chunks · "
+                                f"{len(rx['entails'])} entail / {len(rx['contradicts'])} contradict")
+                            st.code(rx["history_table"], language="text")
+                            _new_ent = [o for o in rx["entails"]
+                                        if rx["found_at"].get(o, 0) > 0]
+                            if _new_ent:
+                                st.markdown("**Found only by the loop**")
+                                for o in _new_ent[:12]:
+                                    nd = gt.node(conn, run, o)
+                                    badge = walker_core.pill(
+                                        f"entails · iteration {rx['found_at'][o]}", GOOD)
+                                    head = (f"#{o} · {nd['doc_id']} · c{nd['cid']} — "
+                                            f"{rx['verdicts'].get(o, {}).get('why', '')}")
+                                    snippet = walker_core.clip(
+                                        interpret.excerpt(nd['body'], q, 300, embed), 300)
+                                    st.markdown(walker_core.evidence_row(
+                                        head, snippet, badge, cid_color(nd['cid'])),
+                                        unsafe_allow_html=True)
+                            elif rx["entails"]:
+                                st.caption("the loop re-confirmed the base walk's "
+                                           "entails and found no new ones")
+                            if rx.get("missing"):
+                                st.caption("still missing: " + ", ".join(rx["missing"]))
 
             with st.container(border=True):                # P10 panel 3 — Groups
                 panel_head("Groups")

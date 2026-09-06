@@ -150,6 +150,37 @@ def hero_answer(answer: str, cites, model_line: str, color: str = PRIMARY) -> st
     )
 
 
+def answer_gate(answer: str, entails: int, *, n_iters: int = 0,
+                n_chunks: int = 0, found_entails: int = 0) -> tuple[bool, str]:
+    """A6: a confident claim over zero entailing chunks is a defect. Returns
+    (gated, text). PURE -- no escaping here; hero_answer escapes what it
+    renders, and this returns plain text on purpose.
+
+    entails == 0 -> gated, and the text SAYS the corpus does not answer this,
+    with the walk size and how many agentic iterations were tried. When the
+    react loop did surface entailing chunks (found_entails > 0) the gate still
+    holds the hero -- the base answer was argued over nothing -- but points the
+    reader at the Agentic retrieval section rather than dead-ending.
+
+    Spec: .spec/specs/graph-explorer/design.md 6.23 A6
+    Task: playbook.md T62
+    """
+    if entails > 0:
+        return False, answer
+    tried = (f" {n_iters} agentic iteration{'s' if n_iters != 1 else ''} were tried"
+             if n_iters else " No further iterations were tried")
+    text = (f"The corpus, as walked, does not answer this. {n_chunks} chunks were "
+            f"walked and none of them entails the prompt.{tried}. "
+            f"A superlative or aggregate prompt (\"most famous\", \"best\", \"first\") "
+            f"is not entailed by any single chunk -- the graph can show what it "
+            f"holds, it cannot crown a candidate.")
+    if found_entails:
+        text += (f" Agentic retrieval did surface {found_entails} entailing "
+                 f"chunk{'s' if found_entails != 1 else ''} -- see Agentic "
+                 f"retrieval, below.")
+    return True, text
+
+
 def clip(text: str, n: int) -> str:
     """Never cut inside a word (design 6.3). Clip at the last whitespace
     before n and mark the cut; short text is returned untouched."""
