@@ -1166,6 +1166,12 @@ evidence, llm-as-judge sufficiency call, on-the-fly depth/hops).
   _Files:_ tools/diag_agentic.py, tests/test_react.py
   _Verify:_ PYTHONPATH=. python tools/diag_agentic.py mixed-full-dual
 
-- [WIP] T64 Live look: the 1990s-musician query through the loop; screenshots
+- [DONE] T64 Live look: the 1990s-musician query through the loop; screenshots
   _Files:_ (none -- verification only)
   _Verify:_ playwright screenshots of :8501
+
+Campaign close (2026-09-06): agentic retrieval v0 complete, T60-T64 DONE.
+Gold lane AGENTIC 5/5 (evid=1.0 all rows) after the A3 fixed-point guard and
+A9 bodies-scored recall; live UI shows the gated hero + the loop finding
+nirvana/cobain chunk #6323 at iteration 1. Frozen diagnostic untouched:
+PASS 18/20 | FAIL [E3] | KNOWN-FAIL [A2] (A7 held).
