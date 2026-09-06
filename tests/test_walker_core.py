@@ -577,7 +577,10 @@ def test_digest_card_text_is_byte_identical_after_unescaping():
                                          "corpus_total": 0}, src_of)
     card = walker_core.digest_card(txt, "#4C78A8")
     body = re.search(r"<pre[^>]*>(.*)</pre>", card, re.S).group(1)
-    assert _html.unescape(body) == txt
+    # <br> is the rendered line break (streamlit re-flows raw \n even in <pre>);
+    # folding it back must restore the digest byte for byte (P11(g)).
+    assert _html.unescape(body.replace("<br>", "\n")) == txt
+    assert "\n" in txt and "<br>" in body  # multi-line digests really carry breaks
 
 
 def test_digest_card_escapes_html_in_the_body():
@@ -589,7 +592,7 @@ def test_digest_card_escapes_html_in_the_body():
     assert "&amp;" in card
     import re
     body = re.search(r"<pre[^>]*>(.*)</pre>", card, re.S).group(1)
-    assert _html.unescape(body) == txt
+    assert _html.unescape(body.replace("<br>", "\n")) == txt
 
 
 def test_digest_card_carries_the_hue_as_border_and_tint():

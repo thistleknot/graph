@@ -1044,6 +1044,6 @@ adding no utility").
     "### Groups"/"### Partitions (dendrite sort)"/"relative (this walk only)" in walker_app.py;
     updated those assertions to match the panel_head()-based source (collateral fix, same owned file).
 
-- [OPEN] T48 Live look: >=3 distinct card hues in the DOM, screenshots to operator
+- [DONE] T48 Live look: >=3 distinct card hues in the DOM, screenshots to operator
   _Files:_ (none -- verification only)
   _Verify:_ playwright screenshots of :8501

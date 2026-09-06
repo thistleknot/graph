@@ -437,7 +437,10 @@ def digest_card(text: str, color: str, *, alpha: float = 0.10) -> str:
     Task: playbook.md T47
     """
     ident = (text.splitlines() or [""])[0].split(" ")[0]
-    body = html.escape(text)
+    # Streamlit's markdown pass re-flows raw newlines even inside <pre>
+    # (observed live, T48): explicit <br> is the only break it preserves.
+    # strip_tags folds <br> back to \n so the byte-identity contract holds.
+    body = html.escape(text).replace("\n", "<br>")
     return (
         f'<div style="background:{rgba(color, alpha)};'
         f'border-left:4px solid {color};border-radius:4px;'
