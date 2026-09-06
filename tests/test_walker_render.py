@@ -305,7 +305,7 @@ def test_panels_render_digests_and_chain_communities():
         "P14(e) supersedes P11's st.code: digests are cards now"
     assert re.search(r"chain \d+ · <code>c", md), "P12/P14(d): no tinted chain row"
     assert "relative (this walk only)" in md, \
-        "P14(a) reversed (operator): the LH relative spring is back beside the global RH"
+        "P14(a) reversed + P18: the LH/RH louvain pair now lives in its own sub-tab"
     assert re.search(r"height:3px", md), "P15(c): no card top accent bar"
 
 
@@ -481,7 +481,8 @@ def test_mirror_is_the_neo4j_tab():
     tab holding the ACTUAL neo4j browser -- possible because the container is
     launched with a CSP whose frame-ancestors names http://localhost:8501
     (stock image sends DENY). Preceded, inside Analysis, by the
-    dendrite-sorted Partitions table; one input field for the whole app."""
+    dendrite-sorted Partitions panel in Zone 3 left (6.22 P18); one input
+    field for the whole app."""
     src = open("walker_app.py", encoding="utf-8").read()
     assert "tab_mirror" not in src                      # no third tab
     mirror = src.split("MIRROR (T26)")[1]
@@ -498,7 +499,7 @@ def test_mirror_is_the_neo4j_tab():
     assert 'st.tabs(["Analysis", "Neo4j"])' in src
     assert src.count("st.container(border=True)") >= 4      # 6.22 P10, four panels
     assert "style_group_table" not in src                   # P11: no dataframes for groups
-    assert src.find('panel_head("Groups")') < src.find('panel_head("Partitions"')   # P10 order
+    assert src.find('panel_head("Groups")') < src.find('panel_head("Partitions"')   # P18 zone order (supersedes P10's ORDER clause)
     assert "st.columns(3)" in src                            # P15(c) grid
     assert "st.columns(4)" in src                            # P15(b) stat row
     assert "walker_core.stat_card" in src and "walker_core.hero_answer" in src
@@ -524,3 +525,57 @@ def test_no_sidebar_anywhere():
     src = open("walker_app.py", encoding="utf-8").read()
     assert "st.sidebar" not in src, "P17: st.sidebar must not reappear"
     assert 'st.popover("details")' in src, "details popover missing from top row"
+
+
+# ------------------------- 6.22 P18 zones (T58)
+
+def _src():
+    return open("walker_app.py", encoding="utf-8").read()
+
+
+def test_zone_columns_split_verdict_from_evidence():
+    """P18: Zone 1 = VERDICT left | EVIDENCE right (~[1.1,1]); Zone 3 =
+    LENSES left | REFERENCE right (~[1.4,1])."""
+    src = _src()
+    assert "st.columns([1.1, 1])" in src, "P18 Zone 1 columns missing"
+    assert "st.columns([1.4, 1])" in src, "P18 Zone 3 columns missing"
+    assert (src.find("st.columns([1.1, 1])")
+            < src.find('panel_head("Answer")')
+            < src.find('panel_head("Judged evidence")')
+            < src.find('panel_head("Groups")')
+            < src.find("st.columns([1.4, 1])")
+            < src.find('panel_head("Partitions"')
+            < src.find('subheader("Community map")'))
+
+
+def test_figure_subtabs_lead_with_3d():
+    """P18: the STRUCTURE sub-tab strip is 3D-first (default), louvain pair is
+    its own sub-tab, and the redundant global-map image tab is gone."""
+    src = _src()
+    assert ('["3D explorer", "2D walk", "Louvain rel | glob", "Term graph"]' in src), \
+        "P18: sub-tab strip must be 3D-first with the louvain pair as its own tab"
+    assert '"Global map"' not in src, "P18: the global-map image tab merges away"
+    assert "render_walk_image" not in src, \
+        "P18: the walk-image render is superseded by the Zone 3 community map"
+
+
+def test_louvain_pair_lives_in_its_own_subtab():
+    """P14(a) REVERSED stands, relocated: both springs render inside t_louv,
+    above the factbook grid, which stays in the Groups panel body."""
+    src = _src()
+    i_tab = src.find("with t_louv:")
+    i_rel = src.find('"relative (this walk only)"')
+    i_fact = src.find("Per-group factbook")
+    assert -1 < i_tab < i_rel < i_fact
+    assert 'global communities (stored cids)' in src
+
+
+def test_walk_trace_is_last_and_collapsed():
+    """P18: the medoids/anchors/one-degree-out block is a WALK TRACE --
+    diagnostic, not evidence: it renders last and always collapsed."""
+    src = _src()
+    i_trace = src.find("P18 WALK TRACE")
+    assert i_trace > src.find('subheader("Community map")')
+    assert "expanded=not has_answer" not in src
+    assert "has_answer" not in src, "dead flag left behind"
+    assert "expanded=False" in src[i_trace:i_trace + 700]

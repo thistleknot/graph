@@ -562,6 +562,11 @@ with tab_analysis:
             ndw = walker_core.node_dwpc(pw)
             rel_groups = louvain_for(str(run.run_id), q, _ords=bnd.sampled, _edges=ai["edges"])
             glob_groups = {o: ws.cid_of[o] for o in bnd.sampled if ws.cid_of.get(o) is not None}
+            org = getattr(bnd, "origin", {}) or {}
+            n_br = sum(1 for v in org.values() if v == "bridge")
+            def _mark(o):
+                return f"**#{o}**" if org.get(o) == "bridge" else f"#{o}"
+            ds = dendrite_state(str(run.run_id), q, _ev=ws)
 
             # ---- 1. the model's answer, right under the prompt (I13: one call,
             # P8: auto-fired -- no button, a walk always ends in an answer)
@@ -605,141 +610,124 @@ with tab_analysis:
                 with _col:
                     st.markdown(walker_core.stat_card(*_args), unsafe_allow_html=True)
 
-            has_answer = False
             if got and got[0] == q:
                 rr = got[1]
-                with st.container(border=True):            # P10 panel 1 — Answer
-                    panel_head("Answer")
-                    if not rr["ok"]:
-                        st.warning(f"Stopped: {rr['error']}")
-                    else:
-                        has_answer = True
-                        st.markdown(walker_core.hero_answer(
-                            rr["answer"] or "No premise was judged supported, so there is "
-                                            "nothing to answer from. The premises below say why.",
-                            rr.get("cited") or [],
-                            f"{rr['backend']} · one call: {len(rr['briefs'])} community briefs + "
-                            f"{len(rr.get('shown', []))} chunks judged"
-                            + (f" · {rr['structure_note']}" if rr.get("structure_note") else "")),
-                            unsafe_allow_html=True)
-                    if rr["hypotheses"]:
-                        st.markdown("**Hypothesis** " + (rr["hypothesis"] or ""))
-                        others = [h for h in rr["hypotheses"] if h != rr["hypothesis"]]
-                        if others:
-                            st.caption("also considered: " + " | ".join(others))
-                        if rr["why"]:
-                            st.caption(f"chosen because: {rr['why']}")
-                    if rr["premises"]:
-                        st.markdown("**Premises**")
-                        col = {"supports": GOOD, "contradicts": BAD,
-                               "insufficient": MUTED, "unsupported": "#666a78"}
-                        for pr in rr["premises"]:
-                            ids = ", ".join(f"#{o}" for o in pr["ids"]) or "no evidence cited"
-                            st.markdown(
-                                f"<span style='color:{col[pr['verdict']]}'>●</span> "
-                                f"**{pr['verdict']}** — {pr['text']}<br>"
-                                f"<span style='opacity:.7;font-size:.86em'>{ids}"
-                                f"{' — ' + pr['why'] if pr['why'] else ''}</span>",
+                _z1L, _z1R = st.columns([1.1, 1])          # P18 Zone 1: VERDICT | EVIDENCE
+                with _z1L:
+                    with st.container(border=True):            # P10 panel 1 — Answer
+                        panel_head("Answer")
+                        if not rr["ok"]:
+                            st.warning(f"Stopped: {rr['error']}")
+                        else:
+                            st.markdown(walker_core.hero_answer(
+                                rr["answer"] or "No premise was judged supported, so there is "
+                                                "nothing to answer from. The premises below say why.",
+                                rr.get("cited") or [],
+                                f"{rr['backend']} · one call: {len(rr['briefs'])} community briefs + "
+                                f"{len(rr.get('shown', []))} chunks judged"
+                                + (f" · {rr['structure_note']}" if rr.get("structure_note") else "")),
                                 unsafe_allow_html=True)
-                    if rr["foreign"]:
-                        st.error("Foreign ids named by the model (discarded): "
-                                 + ", ".join(f"#{o}" for o in rr["foreign"]))
-                    if rr["self_contradicting"]:
-                        st.error("Answer cites ids outside the supported premises: "
-                                 + ", ".join(f"#{o}" for o in rr["self_contradicting"]))
+                        if rr["hypotheses"]:
+                            st.markdown("**Hypothesis** " + (rr["hypothesis"] or ""))
+                            others = [h for h in rr["hypotheses"] if h != rr["hypothesis"]]
+                            if others:
+                                st.caption("also considered: " + " | ".join(others))
+                            if rr["why"]:
+                                st.caption(f"chosen because: {rr['why']}")
+                        if rr["premises"]:
+                            st.markdown("**Premises**")
+                            col = {"supports": GOOD, "contradicts": BAD,
+                                   "insufficient": MUTED, "unsupported": "#666a78"}
+                            for pr in rr["premises"]:
+                                ids = ", ".join(f"#{o}" for o in pr["ids"]) or "no evidence cited"
+                                st.markdown(
+                                    f"<span style='color:{col[pr['verdict']]}'>●</span> "
+                                    f"**{pr['verdict']}** — {pr['text']}<br>"
+                                    f"<span style='opacity:.7;font-size:.86em'>{ids}"
+                                    f"{' — ' + pr['why'] if pr['why'] else ''}</span>",
+                                    unsafe_allow_html=True)
+                        if rr["foreign"]:
+                            st.error("Foreign ids named by the model (discarded): "
+                                     + ", ".join(f"#{o}" for o in rr["foreign"]))
+                        if rr["self_contradicting"]:
+                            st.error("Answer cites ids outside the supported premises: "
+                                     + ", ".join(f"#{o}" for o in rr["self_contradicting"]))
 
-                with st.container(border=True):            # P10 panel 2 — Judged evidence
-                    # ---- the judge channel of the same call
-                    if rr.get("verdicts"):
-                        panel_head("Judged evidence")
-                        st.caption(f"judged {rr['coverage']:.0%} of {len(rr['shown'])} shown · "
-                                   f"{len(rr['entailed'])} entail · "
-                                   f"{len(rr['contradicts'])} contradict")
-                        why = {v["ord"]: v["why"] for v in rr["verdicts"]}
-                        for label, ords_, verdict_word, colour in (
-                                ("Entails", rr["entailed"], "entails", GOOD),
-                                ("Contradicts", rr["contradicts"], "contradicts", BAD)):
-                            if ords_:
-                                st.markdown(f"**{label}**")
-                                for o in ords_:
-                                    nd = gt.node(conn, run, o)
-                                    badge = walker_core.pill(
-                                        f"{verdict_word} · walk {bnd.scores.get(o, 0):.2f}", colour)
-                                    head = (f"#{o} · {nd['doc_id']} · c{nd['cid']} — "
-                                            f"{why.get(o, '')}")
-                                    snippet = walker_core.clip(
-                                        interpret.excerpt(nd['body'], q, 300, embed), 300)
-                                    st.markdown(walker_core.evidence_row(
-                                        head, snippet, badge, cid_color(nd['cid'])),
-                                        unsafe_allow_html=True)
-                        neutral = [v for v in rr["verdicts"]
-                                   if v["verdict"] == "neutral" and v["ord"] in set(rr["shown"])]
-                        if neutral:
-                            with st.expander(f"Neutral ({len(neutral)}) — the model's reason for each"):
-                                for v in neutral:
-                                    nd = gt.node(conn, run, v["ord"])
-                                    badge = walker_core.pill("neutral", MUTED)
-                                    head = f"#{v['ord']} · {nd['doc_id']} · c{nd['cid']} — {v['why']}"
-                                    st.markdown(walker_core.evidence_row(
-                                        head, "", badge, cid_color(nd['cid'])),
-                                        unsafe_allow_html=True)
+                with _z1R:
+                    with st.container(border=True):            # P10 panel 2 — Judged evidence
+                        # ---- the judge channel of the same call
+                        if rr.get("verdicts"):
+                            panel_head("Judged evidence")
+                            st.caption(f"judged {rr['coverage']:.0%} of {len(rr['shown'])} shown · "
+                                       f"{len(rr['entailed'])} entail · "
+                                       f"{len(rr['contradicts'])} contradict")
+                            why = {v["ord"]: v["why"] for v in rr["verdicts"]}
+                            for label, ords_, verdict_word, colour in (
+                                    ("Entails", rr["entailed"], "entails", GOOD),
+                                    ("Contradicts", rr["contradicts"], "contradicts", BAD)):
+                                if ords_:
+                                    st.markdown(f"**{label}**")
+                                    for o in ords_:
+                                        nd = gt.node(conn, run, o)
+                                        badge = walker_core.pill(
+                                            f"{verdict_word} · walk {bnd.scores.get(o, 0):.2f}", colour)
+                                        head = (f"#{o} · {nd['doc_id']} · c{nd['cid']} — "
+                                                f"{why.get(o, '')}")
+                                        snippet = walker_core.clip(
+                                            interpret.excerpt(nd['body'], q, 300, embed), 300)
+                                        st.markdown(walker_core.evidence_row(
+                                            head, snippet, badge, cid_color(nd['cid'])),
+                                            unsafe_allow_html=True)
+                            neutral = [v for v in rr["verdicts"]
+                                       if v["verdict"] == "neutral" and v["ord"] in set(rr["shown"])]
+                            if neutral:
+                                with st.expander(f"Neutral ({len(neutral)}) — the model's reason for each"):
+                                    for v in neutral:
+                                        nd = gt.node(conn, run, v["ord"])
+                                        badge = walker_core.pill("neutral", MUTED)
+                                        head = f"#{v['ord']} · {nd['doc_id']} · c{nd['cid']} — {v['why']}"
+                                        st.markdown(walker_core.evidence_row(
+                                            head, "", badge, cid_color(nd['cid'])),
+                                            unsafe_allow_html=True)
 
-                        # ---- where the two channels disagree (Judge is stricter)
-                        sup, ent = set(rr["supported_ids"]), set(rr["entailed"])
-                        reason_only = sorted(sup - ent)
-                        judge_only = sorted(ent - sup)
-                        if reason_only or judge_only:
-                            lines = ["**Reason vs Judge.** Reason argues from community briefs and "
-                                     "accepts a chunk that supports a premise; Judge asks whether a "
-                                     "chunk literally answers the prompt. When they disagree, trust "
-                                     "Judge for *what the corpus says* and Reason for *how it hangs "
-                                     "together*."]
-                            if reason_only:
-                                lines.append("Reason leaned on, Judge called neutral: " + "; ".join(
-                                    f"#{o} — {why.get(o, 'not judged')}" for o in reason_only))
-                            if judge_only:
-                                lines.append("Judge found entailing, Reason never used: " + ", ".join(
-                                    f"#{o}" for o in judge_only))
-                            st.info(("  " + chr(10)).join(lines))
+                            # ---- where the two channels disagree (Judge is stricter)
+                            sup, ent = set(rr["supported_ids"]), set(rr["entailed"])
+                            reason_only = sorted(sup - ent)
+                            judge_only = sorted(ent - sup)
+                            if reason_only or judge_only:
+                                lines = ["**Reason vs Judge.** Reason argues from community briefs and "
+                                         "accepts a chunk that supports a premise; Judge asks whether a "
+                                         "chunk literally answers the prompt. When they disagree, trust "
+                                         "Judge for *what the corpus says* and Reason for *how it hangs "
+                                         "together*."]
+                                if reason_only:
+                                    lines.append("Reason leaned on, Judge called neutral: " + "; ".join(
+                                        f"#{o} — {why.get(o, 'not judged')}" for o in reason_only))
+                                if judge_only:
+                                    lines.append("Judge found entailing, Reason never used: " + ", ".join(
+                                        f"#{o}" for o in judge_only))
+                                st.info(("  " + chr(10)).join(lines))
 
-                    if rr["briefs_text"]:
-                        with st.expander("Briefs + structure the model reasoned over"):
-                            st.code(rr["briefs_text"]
-                                    + ("\n\n" + rr["structure"] if rr.get("structure") else ""),
-                                    language="text")
-                    if rr.get("evidence"):
-                        with st.expander("Exactly what the model was shown (judge channel)"):
-                            st.code(rr["evidence"], language="text")
-                    if rr["stages"]:
-                        with st.expander("Exactly what the model returned (raw)"):
-                            for name, txt in rr["stages"].items():
-                                st.markdown(f"**{name}**"); st.code(txt, language="json")
+                        if rr["briefs_text"]:
+                            with st.expander("Briefs + structure the model reasoned over"):
+                                st.code(rr["briefs_text"]
+                                        + ("\n\n" + rr["structure"] if rr.get("structure") else ""),
+                                        language="text")
+                        if rr.get("evidence"):
+                            with st.expander("Exactly what the model was shown (judge channel)"):
+                                st.code(rr["evidence"], language="text")
+                        if rr["stages"]:
+                            with st.expander("Exactly what the model returned (raw)"):
+                                for name, txt in rr["stages"].items():
+                                    st.markdown(f"**{name}**"); st.code(txt, language="json")
 
             with st.container(border=True):                # P10 panel 3 — Groups
                 panel_head("Groups")
                 # ---- figures: alternate whole-walk views of one thing, kept
                 # as a sub-tab strip rather than stacked (P9 continuity -- see
                 # T40 subplan for the full justification).
-                org = getattr(bnd, "origin", {}) or {}
-                n_br = sum(1 for v in org.values() if v == "bridge")
-                def _mark(o):
-                    return f"**#{o}**" if org.get(o) == "bridge" else f"#{o}"
-                ds = dendrite_state(str(run.run_id), q, _ev=ws)
-                t_walk, t_terms, t_3d, t_glob = st.tabs(
-                    ["This walk", "Term graph", "3D layers", "Global map"])
-                with t_walk:
-                    fig = draw_communities(touched, terms, xedges)
-                    st.plotly_chart(fig, use_container_width=True)
-                with t_terms:
-                    st.caption("Terms as nodes; colour = which set claims the term "
-                               "(the walk's prompt-conditioned BM25 vocabulary vs the "
-                               "global unsupervised concept, both = purple). Edges = "
-                               "co-occurrence within the walked chunks.")
-                    tfig = draw_term_graph(terms, concept, ws.term_members)
-                    if tfig is not None:
-                        st.plotly_chart(tfig, use_container_width=True)
-                    else:
-                        st.info("No drawn terms co-occur in this walk.")
+                t_3d, t_walk, t_louv, t_terms = st.tabs(
+                    ["3D explorer", "2D walk", "Louvain rel | glob", "Term graph"])
                 with t_3d:
                     st.caption("The walk as one live 3D scene: nodes are the walked "
                                "chunks (community colour, size ~ walk score), an "
@@ -768,32 +756,40 @@ with tab_analysis:
                                f"{'s' if len(_payload['paths']) != 1 else ''}"
                                + (" · UMAP toggle on" if _payload["has_umap"]
                                   else " · UMAP off (sparse run or missing embeddings)"))
-                with t_glob:
-                    st.caption("Every community in the run; filled = reached by this "
-                               "walk. The same map the model sees.")
-                    st.image(interpret.render_walk_image(conn, run, bnd, pw),
-                             use_container_width=True)
-
-                # P14(a) REVERSED (operator 2026-09-05): the left-right pair
-                # reads as one comparison -- both springs return, relative LH,
-                # global RH. The splits/merges text in the digests stays too.
-                L, R = st.columns(2)
-                for col, title, groups, note in (
-                        (L, "relative (this walk only)", rel_groups,
-                         "Louvain re-run on the walked subgraph. These ids are "
-                         "EPHEMERAL — a view, never persisted, never joined to a "
-                         "stored cid, never stable across reruns."),
-                        (R, "global communities (stored cids)", glob_groups,
-                         "The run's own ingest-time cids, restricted to the "
-                         "walked chunks.")):
-                    with col:
-                        st.markdown(f"**{title}**")
-                        st.caption(note)
-                        pal = {g: group_color(g) for g in set(groups.values())}
-                        gfig = draw_group_graph(sorted(groups), ai["edges"],
-                                                groups, pal, sal=salient)
-                        if gfig is not None:
-                            st.plotly_chart(gfig, use_container_width=True)
+                with t_walk:
+                    fig = draw_communities(touched, terms, xedges)
+                    st.plotly_chart(fig, use_container_width=True)
+                with t_louv:
+                    # P14(a) REVERSED (operator 2026-09-05): the left-right pair
+                    # reads as one comparison -- both springs return, relative LH,
+                    # global RH. The splits/merges text in the digests stays too.
+                    L, R = st.columns(2)
+                    for col, title, groups, note in (
+                            (L, "relative (this walk only)", rel_groups,
+                             "Louvain re-run on the walked subgraph. These ids are "
+                             "EPHEMERAL — a view, never persisted, never joined to a "
+                             "stored cid, never stable across reruns."),
+                            (R, "global communities (stored cids)", glob_groups,
+                             "The run's own ingest-time cids, restricted to the "
+                             "walked chunks.")):
+                        with col:
+                            st.markdown(f"**{title}**")
+                            st.caption(note)
+                            pal = {g: group_color(g) for g in set(groups.values())}
+                            gfig = draw_group_graph(sorted(groups), ai["edges"],
+                                                    groups, pal, sal=salient)
+                            if gfig is not None:
+                                st.plotly_chart(gfig, use_container_width=True)
+                with t_terms:
+                    st.caption("Terms as nodes; colour = which set claims the term "
+                               "(the walk's prompt-conditioned BM25 vocabulary vs the "
+                               "global unsupervised concept, both = purple). Edges = "
+                               "co-occurrence within the walked chunks.")
+                    tfig = draw_term_graph(terms, concept, ws.term_members)
+                    if tfig is not None:
+                        st.plotly_chart(tfig, use_container_width=True)
+                    else:
+                        st.info("No drawn terms co-occur in this walk.")
 
                 # ---- P11 factbook digests, same panel, largest group first
                 rel_rows = walker_core.group_classes(rel_groups, ai["ents"], ai["rels"],
@@ -831,96 +827,100 @@ with tab_analysis:
                                 with _col:
                                     st.markdown(_card, unsafe_allow_html=True)
 
-            with st.container(border=True):                # P10 panel 4 — Partitions
-                panel_head("Partitions", "dendrite sort")
-                st.caption("Each row is one correlation chain over the walked chunks "
-                           "(correlation sorting.md). Terms are the chain members' own "
-                           "BM25-salient vocabulary, ranked by how many members carry "
-                           "them -- what this partition talks about vs the others.")
-                if ds is None:
-                    st.info("Walk too small (or no stored embeddings) for partitions.")
-                else:
-                    _rows = walker_core.partition_rows(ds, src_of_all)
-                    st.dataframe(_rows, use_container_width=True, hide_index=True)
-                    # ---- P12: each chain's own global-community make-up
-                    _clines = walker_core.chain_communities(ds["chunks"]["chains"], cid_of)
-                    st.caption("Each chain's global communities (cid:count):")
-                    for _row, _line in zip(_rows, _clines):
-                        _tok = (_line.split(" ") or ["c?"])[0].split(":")[0]
-                        _cid = int(_tok[1:]) if _tok[1:].isdigit() else None
-                        _c = cid_color(_cid)
-                        st.markdown(
-                            f'<div style="background:{rgba(_c, 0.10)};'
-                            f'border:1px solid {walker_core.BORDER};'
-                            f'border-left:4px solid {_c};border-radius:4px;'
-                            f'padding:.25rem .6rem;margin:.2rem 0;font-size:.85rem">'
-                            f'chain {html.escape(str(_row["chain"]))} · '
-                            f'<code>{html.escape(_line)}</code></div>',
-                            unsafe_allow_html=True)
-                    _tchains = ds["terms"]["chains"]
-                    if _tchains:
-                        st.caption("Term chains (terms that rise and fall together "
-                                   "across the walked chunks):")
-                        for _tch in _tchains:
-                            if len(_tch) > 1:
-                                st.markdown("- `" + " > ".join(_tch) + "`")
+            _z3L, _z3R = st.columns([1.4, 1])          # P18 Zone 3: LENSES | REFERENCE
+            with _z3L:
+                with st.container(border=True):        # P10 panel 4 -- Partitions
+                    panel_head("Partitions", "dendrite sort")
+                    st.caption("Each row is one correlation chain over the walked chunks "
+                               "(correlation sorting.md). Terms are the chain members' own "
+                               "BM25-salient vocabulary, ranked by how many members carry "
+                               "them -- what this partition talks about vs the others.")
+                    if ds is None:
+                        st.info("Walk too small (or no stored embeddings) for partitions.")
+                    else:
+                        _rows = walker_core.partition_rows(ds, src_of_all)
+                        st.dataframe(_rows, use_container_width=True, hide_index=True)
+                        # ---- P12: each chain's own global-community make-up
+                        _clines = walker_core.chain_communities(ds["chunks"]["chains"], cid_of)
+                        st.caption("Each chain's global communities (cid:count):")
+                        for _row, _line in zip(_rows, _clines):
+                            _tok = (_line.split(" ") or ["c?"])[0].split(":")[0]
+                            _cid = int(_tok[1:]) if _tok[1:].isdigit() else None
+                            _c = cid_color(_cid)
+                            st.markdown(
+                                f'<div style="background:{rgba(_c, 0.10)};'
+                                f'border:1px solid {walker_core.BORDER};'
+                                f'border-left:4px solid {_c};border-radius:4px;'
+                                f'padding:.25rem .6rem;margin:.2rem 0;font-size:.85rem">'
+                                f'chain {html.escape(str(_row["chain"]))} · '
+                                f'<code>{html.escape(_line)}</code></div>',
+                                unsafe_allow_html=True)
+                        _tchains = ds["terms"]["chains"]
+                        if _tchains:
+                            st.caption("Term chains (terms that rise and fall together "
+                                       "across the walked chunks):")
+                            for _tch in _tchains:
+                                if len(_tch) > 1:
+                                    st.markdown("- `" + " > ".join(_tch) + "`")
 
-                # ---- Community map: the cid legend for the lines just printed
-                # (moved from the old Map tab, bodies unchanged; the inline
-                # SELECT stays inline -- 6.21(c)'s "move it to a helper" is
-                # out of scope for T40/T44, see _Lessons:). The quotient-rows
-                # variable is renamed from the original `q` to `_qrows` --
-                # reusing `q` here would clobber the prompt text that
-                # Evidence below still needs (correctness fix, not a rewrite).
-                st.subheader("Community map")
-                st.caption(
-                    "How the run's communities interconnect — pure aggregation over fixed "
-                    "`cid`s, never a re-partition. Labels, where present, are model-authored "
-                    "drafts over a partition Louvain fixed at ingest.")
+            with _z3R:
+                with st.container(border=True):        # P18 REFERENCE: run-level, prompt-independent
+                    # ---- Community map: the cid legend for the lines just printed
+                    # (moved from the old Map tab, bodies unchanged; the inline
+                    # SELECT stays inline -- 6.21(c)'s "move it to a helper" is
+                    # out of scope for T40/T44, see _Lessons:). The quotient-rows
+                    # variable is renamed from the original `q` to `_qrows` --
+                    # reusing `q` here would clobber the prompt text that
+                    # Evidence below still needs (correctness fix, not a rewrite).
+                    st.subheader("Community map")
+                    st.caption(
+                        "How the run's communities interconnect — pure aggregation over fixed "
+                        "`cid`s, never a re-partition. Labels, where present, are model-authored "
+                        "drafts over a partition Louvain fixed at ingest.")
 
-                with conn.cursor() as cur:
-                    cur.execute("""SELECT cid, size, keywords, medoid_text
-                                     FROM community WHERE run_id = %s ORDER BY size DESC""",
-                                (run.run_id,))
-                    comms = cur.fetchall()
+                    with conn.cursor() as cur:
+                        cur.execute("""SELECT cid, size, keywords, medoid_text
+                                         FROM community WHERE run_id = %s ORDER BY size DESC""",
+                                    (run.run_id,))
+                        comms = cur.fetchall()
 
-                gfig2 = draw_global_map(comms, gt.quotient(conn, run, limit=200))
-                if gfig2 is not None:
-                    st.plotly_chart(gfig2, use_container_width=True)
+                    gfig2 = draw_global_map(comms, gt.quotient(conn, run, limit=200))
+                    if gfig2 is not None:
+                        st.plotly_chart(gfig2, use_container_width=True)
 
-                crows = []
-                for c in comms:
-                    lab = labels.get(c["cid"])
-                    crows.append({
-                        "cid": c["cid"],
-                        "draft label": lab["label"] if lab else "—",
-                        "size": c["size"],
-                        "keywords": ", ".join(c["keywords"][:5]),
-                    })
-                st.dataframe(crows, use_container_width=True, hide_index=True, height=320)
+                    crows = []
+                    for c in comms:
+                        lab = labels.get(c["cid"])
+                        crows.append({
+                            "cid": c["cid"],
+                            "draft label": lab["label"] if lab else "—",
+                            "size": c["size"],
+                            "keywords": ", ".join(c["keywords"][:5]),
+                        })
+                    st.dataframe(crows, use_container_width=True, hide_index=True, height=320)
 
-                if not labels:
-                    st.info("No draft labels yet. Generate with "
-                            "`python label_communities.py brown-50`.")
+                    if not labels:
+                        st.info("No draft labels yet. Generate with "
+                                "`python label_communities.py brown-50`.")
 
-                st.markdown("#### Strongest inter-community links")
-                _qrows = gt.quotient(conn, run, limit=25)
-                st.dataframe(
-                    [{"A": f"c{r['cid_a']}" + (f" ({labels[r['cid_a']]['label']})"
-                                               if r["cid_a"] in labels else ""),
-                      "B": f"c{r['cid_b']}" + (f" ({labels[r['cid_b']]['label']})"
-                                               if r["cid_b"] in labels else ""),
-                      "edges": r["edges"],
-                      "avg strength": round(r["avg_strength"], 3)} for r in _qrows],
-                    use_container_width=True, hide_index=True, height=300)
+                    st.markdown("#### Strongest inter-community links")
+                    _qrows = gt.quotient(conn, run, limit=25)
+                    st.dataframe(
+                        [{"A": f"c{r['cid_a']}" + (f" ({labels[r['cid_a']]['label']})"
+                                                   if r["cid_a"] in labels else ""),
+                          "B": f"c{r['cid_b']}" + (f" ({labels[r['cid_b']]['label']})"
+                                                   if r["cid_b"] in labels else ""),
+                          "edges": r["edges"],
+                          "avg strength": round(r["avg_strength"], 3)} for r in _qrows],
+                        use_container_width=True, hide_index=True, height=300)
 
-            # ---- the evidence: one expander, collapsed once an answer exists
+            # ---- P18 WALK TRACE: diagnostic, not evidence -- last, always collapsed
             with st.expander(
                     f"Evidence — {len(bnd.sampled)} chunks · {len(cids)} communities · "
                     f"depth {tele['depth']} · {tele['stop']}"
                     f"{' · +' + str(tele['ring']) + ' one degree out' if tele.get('ring') else ''}"
                     f"{' · +' + str(tele['bridge']) + ' bridges' if tele.get('bridge') else ''}",
-                    expanded=not has_answer):
+                    expanded=False):
                 st.caption("Key: **bold #id** = a bridge chunk, discovered on the best "
                            "whole-graph path between two retrieved ideas, not found by "
                            "the walk itself; its *salient terms are italicised*. "

@@ -1119,12 +1119,14 @@ categorization mindset"). Plan approved.
   _Files:_ .spec/specs/graph-explorer/design.md
   _Verify:_ grep -c "P18" .spec/specs/graph-explorer/design.md
 
-- [OPEN] T58 Zone re-placement in walker_app: verdict|evidence columns, 3D
+- [DONE] T58 Zone re-placement in walker_app: verdict|evidence columns, 3D
   first sub-tab, louvain pair as own sub-tab, community map to Zone 3 right,
   global-map tab merged away, walk trace collapsed at bottom. Placement only.
   _Files:_ walker_app.py, tests/test_walker_render.py
   _Verify:_ python -m pytest tests/test_walker_render.py -q && PYTHONPATH=. python tools/diag_rerun.py mixed-full-dual
+  _Lessons:_ implementer yielded on its own background diag; orchestrator
+    verified (32 passed; 18/20 FAIL=[E3]) and closed per standing recovery law.
 
-- [OPEN] T59 Live look: zone screenshots to operator
+- [WIP] T59 Live look: zone screenshots to operator
   _Files:_ (none -- verification only)
   _Verify:_ playwright screenshots of :8501
