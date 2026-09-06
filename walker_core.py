@@ -930,11 +930,15 @@ var sprites = D.sprites.map(function(s){
   G.scene().add(sp);
   return {sprite: sp, cid: s.cid, members: s.members};
 });
+// The sim mutates the COPIES handed to graphData, never D.nodes -- so the
+// centroid tick must read the live objects (found stuck at origin, T54 live).
+var liveById = {};
+G.graphData().nodes.forEach(function(n){ liveById[n.id] = n; });
 G.onEngineTick(function(){
   sprites.forEach(function(s){
     var mx = 0, my = 0, mz = 0, n = 0;
     s.members.forEach(function(id){
-      var nd = nodeById[id];
+      var nd = liveById[id];
       if (nd && typeof nd.x === 'number'){ mx += nd.x; my += nd.y; mz += nd.z; n += 1; }
     });
     if (n > 0){ s.sprite.position.set(mx/n, my/n, mz/n); }
@@ -957,7 +961,7 @@ umapBtn.addEventListener('click', function(){
       var t = Math.min(1, (Date.now() - t0) / 600);
       var e = t*t*(3-2*t);
       D.nodes.forEach(function(n){
-        var nd = nodeById[n.id];
+        var nd = liveById[n.id];
         if (!nd || !n.umap) return;
         var sx = nd.__sx===undefined ? nd.x : nd.__sx;
         var sy = nd.__sy===undefined ? nd.y : nd.__sy;
@@ -974,7 +978,7 @@ umapBtn.addEventListener('click', function(){
   } else {
     layout = 'force';
     D.nodes.forEach(function(n){
-      var nd = nodeById[n.id];
+      var nd = liveById[n.id];
       if (!nd) return;
       nd.fx = undefined; nd.fy = undefined; nd.fz = undefined;
       nd.__sx = undefined; nd.__sy = undefined; nd.__sz = undefined;
