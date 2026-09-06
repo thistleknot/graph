@@ -28,6 +28,7 @@ from pathlib import Path
 import networkx as nx
 import plotly.graph_objects as go
 import streamlit as st
+import streamlit.components.v1 as _components
 
 import config
 import evidence
@@ -335,77 +336,13 @@ def dendrite_state(run_id: str, q: str, _ev=None):
     """Layout wrapper over Evidence.dendrite (raw dendrite_sort output);
     cache wrapper keyed by (run, prompt). None when the walk kept <5
     embeddings. Output shape is byte-for-byte what the old _dendrite_state
-    returned, so draw_layers3d, the 3D tab and the Map partitions block are
+    returned, so the Map partitions block (walker_core.partition_rows) is
     untouched by the split."""
     d = _ev.dendrite
     if d is None:
         return None
     return {"chunks": plane(d["chunks"]), "terms": plane(d["terms"]),
             "kept": d["kept"], "cross": d["cross"], "sal": d["sal"]}
-
-
-def draw_layers3d(state, cid_of, src_of, height=700):
-    """The two planes drawn as flat slices at z=0 (chunks) and z=1 (terms),
-    cross-layer membership edges falling wherever each plane's spring layout
-    landed its endpoint. Deterministic."""
-    cp, tp = state["chunks"], state["terms"]
-    fig = go.Figure()
-    def seg3(pairs, pos, z, color, width):
-        xs, ys, zs = [], [], []
-        for a, b in pairs:
-            if a in pos and b in pos:
-                xs += [pos[a][0], pos[b][0], None]
-                ys += [pos[a][1], pos[b][1], None]
-                zs += [z, z, None]
-        if xs:
-            fig.add_trace(go.Scatter3d(x=xs, y=ys, z=zs, mode="lines",
-                                       line=dict(color=color, width=width),
-                                       hoverinfo="none", showlegend=False))
-    seg3([(a, b) for a, b, _ in cp["sig"]], cp["pos"], 0.0, "rgba(150,150,150,0.25)", 1)
-    seg3(cp["backbone"], cp["pos"], 0.0, "rgba(228,87,86,0.75)", 3)
-    seg3([(a, b) for a, b, _ in tp["sig"]], tp["pos"], 1.0, "rgba(150,150,150,0.25)", 1)
-    seg3(tp["backbone"], tp["pos"], 1.0, "rgba(76,120,168,0.85)", 3)
-    q3, _ = evidence.top_quartile(state["cross"])
-    for strong, color, width in ((True, "rgba(90,90,160,0.55)", 2.5),
-                                 (False, "rgba(120,120,170,0.10)", 1)):
-        xs, ys, zs = [], [], []
-        for o, t, w in state["cross"]:
-            if (w >= q3) is strong and o in cp["pos"] and t in tp["pos"]:
-                xs += [cp["pos"][o][0], tp["pos"][t][0], None]
-                ys += [cp["pos"][o][1], tp["pos"][t][1], None]
-                zs += [0.0, 1.0, None]
-        if xs:
-            fig.add_trace(go.Scatter3d(x=xs, y=ys, z=zs, mode="lines",
-                                       line=dict(color=color, width=width),
-                                       hoverinfo="none", showlegend=False))
-    sym = {"brown": "square", "quotes": "diamond", "wiki": "circle", None: "circle"}
-    ords = [o for o in state["kept"] if o in cp["pos"]]
-    fig.add_trace(go.Scatter3d(
-        x=[cp["pos"][o][0] for o in ords], y=[cp["pos"][o][1] for o in ords],
-        z=[0.0] * len(ords), mode="markers", name="chunks",
-        marker=dict(size=5, color=[cid_color(cid_of.get(o, 0)) for o in ords],
-                    symbol=[sym.get(src_of.get(o)) or "circle" for o in ords],
-                    line=dict(color="#0f1117", width=1)),
-        hovertext=[f"#{o} · c{cid_of.get(o)} · {src_of.get(o) or 'unlabelled'}"
-                   for o in ords],
-        hoverinfo="text"))
-    ts = [t for t in tp["pos"]]
-    fig.add_trace(go.Scatter3d(
-        x=[tp["pos"][t][0] for t in ts], y=[tp["pos"][t][1] for t in ts],
-        z=[1.0] * len(ts), mode="markers+text", name="terms", text=ts,
-        textfont=dict(size=9),
-        marker=dict(size=4, color=["#B279A2" for _ in ts],
-                    line=dict(color="#0f1117", width=1)),
-        hovertext=[f"{t} · chain {tp['chain_of'].get(t)}" for t in ts],
-        hoverinfo="text"))
-    fig.update_layout(height=height, margin=dict(l=0, r=0, t=10, b=0),
-                      scene=dict(xaxis=dict(visible=False), yaxis=dict(visible=False),
-                                 zaxis=dict(visible=False, range=[-0.15, 1.2]),
-                                 aspectmode="manual",
-                                 aspectratio=dict(x=1.5, y=1.5, z=0.65),
-                                 bgcolor="rgba(0,0,0,0)"),
-                      legend=dict(orientation="h", y=0.02))
-    return dark(fig)
 
 
 def draw_global_map(comms, qrows, height=560):
@@ -567,6 +504,13 @@ def analysis_for(run_id: str, q: str, _ords=None):
     """P7: the one new DB touch point for the Groups panels, cached per
     (run, prompt, ords) so a rerun never re-queries."""
     return evidence.analysis_inputs(conn, run, _ords)
+
+
+@st.cache_data(show_spinner=False, max_entries=8)
+def walk_umap_for(run_id: str, q: str, _ords=None):
+    """P16(i): the UMAP projection of the walked chunks, once per (run, prompt).
+    None on sparse-only runs or when any walked chunk lacks an embedding."""
+    return evidence.walk_umap(conn, run, _ords)
 
 
 @st.cache_data(show_spinner=False, max_entries=16)
@@ -772,6 +716,7 @@ with tab_analysis:
                 n_br = sum(1 for v in org.values() if v == "bridge")
                 def _mark(o):
                     return f"**#{o}**" if org.get(o) == "bridge" else f"#{o}"
+                ds = dendrite_state(str(run.run_id), q, _ev=ws)
                 t_walk, t_terms, t_3d, t_glob = st.tabs(
                     ["This walk", "Term graph", "3D layers", "Global map"])
                 with t_walk:
@@ -788,25 +733,33 @@ with tab_analysis:
                     else:
                         st.info("No drawn terms co-occur in this walk.")
                 with t_3d:
-                    st.caption("Two planes, like two layers of a network: chunks below "
-                               "(community colour, source shape), terms above, each "
-                               "spring-settled in its own slice; red/blue = dendrite "
-                               "chain backbones (correlation sorting, significance-gated "
-                               "with n = walked chunks); faint verticals = membership. "
-                               "Short vertical edges mean the two Louvain worlds agree.")
-                    ds = dendrite_state(str(run.run_id), q, _ev=ws)
-                    if ds is None:
-                        st.info("Walk too small (or no stored embeddings) for the "
-                                "layered view.")
-                    else:
-                        src_of = src_of_all
-                        st.plotly_chart(draw_layers3d(ds, cid_of, src_of),
-                                        use_container_width=True)
-                        ct, tt = ds["chunks"]["chains"], ds["terms"]["chains"]
-                        st.caption(f"chunk chains: {len(ct)} "
-                                   f"(longest {max(map(len, ct)) if ct else 0}) · "
-                                   f"term chains: {len(tt)} "
-                                   f"(longest {max(map(len, tt)) if tt else 0})")
+                    st.caption("The walk as one live 3D scene: nodes are the walked "
+                               "chunks (community colour, size ~ walk score), an "
+                               "always-on label per community, DWPC best paths as "
+                               "thick links. Hover a node for its card; drag to "
+                               "orbit. Positions are a VIEW -- the force sim is not "
+                               "deterministic and is never stored.")
+                    _ords = list(bnd.sampled)
+                    _bodies = {}
+                    for _o in _ords:
+                        _nd = gt.node(conn, run, _o)
+                        _bodies[_o] = {"body": _nd["body"], "doc_id": _nd["doc_id"]}
+                    _umap = walk_umap_for(str(run.run_id), q, _ords=_ords)
+                    _edges3 = [(a, b, w) for (a, b), w in ai["edges"].items()]
+                    _payload = walker_core.walk3d_payload(
+                        _ords, cid_of=cid_of, src_of=src_of_all,
+                        scores=bnd.scores, bodies=_bodies, kw=ws.kw,
+                        salient=salient, pathways=pw, edges=_edges3,
+                        umap=_umap)
+                    _components.html(walker_core.walk3d_html(_payload, height=720),
+                                     height=740)
+                    st.caption(f"{len(_payload['nodes'])} chunks · "
+                               f"{len(_payload['links'])} links · "
+                               f"{len(_payload['sprites'])} community labels · "
+                               f"{len(_payload['paths'])} pathway"
+                               f"{'s' if len(_payload['paths']) != 1 else ''}"
+                               + (" · UMAP toggle on" if _payload["has_umap"]
+                                  else " · UMAP off (sparse run or missing embeddings)"))
                 with t_glob:
                     st.caption("Every community in the run; filled = reached by this "
                                "walk. The same map the model sees.")
@@ -1072,7 +1025,6 @@ with tab_neo4j:
     st.caption("The actual neo4j browser, auto-connected (auth disabled on "
                "this local container; CSP re-issued with frame-ancestors "
                "http://localhost:8501 -- the stock image sends DENY).")
-    import streamlit.components.v1 as _components
     _components.iframe(
         f"{config.NEO4J_BROWSER}&connectURL=neo4j%3A%2F%2Flocalhost%3A7687",
         height=760, scrolling=True)

@@ -424,29 +424,56 @@ def test_draw_term_graph_tristate_membership_and_cooccurrence(app):
     assert app.draw_term_graph({}, {}, {}) is None
 
 
-def test_draw_layers3d_separates_planes_and_bridges_them(app):
-    """3D layers view: chunk markers all at z=0, term markers all at z=1,
-    cross-layer membership lines spanning 0->1, chain backbones present."""
-    state = {
-        "chunks": {"pos": {1: (0.0, 0.0), 2: (1.0, 0.0), 3: (0.5, 1.0)},
-                   "backbone": [(1, 2)], "sig": [(1, 2, 0.9), (2, 3, 0.5)],
-                   "chain_of": {1: 0, 2: 0, 3: 1}, "chains": [[1, 2], [3]]},
-        "terms": {"pos": {"war": (0.0, 0.5), "navy": (0.8, 0.2)},
-                  "backbone": [("war", "navy")], "sig": [("war", "navy", 0.7)],
-                  "chain_of": {"war": 0, "navy": 0}, "chains": [["war", "navy"]]},
-        "kept": [1, 2, 3],
-        "cross": [(1, "war", 2.0), (2, "navy", 0.4), (3, "war", 1.1)],
-    }
-    fig = app.draw_layers3d(state, {1: 0, 2: 0, 3: 1},
-                            {1: "wiki", 2: "brown", 3: None})
-    named = {tr.name: tr for tr in fig.data if tr.name}
-    assert set(named) == {"chunks", "terms"}
-    assert set(named["chunks"].z) == {0.0}
-    assert set(named["terms"].z) == {1.0}
-    cross = [tr for tr in fig.data
-             if not tr.name and tr.z is not None
-             and {v for v in tr.z if v is not None} == {0.0, 1.0}]
-    assert cross, "no cross-layer trace spanning both planes"
+def test_layers3d_plotly_view_is_retired(app):
+    """T54: the plotly two-plane view was replaced by the walk3d scene.
+    `draw_layers3d` must not come back -- the 3D sub-tab is components.html."""
+    assert not hasattr(app, "draw_layers3d")
+    src = Path(app.__file__).read_text(encoding="utf-8")
+    assert "draw_layers3d" not in src
+
+
+def test_walk3d_html_carries_the_pinned_cdns(app):
+    """P16: exact CDN versions pinned by test; the iframe body degrades to a
+    one-line message when they cannot load."""
+    import walker_core
+    payload = walker_core.walk3d_payload(
+        [1, 2], cid_of={1: 0, 2: 1}, src_of={1: "wiki", 2: "brown"},
+        scores={1: 0.9, 2: 0.4},
+        bodies={1: {"body": "alpha", "doc_id": "d1"}, 2: "beta"})
+    html_ = walker_core.walk3d_html(payload, height=720)
+    assert walker_core.WALK3D_FG_URL in html_
+    assert walker_core.WALK3D_ST_URL in html_
+    assert "3d-force-graph@1.73.4" in html_
+    assert "three-spritetext@1.8.2" in html_
+    src = Path(app.__file__).read_text(encoding="utf-8")
+    assert "walk3d_html" in src and "_components.html" in src
+
+
+def test_walk_umap_dense_guard(monkeypatch):
+    """P16(i): sparse-only runs and partial embedding coverage yield None;
+    a dense run with full coverage yields one xyz per ord."""
+    import types
+    import numpy as np
+    import evidence
+
+    ords = list(range(12))
+    sparse = types.SimpleNamespace(run_id="r", dense=False)
+    dense = types.SimpleNamespace(run_id="r", dense=True)
+
+    assert evidence.walk_umap(None, sparse, ords) is None          # sparse-only
+
+    rng = np.random.default_rng(0)
+    monkeypatch.setattr(evidence.gt, "subgraph_embeddings",
+                        lambda c, r, o: (rng.normal(size=(len(o) - 1, 8)),
+                                         list(o)[:-1]))
+    assert evidence.walk_umap(None, dense, ords) is None           # partial coverage
+
+    monkeypatch.setattr(evidence.gt, "subgraph_embeddings",
+                        lambda c, r, o: (rng.normal(size=(len(o), 8)), list(o)))
+    xyz = evidence.walk_umap(None, dense, ords)
+    assert set(xyz) == set(ords)
+    assert all(len(v) == 3 for v in xyz.values())
+    assert max(abs(v) for row in xyz.values() for v in row) <= 101.0
 
 
 def test_mirror_is_the_neo4j_tab():

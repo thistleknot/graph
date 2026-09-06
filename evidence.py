@@ -61,7 +61,8 @@ class Evidence:
 
 
 def top_quartile(cross) -> tuple[float, list]:
-    """walker_app.py 569-571 == draw_layers3d 399-400, verbatim, twice.
+    """walker_app.py 569-571, verbatim. (The former second call site,
+    draw_layers3d 399-400, was retired with the plotly layers view in T54.)
     Empty cross -> (0.0, [])."""
     ws_ = sorted(w for _, _, w in cross) or [0.0]
     q3 = ws_[int(0.75 * (len(ws_) - 1))]
@@ -87,6 +88,41 @@ def resolver_of(kept, src_of, sal) -> dict:
     return {o: f"{src_of.get(o) or 'unlabelled'}:"
                f"{(sal.get(o, {}).get('top') or ['?'])[0]}"
             for o in kept}
+
+
+def walk_umap(conn, run, ords) -> dict | None:
+    """3D UMAP projection of the walked chunks' stored embeddings, as
+    {ord: [x, y, z]}, for the walk3d scene's TF-projector toggle (P16(i)).
+
+    Require: a dense run. Guarantee: either EVERY ord in `ords` has a
+    coordinate, or None -- walk3d_payload's `has_umap` is all-or-nothing, so a
+    partial map would silently drop the toggle. Positions are a VIEW (P16(g)):
+    never persisted, never a join key.
+
+    umap-learn is imported INSIDE the function: evidence.py is imported at
+    walker_core/app import time and the UMAP import costs seconds (numba).
+
+    Spec: .spec/specs/graph-explorer/design.md 6.22 P16(i)
+    Task: playbook.md T54
+    """
+    ords = list(ords)
+    if not getattr(run, "dense", False) or len(ords) < 4:
+        return None
+    E, kept = gt.subgraph_embeddings(conn, run, ords)
+    if len(kept) != len(ords) or E.shape[0] < 4:
+        return None
+    from umap import UMAP                      # lazy: numba import cost
+    xyz = UMAP(n_components=3, random_state=42,
+               n_neighbors=min(15, len(kept) - 1),
+               init="random").fit_transform(E)
+    xyz = np.asarray(xyz, dtype=float)
+    lo, hi = xyz.min(axis=0), xyz.max(axis=0)
+    span = float(max(hi - lo))
+    if not np.isfinite(span) or span < 1e-9:
+        return None
+    ctr = (hi + lo) / 2.0
+    xyz = (xyz - ctr) * (200.0 / span)          # ~[-100, 100] cube
+    return {o: [round(float(v), 3) for v in row] for o, row in zip(kept, xyz)}
 
 
 def load_embed(model_dir: str | None):

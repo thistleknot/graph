@@ -1089,11 +1089,15 @@ force layout chosen over embedding PCA).
   dump (e.g. tip's own `</b>`), not just a literal `</script>` in body text.
   _Verify:_ python -m pytest tests/test_walker_core.py -q
 
-- [OPEN] T54 UI wiring: t_3d sub-tab swaps draw_layers3d for components.html
+- [DONE] T54 UI wiring: t_3d sub-tab swaps draw_layers3d for components.html
   (+ evidence helper fetching walk embeddings -> umap xyz, dense runs only);
   delete dead draw_layers3d; live look with screenshots to operator
   _Files:_ walker_app.py, evidence.py, tests/test_walker_render.py
   _Verify:_ python -m pytest tests/test_walker_render.py -q && PYTHONPATH=. python tools/diag_rerun.py mixed-full-dual
+  _Lessons:_ subplan's "pass ai['edges'] unchanged" was wrong -- analysis_inputs'
+  edges is `{(min,max): strength}`, not a list of 3-tuples/dicts; walk3d_payload
+  needs `[(a,b,w) for (a,b),w in ai["edges"].items()]`. 27 passed; diag gate
+  PASS 18/20 | FAIL ['E3'] | KNOWN-FAIL ['A2'] (unchanged).
 
 - [OPEN] T55 Remove the sidebar (P17): run selector + stats + details popover
   as a compact top row; warnings inline; no st.sidebar anywhere
