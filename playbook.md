@@ -992,3 +992,27 @@ sense of the key subgraph analysis").
     mirror-skip warning proved the narrowed except path (neo4j was down; now up
     via compose after removing the stale hand-run container). Group relation
     counts are GLOBAL supports per P5 semantics -- can read as inflated.
+
+## Layer 14 -- sequential (factbook panels)
+Source: operator screenshots + plan, 2026-09-05.
+
+- [DONE] T42 Spec 6.22 P10-P12: bordered panels, TOON factbook digests replace
+  dataframes (dwpc scores shown, lift suppressed at saturation, dedup marker),
+  per-chain community lines
+  _Files:_ .spec/specs/graph-explorer/design.md
+  _Verify:_ grep -c "P1[012]" .spec/specs/graph-explorer/design.md
+
+- [WIP] T43 Core factbook renderers: group_digest, dedup_groups (with P11(e)
+  divergence decomposition), chain_communities (pure text, no DB/streamlit)
+  _Files:_ walker_core.py, tests/test_walker_core.py
+  _Verify:_ python -m pytest tests/test_walker_core.py -q
+
+- [OPEN] T44 UI panels: st.container(border=True) x4, st.code digests replace
+  the 4 styled dataframes, chain community lines under partitions
+  _Files:_ walker_app.py, tests/test_walker_render.py
+  _Verify:_ python -m pytest tests/test_walker_render.py -q && PYTHONPATH=. python tools/diag_rerun.py mixed-full-dual
+
+- [OPEN] T45 Live look: restart walker, run "how a city rebuilds after a
+  disaster", screenshot each panel, surface to operator
+  _Files:_ (none -- verification only)
+  _Verify:_ playwright screenshots of :8501

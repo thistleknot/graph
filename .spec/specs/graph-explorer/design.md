@@ -2301,3 +2301,48 @@ hue per group everywhere -- P6), CONTINUITY (spring layouts for relational
 figures so connected things read as connected; tables only where items are
 enumerable facts). Where a figure and its table describe the same grouping,
 the figure comes first and the table sits directly beneath it.
+
+**P10 (panels, T42 2026-09-05).** The Analysis tab SHALL render as bordered
+panels (st.container(border=True)), in order: (1) Answer, (2) Judged evidence,
+(3) Groups -- the figure sub-tab strip (This walk / Term graph / 3D / Global
+map) at the top of the panel, then the side-by-side LH/RH spring figures with
+hulls (P4/P6 unchanged -- operator-approved as shipped), then the per-group
+factbook digests in the SAME panel, largest group first, (4) Partitions
+(correlation sorting) followed by each chain's own community make-up. Only
+the tabular detail beneath the figures changes; the figures do not.
+
+**P11 (factbook digests, T42).** Per-group detail SHALL be compact pregrouped
+text (st.code, TOON-style key: value lines), NEVER dataframes. Format:
+
+    g0 . 36 chunks . wiki:30 brown:5 quotes:1 . = c6 (global)
+    terms(dwpc): hurricane 233.9 . gulf_mexico 187.2 . ...
+    entities(mentions): wakulla 8 . hurricane_humberto 5 . ...
+    relations: declared -[disaster]-> area corpus_n=12 . ...
+
+Rules: (a) every dwpc-ranked term shows its score to 1 decimal (operator's
+explicit ask); (b) entities rank by group mention count, count shown; lift
+renders as x{lift:.1f} ONLY when the entity also appears outside the group
+(corpus_cnt > group cnt) -- at the saturation ceiling (walk-exclusive entity,
+lift == corpus_total/group_total for all such rows) it is omitted because it
+discriminates nothing; (c) when a local (relative) group's member set equals a
+global cid's restriction to the walk, ONE digest renders, carrying the
+"= c<cid> (global)" marker -- never two duplicates; (d) relation lines render
+example pairs among the group's own mentioned entities, capped ~8, with the
+corpus-wide support labelled corpus_n= so a global count is never read as
+walk-local.
+
+**P12 (partition communities, T42).** Each dendrite chain row SHALL be
+followed by its own community line: the global cids its member chunks belong
+to, with counts, compact digest style (e.g. "c6:31 c0:4 c12:1").
+
+P11 addendum (operator: "think triz + bono's six hats"): (e) DIVERGENCE is
+first-class -- when a local group's member set is NOT equal to any single
+global cid restriction, its header line decomposes it over the global cids it
+intersects, naming the relationship: "g1 = c0:28 + c12:8 (splits c0)" or
+"g2 = c3+c7 (merges)". The disagreement between relative and global louvain
+is the signal the side-by-side exists to surface; it SHALL be readable in the
+text digest, not only inferable from the figures. (f) digests wrap at a fixed
+width (~110 cols) and long tails truncate with a count ("+ 14 more"); at most
+8 group digests render inline, the rest behind an expander. (g) the digest
+text is the same artifact a future LLM reasoning pass consumes -- pregrouped
+text over pixels; no information may live only in the figures.
