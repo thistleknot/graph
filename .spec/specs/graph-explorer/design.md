@@ -2457,3 +2457,48 @@ its cids; the redundant global-map image tab merges into the community-map
 slot; the walk trace renders LAST as a collapsed expander. RULE: any future
 element names its category BEFORE it lands; an element with no category has
 no place on the tab.
+
+### 6.23 Agentic retrieval v0: ReAct over the walk (T60, 2026-09-06)
+
+Operator directive after the "most famous musician of the 1990s" failure: the
+system asserted a confident answer from a walk with 0 entailing chunks (85/88
+neutral). Single-shot retrieval tuned one walk; nothing re-tried.
+
+**A1 (determinism boundary preserved).** Every INDIVIDUAL walk stays
+deterministic and attributable (sampler.ef_evidence with explicit params,
+logged). The agent chooses parameters BETWEEN walks; it never edits chunks,
+edges or communities. A transcript of (params, walk stats, judgment) per
+iteration is part of the result.
+
+**A2 (sufficiency judge).** WHEN a walk's evidence is assembled, an LLM call
+SHALL judge sufficiency: input = the prompt + the digest + entail/contradict
+counts; output = {sufficient: bool, missing: [what info is absent],
+proposal: next action}. Zero entails SHALL force sufficient=false without
+spending the call unless the judge is needed for the proposal.
+
+**A3 (action space).** The proposal picks ONE action per iteration from:
+WIDEN (raise ef and ring budgets), REANCHOR (judge-proposed replacement or
+additional query terms -- e.g. missing "grunge nirvana" for a 1990s-music
+prompt), PIVOT (walk from the strongest adjacent community via quotient
+edges), DEEPEN (raise hop/expansion depth). Params map to existing
+ef_evidence knobs (ef, k_anchor, ring_top, ring_per, expand_aliases) plus
+query text; no new retrieval machinery.
+
+**A4 (budget -- Article VII).** Max 3 iterations beyond the base walk; each
+iteration's wall time is bounded by the same walk cost as the base; the loop
+stops early on sufficient=true. Iteration count and stop reason are surfaced.
+
+**A5 (accumulation).** Evidence UNIONS across iterations; every chunk carries
+the iteration that found it (provenance per iteration). Judged verdicts are
+never recomputed for already-judged chunks.
+
+**A6 (answer gate).** WHEN the final evidence has 0 entailing chunks, the
+answer SHALL render as insufficient evidence -- "the corpus, as walked, does
+not answer this" -- with the iterations tried; a confident claim over zero
+entails is a defect. Superlative/aggregate prompts that no single chunk can
+entail SHALL say so rather than crown an arbitrary candidate.
+
+**A7 (do-no-harm).** The loop ENGAGES only when the base walk is judged
+insufficient (or has 0 entails). A prompt whose base walk is sufficient
+behaves byte-identically to today -- the frozen diagnostic (18/20,
+FAIL=[E3]) must not move.
