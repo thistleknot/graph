@@ -2400,3 +2400,24 @@ figures -- relative louvain LH, global cids RH, per the original P4 layout --
 AND keeps the splits/merges divergence text in the digests. Both views ship;
 neither substitutes for the other. Every other P14 rule (colored cards,
 section accents, tinted chain rows, escaped HTML) stands.
+
+**P16 (interactive 3D walk explorer -- T52, 2026-09-06).** The "3D layers"
+sub-tab renders an embedded 3d-force-graph scene (streamlit components.html
+iframe; the BROWSER loads pinned CDN scripts: 3d-force-graph and
+three-spritetext, exact versions written into walk3d_html and pinned by
+test). Contract: (a) nodes = walked chunks, color = stored cid via the one
+palette, size ~ walk score, NO labels by default; (b) hovering a node shows a
+tooltip card -- ord, source/doc, cid, walk score, first ~200 chars of body --
+content hidden until hover; (c) one always-visible SpriteText per community
+in the walk at its member centroid: "cN: t1 t2 t3" from community keywords,
+falling back to the walk's salient terms; text ~3x the old 9px labels;
+(d) hovering a node or sprite dims every other community's nodes and links
+to ~15% opacity; (e) DWPC best paths (ws.pathways pairs' path lists) render
+as thick colored links with an in-iframe control cycling all/one/off -- the
+control is scene JS, never a streamlit rerun; (f) plain links default to
+~0.12 alpha; (g) POSITIONS ARE A VIEW: the in-browser force sim is not
+deterministic and is never exported or persisted -- deterministic layouts
+remain the 2D figures and graph3d.py; (h) degradation: no pathways -> path
+control hidden; CDN unreachable -> the iframe body shows a one-line failure
+message, never an unexplained blank; every string in the payload destined
+for HTML is escaped at build time.

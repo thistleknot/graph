@@ -1069,3 +1069,22 @@ Source: operator reference image (dark SaaS dashboard), 2026-09-05.
   to operator
   _Files:_ (none -- verification only)
   _Verify:_ playwright screenshots of :8501
+
+## Layer 17 -- sequential (interactive 3D walk explorer)
+Source: operator, 2026-09-06 (3d-force-graph + TF-projector interactions;
+force layout chosen over embedding PCA).
+
+- [DONE] T52 Spec 6.22 P16: 3d-force-graph scene contract (CDN pins, payload
+  shape, hover reveal, community dim, path cycle, degradation)
+  _Files:_ .spec/specs/graph-explorer/design.md
+  _Verify:_ grep -c "P16" .spec/specs/graph-explorer/design.md
+
+- [OPEN] T53 Scene builder: walk3d_payload + walk3d_html in walker_core (pure,
+  escaped, pinned CDN) + DB-free tests
+  _Files:_ walker_core.py, tests/test_walker_core.py
+  _Verify:_ python -m pytest tests/test_walker_core.py -q
+
+- [OPEN] T54 UI wiring: t_3d sub-tab swaps draw_layers3d for components.html;
+  delete dead draw_layers3d; live look with screenshots to operator
+  _Files:_ walker_app.py, tests/test_walker_render.py
+  _Verify:_ python -m pytest tests/test_walker_render.py -q && PYTHONPATH=. python tools/diag_rerun.py mixed-full-dual
