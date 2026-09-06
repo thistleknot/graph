@@ -1136,11 +1136,11 @@ Source: operator, 2026-09-06 ("nirvana" failure: 0-entail answer asserted
 confidently; want a react agent doing agentic retrieval until sufficient
 evidence, llm-as-judge sufficiency call, on-the-fly depth/hops).
 
-- [OPEN] T60 Spec 6.23: sufficiency gate + ReAct loop contract (A1-A7)
+- [DONE] T60 Spec 6.23: sufficiency gate + ReAct loop contract (A1-A7)
   _Files:_ .spec/specs/graph-explorer/design.md
   _Verify:_ grep -c "6.23" .spec/specs/graph-explorer/design.md
 
-- [OPEN] T61 react.py: sufficiency judge + action proposal + bounded loop over
+- [WIP] T61 react.py: sufficiency judge + action proposal + bounded loop over
   sampler.ef_evidence knobs (ef/k_anchor/rings/aliases/reformulated query),
   evidence accumulation with per-iteration provenance; A8 score-stats
   history (params -> mean/sdev/entails) fed to the proposer + tests
@@ -1152,6 +1152,11 @@ evidence, llm-as-judge sufficiency call, on-the-fly depth/hops).
   _Files:_ walker_app.py, walker_core.py, tests/test_walker_render.py
   _Verify:_ python -m pytest tests/test_walker_render.py tests/test_walker_core.py -q && PYTHONPATH=. python tools/diag_rerun.py mixed-full-dual
 
-- [OPEN] T63 Live look: the 1990s-musician query through the loop; screenshots
+- [OPEN] T63 Gold diagnostic lane (A10): tools/diag_agentic.py + G-class rows
+  authored against verified corpus content (kurt_cobain/nirvana check first)
+  _Files:_ tools/diag_agentic.py, tests/test_react.py
+  _Verify:_ PYTHONPATH=. python tools/diag_agentic.py mixed-full-dual
+
+- [OPEN] T64 Live look: the 1990s-musician query through the loop; screenshots
   _Files:_ (none -- verification only)
   _Verify:_ playwright screenshots of :8501
