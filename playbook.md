@@ -1020,7 +1020,7 @@ Source: operator screenshots + plan, 2026-09-05.
   deleted, dropping pandas from walker_app's import surface). 21 passed;
   diag gate `PASS 18/20 | FAIL ['E3'] | KNOWN-FAIL ['A2']` unchanged.
 
-- [OPEN] T45 Live look: restart walker, run "how a city rebuilds after a
+- [DONE] T45 Live look: restart walker, run "how a city rebuilds after a
   disaster", screenshot each panel, surface to operator
   _Files:_ (none -- verification only)
   _Verify:_ playwright screenshots of :8501
