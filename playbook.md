@@ -955,5 +955,12 @@ sense of the key subgraph analysis").
 - [OPEN] T40 UI restructure: ONE analysis tab (images before partitions, group
   background shading, louvain relative LH vs global RH columns, entity/relation
   class tables), neo4j mirror to its OWN tab (temporary: buggy; port back when fixed)
+  plus P8: LLM reason-over-walk fires automatically after the walk, no button
   _Files:_ walker_app.py
   _Verify:_ python -m pytest tests/test_walker_render.py -q && PYTHONPATH=. python tools/diag_rerun.py mixed-full-dual
+
+- [OPEN] T41 Live look: run a real query through the restarted walker, screenshot
+  the Analysis tab, verify P1-P8 visually (images first, shading, LH/RH louvain,
+  auto-LLM narration present) -- surface the screenshot to the operator
+  _Files:_ (none -- verification only)
+  _Verify:_ playwright screenshot of :8501 with a prompt run

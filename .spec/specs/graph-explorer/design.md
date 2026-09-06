@@ -2285,3 +2285,10 @@ is the same color everywhere it appears.
 (walk_state / dendrite_state caches). The subgraph louvain of P4 runs at most
 once per (run, prompt) and is cached with the same key. No panel issues its
 own DB queries at render time beyond the evidence.py helpers.
+
+**P8 (auto LLM, operator 2026-09-05).** WHEN a walk completes, the LLM
+reason-over-walk call SHALL fire automatically -- no manual button. The call
+remains cached per (run, prompt) like every other panel (P7), so a rerun on
+the same prompt replays the cached narration rather than re-invoking the
+model. A visible spinner/status line covers the in-flight window; failure
+renders as a warning line, never a blank panel.
