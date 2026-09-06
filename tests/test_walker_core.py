@@ -388,3 +388,181 @@ def test_group_classes_survives_missing_dendrite_sal():
     for r in rows:
         assert r["terms"] == []
     assert any(r["entities"] for r in rows)
+
+
+# ---------------------------------------------------- factbook digests (T43)
+
+def _gc(**over):
+    base = dict(gid=0, members=[], size=0, terms=[], entities=[], relations=[])
+    base.update(over)
+    return base
+
+
+def test_group_digest_header_carries_gid_size_and_source_mix():
+    gc = _gc(gid=0, members=[1, 2, 3], size=3)
+    src_of = {1: "wiki", 2: "wiki", 3: "brown"}
+    out = walker_core.group_digest(gc, {"mentions": {}, "names": {}, "corpus": {},
+                                         "corpus_total": 0}, src_of)
+    assert out.splitlines()[0] == "g0 . 3 chunks . wiki:2 brown:1"
+
+
+def test_group_digest_terms_show_one_decimal_in_dwpc_order():
+    gc = _gc(terms=[{"term": "carrier", "dwpc": 3.0, "bm25": 0.0, "chunks": []},
+                     {"term": "navy", "dwpc": 2.0, "bm25": 0.0, "chunks": []},
+                     {"term": "army", "dwpc": 0.5, "bm25": 0.0, "chunks": []}])
+    ents = {"mentions": {}, "names": {}, "corpus": {}, "corpus_total": 0}
+    out = walker_core.group_digest(gc, ents)
+    line = out.splitlines()[1]
+    assert line.startswith("terms(dwpc): ")
+    assert "carrier 3.0" in line
+    assert "3.0" in line
+    assert line.index("carrier") < line.index("navy") < line.index("army")
+
+
+def test_group_digest_lift_suppressed_for_walk_exclusive_entity():
+    gc = _gc(entities=[
+        {"entity_id": "A", "name": "Alpha", "cnt": 8, "lift": 1.0,
+         "group_share": 1.0, "corpus_share": 1.0},
+        {"entity_id": "B", "name": "Beta", "cnt": 5, "lift": 3.0,
+         "group_share": 0.1, "corpus_share": 0.3},
+    ])
+    ents = {"mentions": {}, "names": {"A": "Alpha", "B": "Beta"},
+            "corpus": {"A": 8, "B": 50}, "corpus_total": 100}
+    out = walker_core.group_digest(gc, ents)
+    line = out.splitlines()[2]
+    assert "Alpha 8" in line
+    assert "Alpha 8 x" not in line
+    assert "Beta 5 x" in line
+
+
+def test_group_digest_entities_ranked_by_mention_count_not_lift():
+    entities = [
+        {"entity_id": "B", "name": "Beta", "cnt": 2, "lift": 9.0,
+         "group_share": 0.1, "corpus_share": 0.01},
+        {"entity_id": "A", "name": "Alpha", "cnt": 9, "lift": 1.1,
+         "group_share": 0.9, "corpus_share": 0.8},
+    ]
+    gc = _gc(entities=entities)
+    ents = {"mentions": {}, "names": {"A": "Alpha", "B": "Beta"},
+            "corpus": {"A": 9, "B": 2}, "corpus_total": 20}
+    out = walker_core.group_digest(gc, ents)
+    line = out.splitlines()[2]
+    assert line.index("Alpha") < line.index("Beta")
+    assert entities[0]["entity_id"] == "B"   # gc["entities"] left unmutated
+
+
+def test_group_digest_relations_cap_and_corpus_n_label():
+    relations = [{"template": f"t{i}", "connector": "of", "n": i, "pairs": 1,
+                  "top": [(f"a{i}", f"b{i}", 1.0)]} for i in range(10)]
+    gc = _gc(relations=relations)
+    ents = {"mentions": {}, "names": {}, "corpus": {}, "corpus_total": 0}
+    out = walker_core.group_digest(gc, ents, width=300, max_pairs=8)
+    line = out.splitlines()[3]
+    assert line.count("corpus_n=") == 8
+    assert line.endswith("+ 2 more")
+
+
+def test_group_digest_truncates_long_tail_with_count():
+    terms = [{"term": f"term{i}", "dwpc": float(i), "bm25": 0.0, "chunks": []}
+              for i in range(60)]
+    gc = _gc(terms=terms)
+    ents = {"mentions": {}, "names": {}, "corpus": {}, "corpus_total": 0}
+    out = walker_core.group_digest(gc, ents, width=110)
+    for line in out.splitlines():
+        assert len(line) <= 110
+    terms_line = out.splitlines()[1]
+    assert "+ " in terms_line and terms_line.endswith("more")
+    sep = walker_core._SEP
+    body = terms_line[len("terms(dwpc): "):]
+    parts = body.split(sep)
+    n_more = int(parts[-1].split()[1])
+    rendered_count = len(parts) - 1   # all parts but the "+ N more" tail
+    assert n_more + rendered_count == 60
+
+
+def test_group_digest_marker_lands_in_header():
+    gc = _gc(gid=6)
+    ents = {"mentions": {}, "names": {}, "corpus": {}, "corpus_total": 0}
+    out = walker_core.group_digest(gc, ents, marker="= c6 (global)")
+    assert out.splitlines()[0].endswith("= c6 (global)")
+
+
+def test_group_digest_empty_group_renders_dashes():
+    gc = _gc()
+    ents = {"mentions": {}, "names": {}, "corpus": {}, "corpus_total": 0}
+    out = walker_core.group_digest(gc, ents)
+    lines = out.splitlines()
+    assert lines[1] == "terms(dwpc): -"
+    assert lines[2] == "entities(mentions): -"
+    assert lines[3] == "relations: -"
+
+
+def test_dedup_groups_equal_member_sets_render_one_row():
+    rel_rows = [_gc(gid=0, members=[1, 2, 3], size=3)]
+    glob_rows = [_gc(gid=6, members=[1, 2, 3], size=3)]
+    out = walker_core.dedup_groups(rel_rows, glob_rows)
+    assert len(out) == 1
+    assert out[0]["kind"] == "merged"
+    assert out[0]["marker"] == "= c6 (global)"
+    assert not any(e["prefix"] == "c" for e in out)
+
+
+def test_dedup_groups_split_decomposition_names_counts_and_split_cid():
+    c0_members = list(range(40))
+    g1_members = c0_members[:28] + list(range(100, 108))
+    rel_rows = [_gc(gid=1, members=g1_members, size=len(g1_members))]
+    glob_rows = [_gc(gid=0, members=c0_members, size=len(c0_members)),
+                 _gc(gid=12, members=list(range(100, 108)), size=8)]
+    out = walker_core.dedup_groups(rel_rows, glob_rows)
+    row = next(e for e in out if e["kind"] in ("local", "merged") and e["gid"] == 1)
+    assert row["marker"] == "= c0:28 + c12:8 (splits c0)"
+
+
+def test_dedup_groups_merge_decomposition_omits_counts():
+    c3_members = list(range(20))
+    c7_members = list(range(20, 35))
+    rel_rows = [_gc(gid=2, members=c3_members + c7_members,
+                    size=len(c3_members) + len(c7_members))]
+    glob_rows = [_gc(gid=3, members=c3_members, size=len(c3_members)),
+                 _gc(gid=7, members=c7_members, size=len(c7_members))]
+    out = walker_core.dedup_groups(rel_rows, glob_rows)
+    row = next(e for e in out if e["gid"] == 2)
+    assert row["marker"] == "= c3+c7 (merges)"
+
+
+def test_dedup_groups_unconsumed_global_groups_render_with_c_prefix():
+    rel_rows = [_gc(gid=0, members=[1, 2], size=2)]
+    glob_rows = [_gc(gid=0, members=[1, 2], size=2),
+                 _gc(gid=9, members=[500, 501], size=2)]
+    out = walker_core.dedup_groups(rel_rows, glob_rows)
+    unconsumed = [e for e in out if e["prefix"] == "c" and e["gid"] == 9]
+    assert len(unconsumed) == 1
+    assert unconsumed[0]["kind"] == "global"
+    assert unconsumed[0]["marker"] is None
+
+
+def test_dedup_groups_output_is_largest_first_and_deterministic():
+    rel_rows = [_gc(gid=0, members=list(range(5)), size=5),
+                _gc(gid=1, members=list(range(5, 8)), size=3)]
+    glob_rows = [_gc(gid=0, members=list(range(20, 30)), size=10)]
+    out1 = walker_core.dedup_groups(rel_rows, glob_rows)
+    out2 = walker_core.dedup_groups(rel_rows, glob_rows)
+    sizes = [e["size"] for e in out1]
+    assert sizes == sorted(sizes, reverse=True)
+    assert out1 == out2
+
+
+def test_chain_communities_counts_descending_with_unknown_bucket():
+    chains = [[1, 2, 3, 4], [5]]
+    cid_of = {1: 6, 2: 6, 3: 0}
+    out = walker_core.chain_communities(chains, cid_of)
+    assert out == ["c6:2 c0:1 c?:1", "c?:1"]
+
+
+def test_chain_communities_empty_chain_and_truncation():
+    assert walker_core.chain_communities([[]], {}) == ["-"]
+    chain = list(range(200))
+    cid_of = {o: o for o in chain}
+    out = walker_core.chain_communities([chain], cid_of, width=110)
+    assert len(out[0]) <= 110
+    assert "+ " in out[0] and out[0].endswith("more")

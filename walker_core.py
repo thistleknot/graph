@@ -295,3 +295,188 @@ def assess(conn, run, bundle, ev, ds, q, *, embed=None) -> tuple[dict, str | Non
     if os.environ.get("NEO4J_MIRROR", "1") != "0":
         err = evidence.mirror_walk(bundle, ev, ds, prompt=q)
     return rr, err
+
+
+# ---------- factbook digests (T43, design 6.22 P10-P12) ----------
+
+_SEP = " . "
+
+
+def _pack(items, width, *, sep=_SEP, prefix="", empty="-", max_items=None) -> str:
+    """Greedy width packer, the single truncation rule for every rendered line
+    (P11(f)). Keeps items, in order, only while the line so far PLUS a
+    projected " + N more" tail still fits `width`; the rest collapse into
+    that trailing count. `max_items` caps the list before packing even
+    considers width (P11(d)'s per-panel cap) -- items past the cap fold into
+    the same "+ N more" count as anything width drops. A single item that
+    alone exceeds `width` is kept whole rather than cut mid-token (`clip`'s
+    posture).
+
+    Spec: .spec/specs/graph-explorer/design.md 6.22 P11
+    Task: playbook.md T43
+    """
+    items = list(items)
+    total = len(items)
+    if max_items is not None and total > max_items:
+        capped, overflow = items[:max_items], total - max_items
+    else:
+        capped, overflow = items, 0
+
+    if not capped:
+        return prefix + (f"+ {overflow} more" if overflow else empty)
+
+    kept = []
+    for item in capped:
+        trial = kept + [item]
+        remaining = overflow + (len(capped) - len(trial))
+        line = prefix + sep.join(trial)
+        probe = line + sep + f"+ {remaining} more" if remaining else line
+        if len(probe) <= width or not kept:
+            kept = trial
+        else:
+            break
+
+    dropped = len(capped) - len(kept)
+    remaining = overflow + dropped
+    line = prefix + sep.join(kept)
+    if remaining:
+        line += sep + f"+ {remaining} more"
+    return line
+
+
+def group_digest(gc, ents, src_of=None, *, prefix="g", marker=None, width=110,
+                  max_pairs=8) -> str:
+    """Render ONE `group_classes` row as 4 TOON-style lines joined by "\\n":
+    header, terms(dwpc), entities(mentions), relations. Pure/deterministic --
+    same inputs produce a byte-identical string, so the UI can diff runs.
+
+    Spec: .spec/specs/graph-explorer/design.md 6.22 P10/P11
+    Task: playbook.md T43
+    """
+    members = gc.get("members") or []
+    header = f"{prefix}{gc['gid']} . {gc['size']} chunks"
+    if src_of is not None:
+        mix = Counter(src_of.get(o) or "?" for o in members)
+        mix_str = " ".join(f"{name}:{cnt}" for name, cnt in
+                            sorted(mix.items(), key=lambda kv: (-kv[1], kv[0])))
+        header += " . " + mix_str
+    if marker is not None:
+        header += " . " + marker
+
+    terms = gc.get("terms") or []
+    terms_line = _pack([f"{t['term']} {t['dwpc']:.1f}" for t in terms], width,
+                        prefix="terms(dwpc): ")
+
+    def _corpus_cnt(eid):
+        c = ents.get("corpus", {}).get(eid)
+        if c is not None:
+            return c
+        total = ents.get("corpus_total") or 0
+        return round((row.get("group_share") or 0) * total)
+
+    names = ents.get("names", {})
+    ent_items = []
+    for row in sorted(gc.get("entities") or [],
+                       key=lambda e: (-e["cnt"], e.get("name") or e["entity_id"])):
+        eid = row["entity_id"]
+        name = row.get("name") or names.get(eid, eid)
+        corpus_cnt = _corpus_cnt(eid)
+        item = f"{name} {row['cnt']}"
+        if corpus_cnt > row["cnt"]:
+            item += f" x{row['lift']:.1f}"
+        ent_items.append(item)
+    ent_line = _pack(ent_items, width, prefix="entities(mentions): ")
+
+    rel_items = []
+    for r in gc.get("relations") or []:
+        top = r.get("top") or []
+        if top:
+            a, b, _llr = top[0]
+            rel_items.append(f"{a} -[{r['template']}]-> {b} corpus_n={r['n']}")
+        else:
+            rel_items.append(f"-[{r['template']}]-> corpus_n={r['n']}")
+    rel_line = _pack(rel_items, width, prefix="relations: ", max_items=max_pairs)
+
+    return "\n".join([header, terms_line, ent_line, rel_line])
+
+
+def dedup_groups(rel_rows, glob_rows) -> list:
+    """Merge the relative and global `group_classes` panels into ONE
+    annotated list the UI iterates once, instead of rendering the same
+    community twice (P11(c)). A relative group whose member set equals a
+    global one is a straight rename; one that partially overlaps several
+    globals gets a decomposition marker naming which globals it merges or
+    splits; any global left untouched still renders on its own.
+
+    Spec: .spec/specs/graph-explorer/design.md 6.22 P11(c)/(e)
+    Task: playbook.md T43
+    """
+    gsets = {r["gid"]: set(r["members"]) for r in glob_rows}
+    consumed = set()
+    out = []
+
+    for rel_row in rel_rows:
+        S = set(rel_row["members"])
+        equal_cid = None
+        for cid, g in sorted(gsets.items()):
+            if g == S:
+                equal_cid = cid
+                break
+        if equal_cid is not None:
+            consumed.add(equal_cid)
+            out.append({"row": rel_row, "prefix": "g", "gid": rel_row["gid"],
+                        "size": rel_row["size"], "kind": "merged",
+                        "marker": f"= c{equal_cid} (global)",
+                        "cids": [(equal_cid, len(S))]})
+            continue
+
+        inter = [(cid, len(S & g)) for cid, g in gsets.items() if S & g]
+        inter.sort(key=lambda t: (-t[1], t[0]))
+        partial = [cid for cid, n in inter if n < len(gsets[cid])]
+
+        if partial:
+            parts = " + ".join(f"c{cid}:{n}" for cid, n in inter)
+            splits = ", ".join(f"c{c}" for c in partial)
+            marker = f"= {parts} (splits {splits})"
+        elif len(inter) > 1:
+            marker = "= " + "+".join(f"c{cid}" for cid, _n in inter) + " (merges)"
+        elif len(inter) == 1:
+            marker = f"= c{inter[0][0]} (global)"
+        else:
+            marker = None
+
+        out.append({"row": rel_row, "prefix": "g", "gid": rel_row["gid"],
+                    "size": rel_row["size"], "kind": "local", "marker": marker,
+                    "cids": inter})
+
+    for glob_row in glob_rows:
+        if glob_row["gid"] in consumed:
+            continue
+        out.append({"row": glob_row, "prefix": "c", "gid": glob_row["gid"],
+                    "size": glob_row["size"], "kind": "global", "marker": None,
+                    "cids": []})
+
+    out.sort(key=lambda e: (-e["size"], e["prefix"], e["gid"]))
+    return out
+
+
+def chain_communities(chains, cid_of, *, width=110) -> list:
+    """One line per dendrite chunk chain, parallel to `partition_rows`' rows:
+    `"c6:31 c0:4 c12:1"`, counts descending then cid ascending. An ord absent
+    from `cid_of` (or mapped to None) counts under the `"c?"` bucket, sorted
+    last regardless of its count.
+
+    Spec: .spec/specs/graph-explorer/design.md 6.22 P12
+    Task: playbook.md T43
+    """
+    lines = []
+    for chain in chains:
+        counts = Counter()
+        for o in chain:
+            cid = cid_of.get(o)
+            counts["c?" if cid is None else f"c{cid}"] += 1
+        ordered = sorted(counts.items(),
+                          key=lambda kv: (kv[0] == "c?", -kv[1], kv[0]))
+        items = [f"{label}:{n}" for label, n in ordered]
+        lines.append(_pack(items, width, sep=" "))
+    return lines

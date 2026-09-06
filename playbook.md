@@ -1002,12 +1002,16 @@ Source: operator screenshots + plan, 2026-09-05.
   _Files:_ .spec/specs/graph-explorer/design.md
   _Verify:_ grep -c "P1[012]" .spec/specs/graph-explorer/design.md
 
-- [WIP] T43 Core factbook renderers: group_digest, dedup_groups (with P11(e)
+- [DONE] T43 Core factbook renderers: group_digest, dedup_groups (with P11(e)
   divergence decomposition), chain_communities (pure text, no DB/streamlit)
   _Files:_ walker_core.py, tests/test_walker_core.py
   _Verify:_ python -m pytest tests/test_walker_core.py -q
+  _Lessons:_ `_pack`'s width budget must include the caller's own label
+  (pass it as `prefix=`, not string-concatenated after) or truncation checks
+  undercount by the label's length; overflow from `max_items` must clamp at
+  0 (`total - max_items` goes negative when the list is already short).
 
-- [OPEN] T44 UI panels: st.container(border=True) x4, st.code digests replace
+- [WIP] T44 UI panels: st.container(border=True) x4, st.code digests replace
   the 4 styled dataframes, chain community lines under partitions
   _Files:_ walker_app.py, tests/test_walker_render.py
   _Verify:_ python -m pytest tests/test_walker_render.py -q && PYTHONPATH=. python tools/diag_rerun.py mixed-full-dual
