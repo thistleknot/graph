@@ -332,11 +332,12 @@ def test_draw_layers3d_separates_planes_and_bridges_them(app):
     assert cross, "no cross-layer trace spanning both planes"
 
 
-def test_mirror_is_the_real_neo4j_browser_under_map():
-    """T26 (final): Mirror is the ACTUAL neo4j browser iframed inside the Map
-    tab -- possible because the container is launched with a CSP whose
-    frame-ancestors names http://localhost:8501 (stock image sends DENY).
-    Preceded by the dendrite-sorted Partitions table; one input field."""
+def test_mirror_is_the_neo4j_tab():
+    """Design 6.22 P1: the app is one Analysis tab plus a temporary Neo4j
+    tab holding the ACTUAL neo4j browser -- possible because the container is
+    launched with a CSP whose frame-ancestors names http://localhost:8501
+    (stock image sends DENY). Preceded, inside Analysis, by the
+    dendrite-sorted Partitions table; one input field for the whole app."""
     src = open("walker_app.py", encoding="utf-8").read()
     assert "tab_mirror" not in src                      # no third tab
     mirror = src.split("MIRROR (T26)")[1]
@@ -347,6 +348,8 @@ def test_mirror_is_the_real_neo4j_browser_under_map():
     assert _cfg.NEO4J_BROWSER.startswith("http://localhost:7474/browser/")
     assert 'selectbox("Walk"' not in mirror             # one input field
     assert "st.radio" not in mirror
-    # partitions live at the TOP of the Map tab now, before the community map
+    # partitions live inside Analysis, before the community map
     assert "Partitions (dendrite sort)" in src
     assert src.find("Partitions (dendrite sort)") < src.find('subheader("Community map")')
+    assert 'st.tabs(["Analysis", "Neo4j"])' in src
+    assert "relative (this walk only)" in src

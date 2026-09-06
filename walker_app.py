@@ -419,7 +419,127 @@ def draw_global_map(comms, qrows, height=560):
     return fig
 
 
-tab_walk, tab_map = st.tabs(["Walk", "Map"])
+def group_color(gid):
+    """Alias so the intent reads at every call site: `cid_color` IS the one
+    palette, shared by stored cids and ephemeral louvain gids alike (P6)."""
+    return cid_color(gid)
+
+
+def rgba(hex_color, a):
+    """Plotly rejects 8-digit hex (#RRGGBBAA); alpha must be rgba()."""
+    h = hex_color.lstrip("#")
+    r, g, b = (int(h[i:i + 2], 16) for i in (0, 2, 4))
+    return f"rgba({r},{g},{b},{a})"
+
+
+def _monotone_chain_hull(points):
+    """Pure-python convex hull (Andrew's monotone chain), no scipy dependency."""
+    pts = sorted(set(points))
+    if len(pts) < 3:
+        return pts
+
+    def cross(o, a, b):
+        return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+
+    lower = []
+    for p in pts:
+        while len(lower) >= 2 and cross(lower[-2], lower[-1], p) <= 0:
+            lower.pop()
+        lower.append(p)
+    upper = []
+    for p in reversed(pts):
+        while len(upper) >= 2 and cross(upper[-2], upper[-1], p) <= 0:
+            upper.pop()
+        upper.append(p)
+    return lower[:-1] + upper[:-1]
+
+
+def _hull_shapes(pos, groups, pal, alpha=0.12) -> list:
+    """P6 group-similarity shading as `layout.shapes` -- never a filled trace,
+    so every existing test that indexes `fig.data[-1]` / counts traces is
+    untouched by hulls (they live in `layout`, not `data`)."""
+    by_group: dict = {}
+    for o, gid in groups.items():
+        if o in pos:
+            by_group.setdefault(gid, []).append(o)
+
+    shapes = []
+    for gid, members in by_group.items():
+        if not members:
+            continue
+        color = pal.get(gid, "#DDDDDD")
+        pts = [(float(pos[o][0]), float(pos[o][1])) for o in members]
+        if len(pts) >= 3:
+            hull = _monotone_chain_hull(pts)
+            cx = sum(x for x, _ in hull) / len(hull)
+            cy = sum(y for _, y in hull) / len(hull)
+            padded = [(cx + (x - cx) * 1.08, cy + (y - cy) * 1.08) for x, y in hull]
+            path = "M " + " L ".join(f"{x},{y}" for x, y in padded) + " Z"
+            shapes.append({"type": "path", "path": path,
+                           "fillcolor": rgba(color, alpha), "line": {"width": 0},
+                           "layer": "below", "xref": "x", "yref": "y"})
+        else:
+            xs = [x for x, _ in pts]; ys = [y for _, y in pts]
+            span = max(max(xs) - min(xs), max(ys) - min(ys), 1.0) if len(pts) > 1 else 1.0
+            r = 0.06 * span
+            cx = sum(xs) / len(xs); cy = sum(ys) / len(ys)
+            shapes.append({"type": "circle", "x0": cx - r, "y0": cy - r,
+                           "x1": cx + r, "y1": cy + r,
+                           "fillcolor": rgba(color, alpha), "line": {"width": 0},
+                           "layer": "below", "xref": "x", "yref": "y"})
+    return shapes
+
+
+def draw_group_graph(ords, edges, groups, pal, sal=None, height=420):
+    """P9 per-panel relational figure: spring layout over the walked subgraph,
+    coloured by `groups` ({ord: gid}), hulls shaded behind by group. `edges`
+    is `evidence.analysis_inputs()["edges"]` -- no DB call here."""
+    if not ords:
+        return None
+    G = nx.Graph()
+    G.add_nodes_from(ords)
+    for (a, b), w in edges.items():
+        G.add_edge(a, b, weight=w)
+    pos = nx.spring_layout(G, weight="weight", seed=7, k=0.9, iterations=120)
+
+    ex, ey = [], []
+    for a, b in G.edges():
+        ex += [pos[a][0], pos[b][0], None]
+        ey += [pos[a][1], pos[b][1], None]
+
+    def _hover(o):
+        base = f"#{o} · g{groups.get(o)}"
+        if sal and sal.get(o, {}).get("top"):
+            base += " · " + "/".join(sal[o]["top"][:2])
+        return base
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=ex, y=ey, mode="lines", hoverinfo="skip",
+                             line=dict(color="rgba(136,136,136,0.4)", width=1)))
+    fig.add_trace(go.Scatter(
+        x=[pos[o][0] for o in ords], y=[pos[o][1] for o in ords],
+        mode="markers+text", text=[str(o) for o in ords],
+        textposition="top center", textfont=dict(size=9),
+        marker=dict(size=15, color=[pal.get(groups.get(o)) for o in ords],
+                    line=dict(width=1, color="#222")),
+        hovertext=[_hover(o) for o in ords], hoverinfo="text"))
+    fig.update_layout(shapes=_hull_shapes(pos, groups, pal), showlegend=False,
+                      height=height, margin=dict(l=0, r=0, t=0, b=0),
+                      xaxis=dict(visible=False), yaxis=dict(visible=False),
+                      plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)")
+    return fig
+
+
+def style_group_table(rows, gid_key, pal):
+    """P6: same per-group hue in figure and table. pandas Styler; streamlit
+    renders it natively via st.dataframe."""
+    import pandas as pd
+    df = pd.DataFrame(rows)
+    return df.style.apply(
+        lambda r: [f"background-color: {rgba(pal[r[gid_key]], 0.18)}"] * len(r), axis=1)
+
+
+tab_analysis, tab_neo4j = st.tabs(["Analysis", "Neo4j"])
 
 @st.cache_data(show_spinner=False, max_entries=32)
 def walk_for(run_id: str, q: str):
@@ -436,8 +556,28 @@ def walk_state(run_id: str, q: str, _bnd=None, _embed=None):
     return evidence.assemble(conn, run, _bnd, embed=_embed)
 
 
-# ================================================================ WALK
-with tab_walk:
+@st.cache_data(show_spinner=False, max_entries=32)
+def analysis_for(run_id: str, q: str, _ords=None):
+    """P7: the one new DB touch point for the Groups panels, cached per
+    (run, prompt, ords) so a rerun never re-queries."""
+    return evidence.analysis_inputs(conn, run, _ords)
+
+
+@st.cache_data(show_spinner=False, max_entries=16)
+def louvain_for(run_id: str, q: str, _ords=None, _edges=None):
+    """P4 LEFT panel: ephemeral louvain re-run on the walked subgraph only."""
+    return walker_core.subgraph_louvain(_ords, _edges)
+
+
+@st.cache_data(show_spinner=False, max_entries=16)
+def assess_for(run_id: str, q: str, _bnd=None, _ws=None, _ds=None, _embed=None):
+    """P8: the one model call, cached per (run, prompt) so the auto-fire never
+    re-fires on an unrelated rerun."""
+    return walker_core.assess(conn, run, _bnd, _ws, _ds, q, embed=_embed)
+
+
+# ================================================================ ANALYSIS
+with tab_analysis:
     q = st.text_input("Prompt", "", key="q", placeholder="ask the corpus")
     if q.strip():
         bnd, tele = walk_for(str(run.run_id), q)
@@ -452,19 +592,25 @@ with tab_walk:
             cid_of, in_cid, xedges, medoids, salient = (ws.cid_of, ws.in_cid, ws.xedges,
                                                           ws.medoids, ws.salient)
 
-            # ---- 1. the model's answer, right under the prompt (I13: one call)
+            # ---- 1. the model's answer, right under the prompt (I13: one call,
+            # P8: auto-fired -- no button, a walk always ends in an answer)
             pw = ws.pathways
-            if st.button("Reason + judge this walk", key="btn_assess",
-                         help="ONE model call: hypothesis -> premises -> evaluate -> answer, "
-                              "plus a verdict per retrieved chunk; sees the subgraph map"):
-                with st.spinner("one call: reasoning over briefs + judging every chunk ..."):
-                    ds_ = dendrite_state(str(run.run_id), q, _ev=ws)
-                    rr_, mirror_err = walker_core.assess(conn, run, bnd, ws, ds_, q, embed=embed)
+            got = st.session_state.get("assess")
+            if not (got and got[0] == q):
+                with st.spinner("one call: reasoning over briefs + judging every chunk …"):
+                    try:
+                        ds_ = dendrite_state(str(run.run_id), q, _ev=ws)
+                        rr_, mirror_err = assess_for(str(run.run_id), q, _bnd=bnd, _ws=ws,
+                                                     _ds=ds_, _embed=embed)
+                    except Exception as e:                                # noqa: BLE001
+                        rr_, mirror_err = {"ok": False, "error": str(e), "hypotheses": [],
+                                           "premises": [], "foreign": [], "self_contradicting": [],
+                                           "briefs_text": "", "stages": {}}, None
                     st.session_state["assess"] = (q, rr_)
+                    got = st.session_state["assess"]
                     if mirror_err:
                         st.warning(f"neo4j mirror skipped: {mirror_err}")
 
-            got = st.session_state.get("assess")
             has_answer = False
             if got and got[0] == q:
                 rr = got[1]
@@ -564,63 +710,184 @@ with tab_walk:
                         for name, txt in rr["stages"].items():
                             st.markdown(f"**{name}**"); st.code(txt, language="json")
 
-            # ---- 2. the evidence: one expander, collapsed once an answer exists
+            # ---- 2. figures: alternate whole-walk views of one thing, kept
+            # as a sub-tab strip rather than stacked (P9 continuity -- see
+            # T40 subplan for the full justification).
+            org = getattr(bnd, "origin", {}) or {}
+            n_br = sum(1 for v in org.values() if v == "bridge")
+            def _mark(o):
+                return f"**#{o}**" if org.get(o) == "bridge" else f"#{o}"
+            t_walk, t_terms, t_3d, t_glob = st.tabs(
+                ["This walk", "Term graph", "3D layers", "Global map"])
+            with t_walk:
+                fig = draw_communities(touched, terms, xedges)
+                st.plotly_chart(fig, use_container_width=True)
+            with t_terms:
+                st.caption("Terms as nodes; colour = which set claims the term "
+                           "(the walk's prompt-conditioned BM25 vocabulary vs the "
+                           "global unsupervised concept, both = purple). Edges = "
+                           "co-occurrence within the walked chunks.")
+                tfig = draw_term_graph(terms, concept, ws.term_members)
+                if tfig is not None:
+                    st.plotly_chart(tfig, use_container_width=True)
+                else:
+                    st.info("No drawn terms co-occur in this walk.")
+            with t_3d:
+                st.caption("Two planes, like two layers of a network: chunks below "
+                           "(community colour, source shape), terms above, each "
+                           "spring-settled in its own slice; red/blue = dendrite "
+                           "chain backbones (correlation sorting, significance-gated "
+                           "with n = walked chunks); faint verticals = membership. "
+                           "Short vertical edges mean the two Louvain worlds agree.")
+                ds = dendrite_state(str(run.run_id), q, _ev=ws)
+                if ds is None:
+                    st.info("Walk too small (or no stored embeddings) for the "
+                            "layered view.")
+                else:
+                    src_of = walker_core.src_of_map(conn, run, ds["kept"])
+                    st.plotly_chart(draw_layers3d(ds, cid_of, src_of),
+                                    use_container_width=True)
+                    ct, tt = ds["chunks"]["chains"], ds["terms"]["chains"]
+                    st.caption(f"chunk chains: {len(ct)} "
+                               f"(longest {max(map(len, ct)) if ct else 0}) · "
+                               f"term chains: {len(tt)} "
+                               f"(longest {max(map(len, tt)) if tt else 0})")
+            with t_glob:
+                st.caption("Every community in the run; filled = reached by this "
+                           "walk. The same map the model sees.")
+                st.image(interpret.render_walk_image(conn, run, bnd, pw),
+                         use_container_width=True)
+
+            # ---- 3. Partitions (dendrite sort). bnd/ws/ds are already in
+            # scope inside Analysis (P7) -- no second walk_for/walk_state/
+            # dendrite_state call, unlike the old two-tab layout.
+            st.markdown("### Partitions (dendrite sort)")
+            st.caption("Each row is one correlation chain over the walked chunks "
+                       "(correlation sorting.md). Terms are the chain members' own "
+                       "BM25-salient vocabulary, ranked by how many members carry "
+                       "them -- what this partition talks about vs the others.")
+            if ds is None:
+                st.info("Walk too small (or no stored embeddings) for partitions.")
+            else:
+                _rows = walker_core.partition_rows(
+                    ds, walker_core.src_of_map(conn, run, ds["kept"]))
+                st.dataframe(_rows, use_container_width=True, hide_index=True)
+                _tchains = ds["terms"]["chains"]
+                if _tchains:
+                    st.caption("Term chains (terms that rise and fall together "
+                               "across the walked chunks):")
+                    for _tch in _tchains:
+                        if len(_tch) > 1:
+                            st.markdown("- `" + " > ".join(_tch) + "`")
+
+            # ---- 4. Groups -- relative (ephemeral louvain) vs global (stored
+            # cid), the two P4 panels sharing one renderer (group_classes).
+            ai = analysis_for(str(run.run_id), q, _ords=bnd.sampled)
+            ndw = walker_core.node_dwpc(pw)
+            rel_groups = louvain_for(str(run.run_id), q, _ords=bnd.sampled, _edges=ai["edges"])
+            glob_groups = {o: ws.cid_of[o] for o in bnd.sampled if ws.cid_of.get(o) is not None}
+
+            st.markdown("### Groups")
+            L, R = st.columns(2)
+            for col, title, groups, note in (
+                    (L, "relative (this walk only)", rel_groups,
+                     "Louvain re-run on the walked subgraph. These ids are EPHEMERAL — a view, "
+                     "never persisted, never joined to a stored cid, never stable across reruns."),
+                    (R, "global communities (stored cids)", glob_groups,
+                     "The run's own ingest-time cids, restricted to the walked chunks.")):
+                with col:
+                    st.markdown(f"**{title}**"); st.caption(note)
+                    pal = {g: group_color(g) for g in set(groups.values())}
+                    gfig = draw_group_graph(sorted(groups), ai["edges"], groups, pal, sal=salient)
+                    if gfig is not None:
+                        st.plotly_chart(gfig, use_container_width=True)
+                    prefix = "g" if title.startswith("relative") else "c"
+                    for row in walker_core.group_classes(groups, ai["ents"], ai["rels"],
+                                                         salient, ndw):
+                        g = row["gid"]
+                        st.markdown(f"<span style='color:{pal[g]}'>●</span> "
+                                    f"**{prefix}{g}** · {row['size']} chunks",
+                                    unsafe_allow_html=True)
+                        st.caption("terms (dwpc-ranked): "
+                                   + (", ".join(t["term"] for t in row["terms"]) or "—"))
+                        if row["entities"]:
+                            ent_rows = [{"gid": g, "entity": e["name"], "mentions": e["cnt"],
+                                        "lift": round(e["lift"], 2)} for e in row["entities"]]
+                            st.dataframe(style_group_table(ent_rows, "gid", pal),
+                                        use_container_width=True, hide_index=True)
+                        else:
+                            st.caption("—")
+                        if row["relations"]:
+                            rel_rows = [{"gid": g, "template": r["template"],
+                                        "connector": r["connector"], "n": r["n"],
+                                        "pairs": r["pairs"],
+                                        "examples": "; ".join(f"{a}–{b}" for a, b, _ in r["top"])}
+                                       for r in row["relations"]]
+                            st.dataframe(style_group_table(rel_rows, "gid", pal),
+                                        use_container_width=True, hide_index=True)
+                        else:
+                            st.caption("—")
+
+            # ---- 5. Community map (moved from the old Map tab, bodies
+            # unchanged; the inline SELECT stays inline -- 6.21(c)'s "move it
+            # to a helper" is out of scope for T40, see _Lessons:). The
+            # quotient-rows variable is renamed from the original `q` to
+            # `_qrows` -- reusing `q` here would clobber the prompt text that
+            # Evidence below still needs (correctness fix, not a rewrite).
+            st.subheader("Community map")
+            st.caption(
+                "How the run's communities interconnect — pure aggregation over fixed "
+                "`cid`s, never a re-partition. Labels, where present, are model-authored "
+                "drafts over a partition Louvain fixed at ingest.")
+
+            with conn.cursor() as cur:
+                cur.execute("""SELECT cid, size, keywords, medoid_text
+                                 FROM community WHERE run_id = %s ORDER BY size DESC""",
+                            (run.run_id,))
+                comms = cur.fetchall()
+
+            gfig2 = draw_global_map(comms, gt.quotient(conn, run, limit=200))
+            if gfig2 is not None:
+                st.plotly_chart(gfig2, use_container_width=True)
+
+            crows = []
+            for c in comms:
+                lab = labels.get(c["cid"])
+                crows.append({
+                    "cid": c["cid"],
+                    "draft label": lab["label"] if lab else "—",
+                    "size": c["size"],
+                    "keywords": ", ".join(c["keywords"][:5]),
+                })
+            st.dataframe(crows, use_container_width=True, hide_index=True, height=320)
+
+            if not labels:
+                st.info("No draft labels yet. Generate with "
+                        "`python label_communities.py brown-50`.")
+
+            st.markdown("#### Strongest inter-community links")
+            _qrows = gt.quotient(conn, run, limit=25)
+            st.dataframe(
+                [{"A": f"c{r['cid_a']}" + (f" ({labels[r['cid_a']]['label']})"
+                                           if r["cid_a"] in labels else ""),
+                  "B": f"c{r['cid_b']}" + (f" ({labels[r['cid_b']]['label']})"
+                                           if r["cid_b"] in labels else ""),
+                  "edges": r["edges"],
+                  "avg strength": round(r["avg_strength"], 3)} for r in _qrows],
+                use_container_width=True, hide_index=True, height=300)
+
+            # ---- 6. the evidence: one expander, collapsed once an answer exists
             with st.expander(
                     f"Evidence — {len(bnd.sampled)} chunks · {len(cids)} communities · "
                     f"depth {tele['depth']} · {tele['stop']}"
                     f"{' · +' + str(tele['ring']) + ' one degree out' if tele.get('ring') else ''}"
                     f"{' · +' + str(tele['bridge']) + ' bridges' if tele.get('bridge') else ''}",
                     expanded=not has_answer):
-                org = getattr(bnd, "origin", {}) or {}
-                n_br = sum(1 for v in org.values() if v == "bridge")
                 st.caption("Key: **bold #id** = a bridge chunk, discovered on the best "
                            "whole-graph path between two retrieved ideas, not found by "
                            "the walk itself; its *salient terms are italicised*. "
                            "Everything else was retrieved by the walk or its one-degree "
                            "ring.")
-                def _mark(o):
-                    return f"**#{o}**" if org.get(o) == "bridge" else f"#{o}"
-                t_walk, t_terms, t_3d, t_glob = st.tabs(
-                    ["This walk", "Term graph", "3D layers", "Global map"])
-                with t_walk:
-                    fig = draw_communities(touched, terms, xedges)
-                    st.plotly_chart(fig, use_container_width=True)
-                with t_terms:
-                    st.caption("Terms as nodes; colour = which set claims the term "
-                               "(the walk's prompt-conditioned BM25 vocabulary vs the "
-                               "global unsupervised concept, both = purple). Edges = "
-                               "co-occurrence within the walked chunks.")
-                    tfig = draw_term_graph(terms, concept, ws.term_members)
-                    if tfig is not None:
-                        st.plotly_chart(tfig, use_container_width=True)
-                    else:
-                        st.info("No drawn terms co-occur in this walk.")
-                with t_3d:
-                    st.caption("Two planes, like two layers of a network: chunks below "
-                               "(community colour, source shape), terms above, each "
-                               "spring-settled in its own slice; red/blue = dendrite "
-                               "chain backbones (correlation sorting, significance-gated "
-                               "with n = walked chunks); faint verticals = membership. "
-                               "Short vertical edges mean the two Louvain worlds agree.")
-                    ds = dendrite_state(str(run.run_id), q, _ev=ws)
-                    if ds is None:
-                        st.info("Walk too small (or no stored embeddings) for the "
-                                "layered view.")
-                    else:
-                        src_of = walker_core.src_of_map(conn, run, ds["kept"])
-                        st.plotly_chart(draw_layers3d(ds, cid_of, src_of),
-                                        use_container_width=True)
-                        ct, tt = ds["chunks"]["chains"], ds["terms"]["chains"]
-                        st.caption(f"chunk chains: {len(ct)} "
-                                   f"(longest {max(map(len, ct)) if ct else 0}) · "
-                                   f"term chains: {len(tt)} "
-                                   f"(longest {max(map(len, tt)) if tt else 0})")
-                with t_glob:
-                    st.caption("Every community in the run; filled = reached by this "
-                               "walk. The same map the model sees.")
-                    st.image(interpret.render_walk_image(conn, run, bnd, pw),
-                             use_container_width=True)
-
                 st.markdown("#### Query terms")
                 ts = gt.term_stats(conn, run, q, bnd.sampled)
                 lex = {o for t in ts for o in t["hits"]}
@@ -719,89 +986,12 @@ with tab_walk:
                             f"{walker_core.clip(interpret.excerpt(nd['body'], q, 300, embed), 300)}</span>",
                             unsafe_allow_html=True)
 
-# ================================================================ MAP
-with tab_map:
-    # ---- PARTITIONS (the operator's standing ask): the dendrite-sorted
-    # chains, each partition's BM25 salient terms laid side by side so the
-    # partitions can be COMPARED -- pregrouped text, same place as the graphs.
-    _wp0 = (st.session_state.get("q") or "").strip()
-    st.markdown("### Partitions (dendrite sort)")
-    if not _wp0:
-        st.info("Type a prompt on the Walk tab -- its dendrite-sorted "
-                "partitions render here, salient terms side by side.")
-    if _wp0:
-        st.caption("Each row is one correlation chain over the walked chunks "
-                   "(correlation sorting.md). Terms are the chain members' own "
-                   "BM25-salient vocabulary, ranked by how many members carry "
-                   "them -- what this partition talks about vs the others.")
-        try:
-            _bnd0, _ = walk_for(str(run.run_id), _wp0)
-            _ws0 = walk_state(str(run.run_id), _wp0, _bnd=_bnd0, _embed=embed)
-            _ds0 = dendrite_state(str(run.run_id), _wp0, _ev=_ws0)
-        except Exception as e:                              # noqa: BLE001
-            _ds0 = None
-            st.warning(f"partitions unavailable: {e}")
-        if _ds0 is not None:
-            _rows = walker_core.partition_rows(
-                _ds0, walker_core.src_of_map(conn, run, _ds0["kept"]))
-            st.dataframe(_rows, use_container_width=True, hide_index=True)
-            _tchains = _ds0["terms"]["chains"]
-            if _tchains:
-                st.caption("Term chains (terms that rise and fall together "
-                           "across the walked chunks):")
-                for _tch in _tchains:
-                    if len(_tch) > 1:
-                        st.markdown("- `" + " > ".join(_tch) + "`")
-
-
-    st.subheader("Community map")
-    st.caption(
-        "How the run's communities interconnect — pure aggregation over fixed "
-        "`cid`s, never a re-partition. Labels, where present, are model-authored "
-        "drafts over a partition Louvain fixed at ingest.")
-
-    with conn.cursor() as cur:
-        cur.execute("""SELECT cid, size, keywords, medoid_text
-                         FROM community WHERE run_id = %s ORDER BY size DESC""",
-                    (run.run_id,))
-        comms = cur.fetchall()
-
-    gfig = draw_global_map(comms, gt.quotient(conn, run, limit=200))
-    if gfig is not None:
-        st.plotly_chart(gfig, use_container_width=True)
-
-    rows = []
-    for c in comms:
-        lab = labels.get(c["cid"])
-        rows.append({
-            "cid": c["cid"],
-            "draft label": lab["label"] if lab else "—",
-            "size": c["size"],
-            "keywords": ", ".join(c["keywords"][:5]),
-        })
-    st.dataframe(rows, use_container_width=True, hide_index=True, height=320)
-
-    if not labels:
-        st.info("No draft labels yet. Generate with "
-                "`python label_communities.py brown-50`.")
-
-    st.markdown("#### Strongest inter-community links")
-    q = gt.quotient(conn, run, limit=25)
-    st.dataframe(
-        [{"A": f"c{r['cid_a']}" + (f" ({labels[r['cid_a']]['label']})"
-                                   if r["cid_a"] in labels else ""),
-          "B": f"c{r['cid_b']}" + (f" ({labels[r['cid_b']]['label']})"
-                                   if r["cid_b"] in labels else ""),
-          "edges": r["edges"],
-          "avg strength": round(r["avg_strength"], 3)} for r in q],
-        use_container_width=True, hide_index=True, height=300)
-
 # ---------------------------------------------------------------- MIRROR (T26)
 
-with tab_map:
-    # ONE input field for the whole app: the Walk tab's prompt drives the
-    # mirror section too. A judged walk lands in neo4j (T17) and shows here.
+with tab_neo4j:
     st.markdown("### Mirror")
+    st.caption("TEMPORARY TAB (design 6.22 P1): the embedded browser is buggy; "
+               "when it is fixed this section returns to Analysis and the tab goes away.")
     st.caption("The actual neo4j browser, auto-connected (auth disabled on "
                "this local container; CSP re-issued with frame-ancestors "
                "http://localhost:8501 -- the stock image sends DENY).")

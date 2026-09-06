@@ -959,12 +959,28 @@ sense of the key subgraph analysis").
   `.specs/file-manifest.md` exists in this repo tree -- proceeded without a
   manifest row.
 
-- [OPEN] T40 UI restructure: ONE analysis tab (images before partitions, group
+- [DONE] T40 UI restructure: ONE analysis tab (images before partitions, group
   background shading, louvain relative LH vs global RH columns, entity/relation
   class tables), neo4j mirror to its OWN tab (temporary: buggy; port back when fixed)
   plus P8: LLM reason-over-walk fires automatically after the walk, no button
-  _Files:_ walker_app.py
+  _Files:_ walker_app.py, tests/test_walker_render.py
   _Verify:_ python -m pytest tests/test_walker_render.py -q && PYTHONPATH=. python tools/diag_rerun.py mixed-full-dual
+  _Lessons:_ `nx.spring_layout` positions are numpy arrays, not tuples --
+  `_hull_shapes` had to cast to `(float,float)` before `set()`/sorting or
+  Streamlit's AppTest raised "unhashable type: numpy.ndarray" the moment a
+  walk rendered the Groups panels (caught by the two live AppTest cases, not
+  the plotly-only ones). Renamed the Community map's `q = gt.quotient(...)`
+  local to `_qrows`: moving that block into the same scope as the prompt
+  variable `q` would have clobbered it before the Evidence section's
+  `gt.term_stats(conn, run, q, ...)` call -- a real bug the merge would have
+  introduced, not a stylistic choice. No hulls added to `draw_communities` /
+  `draw_global_map` (they draw one node per community; a hull around a single
+  point is noise, colour already carries similarity). Left the inline
+  `SELECT ... FROM community` unclaimed by T40 (6.21(c)'s helper extraction is
+  a separate task). Sprawl review: collapsed N/A -- no incumbent duplicated;
+  extended `cid_color` (as `group_color`) rather than adding a second palette.
+  pytest: 20 passed in 83.61s. diag_rerun: PASS 18/20 | FAIL ['E3'] |
+  KNOWN-FAIL ['A2'] (byte-pinned digest unchanged).
 
 - [OPEN] T41 Live look: run a real query through the restarted walker, screenshot
   the Analysis tab, verify P1-P8 visually (images first, shading, LH/RH louvain,
