@@ -255,3 +255,112 @@ def mirror_walk(bundle, ev: Evidence, ds: dict | None, *, prompt: str,
     except (urllib.error.URLError, RuntimeError, OSError) as e:   # design 6.21(c)
         return str(e)
     return None
+
+
+# ---- analysis-view queries (T39, design 6.22 P5/P7) ----
+
+def subgraph_edge_weights(conn, run, ords) -> dict:
+    """Undirected {(min,max): strength} over the walked chunks, for the P4
+    relative louvain. gt.subgraph_edges returns the DIRECTED edge rows, so the
+    two directions collapse under max() -- a partition must not depend on row
+    order (design 6.22 P4: fixed seed, reproducible view).
+
+    Spec: .spec/specs/graph-explorer/design.md 6.22 P4
+    Task: playbook.md T39
+    """
+    w: dict = {}
+    for e in gt.subgraph_edges(conn, run, list(ords)):
+        src, dst = e["src"], e["dst"]
+        if src == dst:
+            continue
+        key = (min(src, dst), max(src, dst))
+        w[key] = max(w.get(key, 0.0), float(e["strength"]))
+    return w
+
+
+def walk_entities(conn, run, ords) -> dict:
+    """ONE round trip for both the group numerator and the corpus denominator.
+
+    Guarantee: {"mentions": {ord: {entity_id: cnt}}, "names": {entity_id: name},
+    "corpus": {entity_id: total_cnt}, "corpus_total": int}.
+
+    Spec: .spec/specs/graph-explorer/design.md 6.22 P5
+    Task: playbook.md T39
+    """
+    ords = list(ords)
+    if not ords:
+        return {"mentions": {}, "names": {}, "corpus": {}, "corpus_total": 0}
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT m.ord, m.entity_id, m.cnt, e.name
+              FROM mentions m
+              JOIN entities e ON e.run_id = m.run_id AND e.entity_id = m.entity_id
+             WHERE m.run_id = %s AND m.ord = ANY(%s::int[])""",
+            (run.run_id, ords))
+        rows = cur.fetchall()
+
+        mentions: dict = {}
+        names: dict = {}
+        eids: set = set()
+        for r in rows:
+            mentions.setdefault(r["ord"], {})[r["entity_id"]] = r["cnt"]
+            names[r["entity_id"]] = r["name"]
+            eids.add(r["entity_id"])
+
+        corpus: dict = {}
+        if eids:
+            cur.execute("""
+                SELECT entity_id, sum(cnt)::bigint AS total
+                  FROM mentions
+                 WHERE run_id = %s AND entity_id = ANY(%s::int[])
+                 GROUP BY entity_id""",
+                (run.run_id, sorted(eids)))
+            corpus = {r["entity_id"]: r["total"] for r in cur.fetchall()}
+
+        cur.execute("SELECT coalesce(sum(cnt), 0)::bigint AS total FROM mentions"
+                    " WHERE run_id = %s", (run.run_id,))
+        corpus_total = cur.fetchone()["total"]
+
+    return {"mentions": mentions, "names": names, "corpus": corpus,
+            "corpus_total": corpus_total}
+
+
+def walk_relations(conn, run, entity_ids) -> list:
+    """Relation templates scoped to the walk (P5): both endpoints must be
+    among `entity_ids` (the entities mentioned in the walked chunks). Fetched
+    once per (run, prompt) per P7; per-GROUP narrowing is pure and happens in
+    walker_core.group_relations.
+
+    Spec: .spec/specs/graph-explorer/design.md 6.22 P5/P7
+    Task: playbook.md T39
+    """
+    entity_ids = sorted(entity_ids)
+    if not entity_ids:
+        return []
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT r.src, r.dst, r.template, r.connector, r.n, r.llr, r.npmi,
+                   r.example_ord, es.name AS src_name, ed.name AS dst_name
+              FROM relations r
+              JOIN entities es ON es.run_id = r.run_id AND es.entity_id = r.src
+              JOIN entities ed ON ed.run_id = r.run_id AND ed.entity_id = r.dst
+             WHERE r.run_id = %s
+               AND r.src = ANY(%s::int[]) AND r.dst = ANY(%s::int[])
+             ORDER BY r.llr DESC, r.src, r.dst, r.template""",
+            (run.run_id, entity_ids, entity_ids))
+        return cur.fetchall()
+
+
+def analysis_inputs(conn, run, ords) -> dict:
+    """The single P7 entry point the walker caches once per (run, prompt).
+    The ONLY new DB touch point walker_app may call for the analysis view
+    (P5: no inline queries in the UI).
+
+    Spec: .spec/specs/graph-explorer/design.md 6.22 P7
+    Task: playbook.md T39
+    """
+    ents = walk_entities(conn, run, ords)
+    entity_ids = sorted({eid for ms in ents["mentions"].values() for eid in ms})
+    return {"edges": subgraph_edge_weights(conn, run, ords),
+            "ents": ents,
+            "rels": walk_relations(conn, run, entity_ids)}

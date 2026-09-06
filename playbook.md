@@ -946,11 +946,18 @@ sense of the key subgraph analysis").
   _Files:_ .spec/specs/graph-explorer/design.md
   _Verify:_ grep -c "6.22" .spec/specs/graph-explorer/design.md
 
-- [WIP] T39 Core computations: dwpc-ranked terms per louvain group, subgraph
+- [DONE] T39 Core computations: dwpc-ranked terms per louvain group, subgraph
   louvain view (ephemeral, never persisted), entities-per-class (lift over
   mentions x community), relations-per-class (template counts scoped to walk)
-  _Files:_ walker_core.py, evidence.py, tests/test_walker_core.py
+  _Files:_ walker_core.py, evidence.py, tests/test_walker_core.py, tests/test_evidence.py
   _Verify:_ python -m pytest tests/test_walker_core.py tests/test_evidence.py -q
+  _Lessons:_ gt.chunk_salient never exposes raw BM25 scores, only the
+  rank-ordered `kept` list -- P3's tie-break has to be a rank proxy
+  (`term_bm25_rank`, sum of normalised rank over member chunks), not a real
+  BM25 comparison; T40 should not expect true score magnitudes out of
+  `rank_group_terms`'s `bm25` field, only relative order. No
+  `.specs/file-manifest.md` exists in this repo tree -- proceeded without a
+  manifest row.
 
 - [OPEN] T40 UI restructure: ONE analysis tab (images before partitions, group
   background shading, louvain relative LH vs global RH columns, entity/relation

@@ -282,3 +282,38 @@ def test_mirror_walk_does_not_swallow_programming_errors():
     xn = _StubXn(raise_on="write_walk", exc=TypeError("payload bug"))
     with pytest.raises(TypeError):
         evidence.mirror_walk("bundle", ev, None, prompt="q", xn=xn)
+
+
+# ---- analysis-view queries (T39, design 6.22 P5/P7) ----
+
+def test_subgraph_edge_weights_collapses_direction_with_max(monkeypatch):
+    rows = [
+        {"src": 1, "dst": 1, "strength": 9.0, "provenance": "x"},  # self-loop, skipped
+        {"src": 1, "dst": 2, "strength": 0.3, "provenance": "x"},
+        {"src": 2, "dst": 1, "strength": 0.8, "provenance": "x"},  # asymmetric dup
+    ]
+    monkeypatch.setattr(evidence.gt, "subgraph_edges", lambda conn, run, ords: rows)
+    out = evidence.subgraph_edge_weights(None, None, [1, 2])
+    assert out == {(1, 2): 0.8}
+
+
+@pytest.mark.live_db
+def test_analysis_inputs_smoke():
+    conn = require_gt_conn()
+    try:
+        run = require_run(conn, "mixed-full-dual")
+        bnd, _ = sampler.ef_evidence(conn, run, Q_A, seed=0)
+        assert bnd.sampled
+        out = evidence.analysis_inputs(conn, run, bnd.sampled)
+        assert set(out) == {"edges", "ents", "rels"}
+        ents = out["ents"]
+        walked_total = sum(sum(m.values()) for m in ents["mentions"].values())
+        assert ents["corpus_total"] >= walked_total
+        for eid in ents["names"]:
+            assert any(eid in m for m in ents["mentions"].values())
+        mentioned = {eid for m in ents["mentions"].values() for eid in m}
+        for r in out["rels"]:
+            assert r["src"] in mentioned
+            assert r["dst"] in mentioned
+    finally:
+        conn.close()

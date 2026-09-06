@@ -2292,3 +2292,12 @@ remains cached per (run, prompt) like every other panel (P7), so a rerun on
 the same prompt replays the cached narration rather than re-invoking the
 model. A visible spinner/status line covers the in-flight window; failure
 renders as a warning line, never a blank panel.
+
+**P9 (gestalt, operator 2026-09-05: "seeing is believing").** The Analysis
+tab's layout SHALL lean on gestalt principles: ENCLOSURE (P6 shading bounds a
+group), PROXIMITY (a group's figure, terms, entities and relations sit
+adjacent, never split across distant sections), SIMILARITY (one palette, one
+hue per group everywhere -- P6), CONTINUITY (spring layouts for relational
+figures so connected things read as connected; tables only where items are
+enumerable facts). Where a figure and its table describe the same grouping,
+the figure comes first and the table sits directly beneath it.
