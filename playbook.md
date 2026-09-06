@@ -1080,11 +1080,24 @@ force layout chosen over embedding PCA).
   _Verify:_ grep -c "P16" .spec/specs/graph-explorer/design.md
 
 - [OPEN] T53 Scene builder: walk3d_payload + walk3d_html in walker_core (pure,
-  escaped, pinned CDN) + DB-free tests
+  escaped, pinned CDN) + DB-free tests; payload carries optional per-node
+  umap xyz and the scene a force<->umap toggle (P16(i))
   _Files:_ walker_core.py, tests/test_walker_core.py
   _Verify:_ python -m pytest tests/test_walker_core.py -q
 
-- [OPEN] T54 UI wiring: t_3d sub-tab swaps draw_layers3d for components.html;
+- [OPEN] T54 UI wiring: t_3d sub-tab swaps draw_layers3d for components.html
+  (+ evidence helper fetching walk embeddings -> umap xyz, dense runs only);
   delete dead draw_layers3d; live look with screenshots to operator
+  _Files:_ walker_app.py, evidence.py, tests/test_walker_render.py
+  _Verify:_ python -m pytest tests/test_walker_render.py -q && PYTHONPATH=. python tools/diag_rerun.py mixed-full-dual
+
+- [OPEN] T55 Remove the sidebar (P17): run selector + stats + details popover
+  as a compact top row; warnings inline; no st.sidebar anywhere
   _Files:_ walker_app.py, tests/test_walker_render.py
   _Verify:_ python -m pytest tests/test_walker_render.py -q && PYTHONPATH=. python tools/diag_rerun.py mixed-full-dual
+
+- [OPEN] T56 Architect the holistic re-layout: inventory every UI element,
+  categorize, propose fengshui placement -- ledger + mock only, NO code;
+  present to operator before any implementation
+  _Files:_ playbook.md (next layer)
+  _Verify:_ operator review

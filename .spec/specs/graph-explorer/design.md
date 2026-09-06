@@ -2421,3 +2421,19 @@ remain the 2D figures and graph3d.py; (h) degradation: no pathways -> path
 control hidden; CDN unreachable -> the iframe body shows a one-line failure
 message, never an unexplained blank; every string in the payload destined
 for HTML is escaped at build time.
+
+P16 addendum (operator, 2026-09-06: "I also like umap projection").
+(i) WHEN the run is dense, the scene carries a second position set per node:
+UMAP(n_components=3, fixed random_state) over the walked chunks' stored
+embeddings (umap-learn 0.5.x, already installed), computed once per
+(run, prompt) beside the other cached state; an in-scene toggle animates
+between force-sim positions and the UMAP projection (TF-projector view).
+Sparse-only runs hide the toggle. The projection, like the force sim, is a
+VIEW (P16(g)) -- never persisted, never a join key.
+
+**P17 (no sidebar -- operator, 2026-09-06, repeated ask).** The walker SHALL
+render WITHOUT a Streamlit sidebar. The run selector, run stats line and
+details expander move to a single compact row at the top of the main area
+(selector left, stats muted beside it, details in a popover); degraded-mode
+warnings render inline under that row. Nothing else may reintroduce
+st.sidebar.
