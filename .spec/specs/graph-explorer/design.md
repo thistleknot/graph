@@ -2530,3 +2530,22 @@ gold_terms [kurt_cobain, nirvana]. Scored by A9 gold_recall, both evidence
 and answer. Gold rows SHALL be authored against what the corpus verifiably
 contains (checked at authoring time); the FROZEN 20-row do-no-harm set is
 untouched -- this is a second lane, additive (A7).
+
+**A3 amendment (fixed-point guard -- 2026-09-06, from the first live gold
+run: G1 re-ran a byte-identical query 3x because the judge's "missing" echoed
+the prompt's own words).** (a) The proposer's `missing` SHALL name candidate
+evidence entities/topics ABSENT from the digest, never words of the prompt.
+(b) REANCHOR terms are algorithmically filtered against the prompt's own
+tokens; WHEN the filter empties them, the action escalates to the next
+ladder move. (c) A (query, params) pair identical to ANY prior iteration
+SHALL never re-run: the loop forces the next ladder action, and if the pair
+is still identical, stops with stop_reason="fixed-point". Receipt:
+"i=1..3 action=REANCHOR q=<identical> n=88" / "missing: ['1990s','famous',
+'musician']".
+
+**A5 amendment (payload cap -- from the same run: accumulated evidence hit
+121K chars and truncated the answer call at max_tokens).** Accumulated
+bundles fed to ANY downstream model call SHALL cap at the base-walk scale:
+top ~100 chunks by walk score, lowest dropped first. Receipt: "G4 ...
+truncated at max_tokens=4096 (finish_reason=length, 11439 chars) | ollama
+fallback skipped: 121087 chars exceeds 40000".
