@@ -1142,7 +1142,8 @@ evidence, llm-as-judge sufficiency call, on-the-fly depth/hops).
 
 - [OPEN] T61 react.py: sufficiency judge + action proposal + bounded loop over
   sampler.ef_evidence knobs (ef/k_anchor/rings/aliases/reformulated query),
-  evidence accumulation with per-iteration provenance + tests
+  evidence accumulation with per-iteration provenance; A8 score-stats
+  history (params -> mean/sdev/entails) fed to the proposer + tests
   _Files:_ react.py, tests/test_react.py
   _Verify:_ python -m pytest tests/test_react.py -q
 

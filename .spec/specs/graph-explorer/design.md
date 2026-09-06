@@ -2502,3 +2502,13 @@ entail SHALL say so rather than crown an arbitrary candidate.
 insufficient (or has 0 entails). A prompt whose base walk is sufficient
 behaves byte-identically to today -- the frozen diagnostic (18/20,
 FAIL=[E3]) must not move.
+
+**A8 (score-distribution feedback -- operator, 2026-09-06: "the key
+information feedback").** Each iteration record SHALL carry the walk's score
+statistics: n_chunks, mean and sdev of walk scores, entail/contradict/neutral
+counts, and per-community score means. The proposer receives the FULL history
+of (params -> stats) pairs, so it infers which knob to perturb from how the
+distribution moved under prior settings (e.g. widening ef raised n but
+dropped mean walk score -> the frontier is diluting: reanchor rather than
+widen again). The history table renders in the iteration trace (A1) --
+numbers, not narrative.
