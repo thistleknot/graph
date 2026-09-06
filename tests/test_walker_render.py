@@ -602,3 +602,13 @@ def test_hero_passes_through_the_answer_gate():
     src = _src()
     assert src.find("walker_core.answer_gate(") < src.find("walker_core.hero_answer(")
     assert "[] if _gated else" in src, "a gated hero must not pill citations"
+
+
+def test_every_panel_head_title_has_an_accent():
+    """Live crash receipt: panel_head('Agentic retrieval') raised KeyError --
+    every title passed to panel_head must exist in ACCENT."""
+    import re
+    src = open("walker_app.py", encoding="utf-8").read()
+    titles = set(re.findall(r'panel_head\("([^"]+)"', src))
+    accents = set(re.findall(r'"([^"]+)":\s*(?:GOOD|BAD|WARN|PRIMARY|"#\w+")', src))
+    assert titles <= accents, f"panel titles missing an ACCENT entry: {titles - accents}"

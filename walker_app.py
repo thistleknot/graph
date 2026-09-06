@@ -51,7 +51,7 @@ PROV_COLOR = {"both": "#E45756", "dense": "#4C78A8", "sparse": "#9E9E9E"}
 LABEL_FILE = Path(os.environ.get("LABEL_OUT", "community_labels.json"))
 DEFAULT_MODEL_DIR = config.MODEL_DIR   # used when CHUNKGRAPH_MODEL_DIR is unset
 
-ACCENT = {"Answer": GOOD, "Judged evidence": PRIMARY,
+ACCENT = {"Answer": GOOD, "Judged evidence": PRIMARY, "Agentic retrieval": BAD,
           "Groups": "#B279A2", "Partitions": WARN}   # P14(c), P15(f)
 
 
