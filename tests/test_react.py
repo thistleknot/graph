@@ -7,11 +7,18 @@ Task: playbook.md T61
 from __future__ import annotations
 
 import dataclasses
+import importlib.util
+from pathlib import Path
 
 import pytest
 
 import react
 import sampler
+
+_diag_agentic_spec = importlib.util.spec_from_file_location(
+    "diag_agentic", Path(__file__).resolve().parent.parent / "tools" / "diag_agentic.py")
+diag_agentic = importlib.util.module_from_spec(_diag_agentic_spec)
+_diag_agentic_spec.loader.exec_module(diag_agentic)
 
 
 # --------------------------------------------------------------------------- fakes
@@ -313,6 +320,45 @@ def test_gold_terms_populate_gold_recall_evidence():
 
 # --------------------------------------------------------------------------- live smoke
 
+# --------------------------------------------------------------------------- A10 gold lane (tools/diag_agentic.py)
+
+def test_gold_rows_have_id_prompt_and_nonempty_gold_terms():
+    ids = set()
+    for rid, prompt, gold_terms in diag_agentic.ROWS:
+        assert rid and isinstance(rid, str)
+        assert rid not in ids, f"duplicate row id {rid!r}"
+        ids.add(rid)
+        assert prompt and isinstance(prompt, str)
+        assert gold_terms, f"{rid} has empty gold_terms"
+        assert all(isinstance(t, str) and t for t in gold_terms)
+    assert len(diag_agentic.ROWS) == 5
+
+
+def test_score_row_pass_rule_is_full_gold_recall_evidence():
+    bnd = mk_bundle([1])
+    walk = fake_walk([(bnd, FakeEv(digest="kurt cobain nirvana"))] * 2)
+    judge = fake_judge({1: "entails"}, [])
+
+    result = react.run(None, None, "q", walk_fn=walk, judge_fn=judge,
+                        propose_fn=always_sufficient, max_iters=1,
+                        gold_terms=["kurt cobain", "nirvana"])
+    sc = diag_agentic.score_row(result, answer_text="kurt cobain",
+                                 gold_terms=["kurt cobain", "nirvana"])
+    assert sc["evid"] == 1.0
+    assert sc["passed"] is True
+    assert sc["ans"] == 0.5
+
+    # a partial hit on the final iteration's accumulated evidence fails
+    walk2 = fake_walk([(bnd, FakeEv(digest="kurt cobain only"))] * 2)
+    result2 = react.run(None, None, "q", walk_fn=walk2, judge_fn=judge,
+                         propose_fn=always_sufficient, max_iters=1,
+                         gold_terms=["kurt cobain", "nirvana"])
+    sc2 = diag_agentic.score_row(result2, gold_terms=["kurt cobain", "nirvana"])
+    assert sc2["evid"] < 1.0
+    assert sc2["passed"] is False
+    assert sc2["ans"] == 0.0    # no answer_text given
+
+
 @pytest.mark.live_net
 @pytest.mark.live_db
 def test_react_live_smoke():
@@ -326,3 +372,48 @@ def test_react_live_smoke():
     result = react.run(conn, run_, "most famous musician of the 1990s")
     assert len(result["iterations"]) >= 1
     assert result["stop_reason"] in ("sufficient", "budget", "no-op action")
+
+
+# ---------------------------------------- A3/A5 amendments (fixed-point guard)
+
+def test_filter_query_add_drops_prompt_echoes():
+    """Live G1 receipt: the judge proposed '1990s famous musician' for a
+    1990s-musician prompt -- all echoes, all dropped."""
+    out = react.filter_query_add("1990s famous musician",
+                                 "who is the most famous musician of the 1990's?")
+    assert out == ""
+    out2 = react.filter_query_add("nirvana kurt musician",
+                                  "who is the most famous musician of the 1990's?")
+    assert out2 == "nirvana kurt"
+
+
+def test_cap_bundle_keeps_top_n_by_score_and_never_mutates():
+    bnd = mk_bundle(list(range(10)))
+    bnd = dataclasses.replace(bnd, scores={o: float(o) for o in range(10)})
+    capped = react.cap_bundle(bnd, 3)
+    assert capped.sampled == [9, 8, 7]
+    assert set(capped.scores) == {9, 8, 7}
+    assert len(bnd.sampled) == 10          # input untouched
+    assert react.cap_bundle(bnd, 100) is bnd  # within cap -> unchanged
+
+
+def test_repeated_identical_walk_stops_as_fixed_point():
+    """A3(c): a proposer that always echoes the prompt (empty after filter ->
+    DEEPEN) still may not re-walk a seen (query, params); after one ladder
+    escalation the loop stops rather than spin."""
+    bnd = mk_bundle([1])
+    walk = fake_walk([(bnd, FakeEv(digest="d"))] * 10)
+    judge = fake_judge({}, [])
+
+    def echo_proposer(query, digest, history, missing_hint=None):
+        return {"sufficient": False, "missing": [], "action": "REANCHOR",
+                "query_add": "famous musician", "why": "", "source": "model"}
+
+    res = react.run(None, None, "who is the most famous musician?",
+                    walk_fn=walk, judge_fn=judge, propose_fn=echo_proposer,
+                    max_iters=5)
+    assert res["stop_reason"] in ("fixed-point", "budget")
+    queries = [r.query for r in res["iterations"]]
+    assert len(queries) == len(set((q, tuple(sorted(r.params.items())))
+                                    for q, r in zip(queries, res["iterations"]))), \
+        "no (query, params) pair may repeat"

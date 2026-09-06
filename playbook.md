@@ -1161,7 +1161,7 @@ evidence, llm-as-judge sufficiency call, on-the-fly depth/hops).
   react_for costs zero extra walks/calls for iteration 0; 111 pytest passed,
   diag gate unchanged at PASS 18/20 | FAIL ['E3'] | KNOWN-FAIL ['A2'].
 
-- [OPEN] T63 Gold diagnostic lane (A10): tools/diag_agentic.py + G-class rows
+- [WIP] T63 Gold diagnostic lane (A10): tools/diag_agentic.py + G-class rows
   authored against verified corpus content (kurt_cobain/nirvana check first)
   _Files:_ tools/diag_agentic.py, tests/test_react.py
   _Verify:_ PYTHONPATH=. python tools/diag_agentic.py mixed-full-dual

@@ -164,7 +164,11 @@ evidence digest. Decide:
    - WIDEN: raise ef and ring budgets (broaden the same walk).
    - REANCHOR: replace or add query terms to re-anchor the walk (e.g. missing
      "grunge nirvana" for a 1990s-music prompt). Put the EXTRA TERMS ONLY in
-     query_add (never restate the whole prompt).
+     query_add (never restate the whole prompt). CRITICAL: query_add and
+     `missing` must name CANDIDATE ENTITIES OR TOPICS that are ABSENT from
+     the digest -- specific names a good answer would involve -- and must
+     NEVER repeat words already in the prompt; repeating the prompt's own
+     words retrieves the same chunks again and wastes the iteration.
    - PIVOT: walk from the strongest adjacent community.
    - DEEPEN: raise hop/expansion depth (m, bridge_pairs, ef).
    You may not invent new parameters or actions; these four are the only moves.
@@ -243,6 +247,42 @@ def apply_action(params, action, *, query, query_add="", pivot_terms="") -> tupl
         if key in p:
             p[key] = min(max(p[key], lo), hi)
     return p, q
+
+
+def filter_query_add(query_add: str, prompt: str) -> str:
+    """A3(b): drop every proposed term whose lowercased token already appears
+    in the PROMPT -- an echoed term re-anchors on the same chunks (live G1
+    receipt: query_add='1990s famous musician' against a 1990s-musician
+    prompt walked the identical 88 chunks three times). Pure.
+
+    Spec: .spec/specs/graph-explorer/design.md 6.23 A3 amendment
+    Task: playbook.md T63
+    """
+    def norm(t):
+        return t.strip("?.,!\"()").replace("'", "").lower()
+    prompt_toks = {norm(t) for t in str(prompt).split()}
+    kept = [t for t in str(query_add).split() if norm(t) not in prompt_toks]
+    return " ".join(kept)
+
+
+def cap_bundle(bundle, n: int = 100):
+    """A5 amendment: cap an accumulated bundle to its top-n chunks by walk
+    score before ANY downstream model call (live receipt: 121K chars
+    truncated the answer at max_tokens). Returns the bundle unchanged when
+    already within n. Pure -- dataclasses.replace, input never mutated.
+
+    Spec: .spec/specs/graph-explorer/design.md 6.23 A5 amendment
+    Task: playbook.md T63
+    """
+    sampled = list(bundle.sampled)
+    if len(sampled) <= n:
+        return bundle
+    keep = sorted(sampled, key=lambda o: -float(bundle.scores.get(o, 0.0)))[:n]
+    keep_set = set(keep)
+    return dataclasses.replace(
+        bundle, sampled=keep,
+        scores={o: s for o, s in bundle.scores.items() if o in keep_set},
+        origin={o: v for o, v in bundle.origin.items() if o in keep_set})
 
 
 def pivot_terms(conn, run_, cids) -> str:
@@ -394,9 +434,28 @@ def run(conn, run_, query, *, embed=None, judge_fn=None, walk_fn=None,
                 if not pterms:
                     act = "WIDEN"
 
+        # A3(b): REANCHOR terms filtered against the PROMPT's own tokens --
+        # the live G1 run showed the judge echoing the prompt back, which
+        # re-anchors on the same chunks. Empty after filtering -> escalate.
+        query_add = filter_query_add(prop.get("query_add", ""), query)
+        if act == "REANCHOR" and not query_add:
+            act = "DEEPEN"
+
         new_params, new_query = apply_action(
-            params, act, query=cur_query, query_add=prop.get("query_add", ""),
+            params, act, query=cur_query, query_add=query_add,
             pivot_terms=pterms)
+
+        # A3(c): never re-walk a (query, params) pair already walked. One
+        # escalation attempt along the ladder; still a repeat -> fixed point.
+        seen = {(r.query, tuple(sorted(r.params.items()))) for r in history}
+        if (new_query, tuple(sorted(new_params.items()))) in seen:
+            act = LADDER[(LADDER.index(act) + 1) % len(LADDER)] if act in LADDER else "WIDEN"
+            new_params, new_query = apply_action(
+                params, act, query=cur_query, query_add=query_add,
+                pivot_terms=pterms)
+            if (new_query, tuple(sorted(new_params.items()))) in seen:
+                stop_reason = "fixed-point"
+                break
 
         if new_params == params and new_query == cur_query:
             stop_reason = "no-op action"
