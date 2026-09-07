@@ -601,7 +601,37 @@ def test_agentic_trace_lands_in_the_evidence_zone():
 def test_hero_passes_through_the_answer_gate():
     src = _src()
     assert src.find("walker_core.answer_gate(") < src.find("walker_core.hero_answer(")
-    assert "[] if _gated else" in src, "a gated hero must not pill citations"
+    assert '_cites, _caption, _color = [], _model_line, WARN' in src, \
+        "a gated hero must not pill citations"
+
+
+# ------------------------- 6.23 A13 loop answer (T67)
+
+def test_loop_answers_from_the_answer_bundle_not_cap_bundle():
+    src = _src()
+    assert "rx[\"answer_bundle\"]" in src
+    assert "loop_answer_for(" in src
+    i_def = src.find("def loop_answer_for(")
+    i_call = src.find("_loop_ans = loop_answer_for(")
+    assert -1 < i_def < i_call, "loop_answer_for: needs a def and a call site"
+
+
+def test_loop_answer_caption_reads_answered_after():
+    import walker_core
+    src = _src()
+    assert "walker_core.loop_answer_caption(" in src
+    assert walker_core.loop_answer_caption(2) == "answered after 2 agentic iterations"
+    assert walker_core.loop_answer_caption(1) == "answered after 1 agentic iteration"
+
+
+def test_a6_gate_only_fires_when_the_loop_also_found_zero_entails():
+    """A13: the A6 insufficient-evidence text renders only when even the loop
+    ends at zero entails -- the loop-found-entails branch must sit strictly
+    before the zero-entails answer_gate() fallback in source order."""
+    src = _src()
+    i_loop_branch = src.find("elif rx and _loop_entails:")
+    i_zero_gate = src.find("# A6: even the loop ended at zero entails.")
+    assert -1 < i_loop_branch < i_zero_gate
 
 
 def test_every_panel_head_title_has_an_accent():

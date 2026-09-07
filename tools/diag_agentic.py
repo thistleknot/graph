@@ -70,12 +70,12 @@ def run_row(conn, run, rid, prompt, gold_terms, embed):
 
     answer_text = None
     answer_error = None
-    bundle, ev = result.get("bundle"), result.get("ev")
-    if bundle is not None and ev is not None:
+    answer_bundle, ev = result.get("answer_bundle"), result.get("ev")
+    if answer_bundle is not None and ev is not None:
         try:
-            capped = react.cap_bundle(bundle, 50)           # A5: 100 still elicited
-                                                            # 11K-char answers
-            ans = interpret.answer(conn, run, capped, ev.terms, ev.concept, embed=embed)
+            # A13: entails-first bundle react.run() already assembled --
+            # no re-derivation of the cap here (Article VI).
+            ans = interpret.answer(conn, run, answer_bundle, ev.terms, ev.concept, embed=embed)
             answer_text = ans.get("answer") or None
             if not ans.get("ok"):
                 answer_error = ans.get("error")

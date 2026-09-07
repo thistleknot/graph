@@ -1196,11 +1196,27 @@ Source: operator SNR frame + log2 deviation band + estimator-pair bound,
     iteration's entails, not just the final walk's. 26 passed, 1 deselected
     (live_net); full DB-free suite 386 passed, 1 skipped.
 
-- [OPEN] T67 Loop answer wired: hero answers from answer_bundle when the loop
+- [DONE] T67 Loop answer wired: hero answers from answer_bundle when the loop
   found entails ("answered after N agentic iterations"); diag_agentic swaps
   to answer_bundle
   _Files:_ walker_app.py, walker_core.py, tools/diag_agentic.py, tests/test_walker_render.py, tests/test_walker_core.py
   _Verify:_ python -m pytest tests/test_walker_render.py tests/test_walker_core.py -q && PYTHONPATH=. python tools/diag_rerun.py mixed-full-dual
+  _Lessons:_ base-walk-sufficient path (_entails>0) stays byte-identical to
+    pre-T67 (A7); the new branch only engages inside the existing
+    `_entails == 0` react_for gate. Added a cached loop_answer_for wrapper
+    (distinct key from assess_for/react_for) that calls interpret.answer on
+    react.run()'s answer_bundle, keyed (run_id, q); citation pills come
+    straight from rx["entails"], not the model's own cited list, per spec's
+    "pills from the entailing set." When the loop-answer call itself fails
+    (not ok / empty answer) despite found entails, falls back to
+    answer_gate's found_entails branch so the superlative caution still
+    shows (A13's "cannot crown a single candidate" case). diag_agentic.py:
+    dropped the react.cap_bundle(bundle, 50) re-derivation entirely --
+    result["answer_bundle"] is already the A5-capped, entails-first bundle
+    (Article VI: no re-deriving what react.run() already computed).
+    142/142 pytest (test_walker_render + test_walker_core + test_react,
+    -m "not live_net"); diag_rerun gate held byte-identical: PASS 18/20 |
+    FAIL ['E3'] | KNOWN-FAIL ['A2'] (A7 confirmed unmoved).
 
 - [OPEN] T68 Gates + gold rerun (ans delta vs 5/5 baseline) + live look
   _Files:_ (none -- verification only)

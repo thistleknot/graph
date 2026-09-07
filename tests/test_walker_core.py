@@ -712,6 +712,12 @@ def test_answer_gate_points_at_what_the_loop_found():
     assert "3 entailing" in text
 
 
+def test_loop_answer_caption_pluralizes_iterations():
+    assert walker_core.loop_answer_caption(0) == "answered after 0 agentic iterations"
+    assert walker_core.loop_answer_caption(1) == "answered after 1 agentic iteration"
+    assert walker_core.loop_answer_caption(3) == "answered after 3 agentic iterations"
+
+
 def test_digest_card_badge_renders_and_body_stays_byte_identical():
     import html as _html
     import re

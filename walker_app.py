@@ -564,6 +564,19 @@ def react_for(run_id: str, q: str, _bnd=None, _ws=None, _rr=None, _embed=None):
     return react.run(conn, run, q, embed=_embed, walk_fn=_walk, judge_fn=_judge)
 
 
+@st.cache_data(show_spinner=False, max_entries=8)
+def loop_answer_for(run_id: str, q: str, _answer_bundle=None, _terms=None,
+                     _concept=None, _embed=None):
+    """A13: answers from the loop's entails-first bundle (react.run's
+    answer_bundle) -- a cache distinct from assess_for (the base-walk answer)
+    and react_for (the loop itself), keyed by (run, prompt) so a rerun never
+    re-fires the model call.
+
+    Spec: .spec/specs/graph-explorer/design.md 6.23 A13 · Task: playbook.md T67
+    """
+    return interpret.answer(conn, run, _answer_bundle, _terms, _concept, embed=_embed)
+
+
 # ================================================================ ANALYSIS
 with tab_analysis:
     # P13: a fresh session seeds the prompt from ?q=, and a running walk writes
@@ -664,18 +677,52 @@ with tab_analysis:
                                 f"{rr['backend']} · one call: {len(rr['briefs'])} "
                                 f"community briefs + {len(rr.get('shown', []))} chunks judged"
                                 + (f" · {rr['structure_note']}" if rr.get("structure_note") else ""))
-                            _gated, _hero_text = walker_core.answer_gate(
-                                rr["answer"] or "No premise was judged supported, so there is "
-                                                "nothing to answer from. The premises below say why.",
-                                _entails,
-                                n_iters=(rx or {}).get("n_iters", 0),
-                                n_chunks=len(bnd.sampled),
-                                found_entails=len((rx or {}).get("entails", [])))
+                            _loop_entails = list((rx or {}).get("entails") or [])
+                            if _entails > 0:
+                                # A7: base walk already sufficient -- byte-identical
+                                # to pre-T67 behaviour, no loop was even engaged.
+                                _gated, _hero_text = False, rr["answer"]
+                                _cites, _caption, _color = rr.get("cited") or [], _model_line, PRIMARY
+                            elif rx and _loop_entails:
+                                # A13: the loop found entails -- answer from its
+                                # entails-first bundle, not the base walk's argument
+                                # over zero premises.
+                                with st.spinner("answering from agentic evidence …"):
+                                    try:
+                                        _loop_ans = loop_answer_for(
+                                            str(run.run_id), q,
+                                            _answer_bundle=rx["answer_bundle"],
+                                            _terms=ws.terms, _concept=ws.concept, _embed=embed)
+                                    except Exception as e:                       # noqa: BLE001
+                                        _loop_ans = {"ok": False, "error": str(e)}
+                                if _loop_ans.get("ok") and _loop_ans.get("answer"):
+                                    _gated = False
+                                    _hero_text = _loop_ans["answer"]
+                                    _cites = _loop_entails
+                                    _caption = walker_core.loop_answer_caption(rx["n_iters"])
+                                    _color = PRIMARY
+                                else:
+                                    # answer stage failed even though entails exist --
+                                    # A13's superlative caution still applies.
+                                    _gated, _hero_text = walker_core.answer_gate(
+                                        rr["answer"] or "No premise was judged supported, so "
+                                                        "there is nothing to answer from. The "
+                                                        "premises below say why.",
+                                        _entails, n_iters=rx["n_iters"],
+                                        n_chunks=len(bnd.sampled),
+                                        found_entails=len(_loop_entails))
+                                    _cites, _caption, _color = [], _model_line, WARN
+                            else:
+                                # A6: even the loop ended at zero entails.
+                                _gated, _hero_text = walker_core.answer_gate(
+                                    rr["answer"] or "No premise was judged supported, so there is "
+                                                    "nothing to answer from. The premises below say why.",
+                                    _entails,
+                                    n_iters=(rx or {}).get("n_iters", 0),
+                                    n_chunks=len(bnd.sampled), found_entails=0)
+                                _cites, _caption, _color = [], _model_line, WARN
                             st.markdown(walker_core.hero_answer(
-                                _hero_text,
-                                [] if _gated else (rr.get("cited") or []),
-                                _model_line,
-                                color=WARN if _gated else PRIMARY),
+                                _hero_text, _cites, _caption, color=_color),
                                 unsafe_allow_html=True)
                         if rr["hypotheses"]:
                             st.markdown("**Hypothesis** " + (rr["hypothesis"] or ""))

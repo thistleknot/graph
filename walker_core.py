@@ -181,6 +181,17 @@ def answer_gate(answer: str, entails: int, *, n_iters: int = 0,
     return True, text
 
 
+def loop_answer_caption(n_iters: int) -> str:
+    """A13: the hero caption when the answer is drawn from the loop's
+    entails-first bundle rather than the base walk. PURE, no escaping --
+    hero_answer escapes what it renders.
+
+    Spec: .spec/specs/graph-explorer/design.md 6.23 A13
+    Task: playbook.md T67
+    """
+    return f"answered after {n_iters} agentic iteration{'s' if n_iters != 1 else ''}"
+
+
 def clip(text: str, n: int) -> str:
     """Never cut inside a word (design 6.3). Clip at the last whitespace
     before n and mark the cut; short text is returned untouched."""
