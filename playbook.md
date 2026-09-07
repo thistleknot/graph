@@ -1175,3 +1175,28 @@ Gold lane AGENTIC 5/5 (evid=1.0 all rows) after the A3 fixed-point guard and
 A9 bodies-scored recall; live UI shows the gated hero + the loop finding
 nirvana/cobain chunk #6323 at iteration 1. Frozen diagnostic untouched:
 PASS 18/20 | FAIL [E3] | KNOWN-FAIL [A2] (A7 held).
+
+## Layer 20 -- sequential (SNR-guided proposer + loop answer)
+Source: operator SNR frame + log2 deviation band + estimator-pair bound,
+2026-09-06. Plan approved.
+
+- [DONE] T65 Spec 6.23 A12 (log2 estimator-pair dilution band, WIDEN
+  exclusion, REANCHOR-first ladder) + A13 (entails-first loop answer)
+  _Files:_ .spec/specs/graph-explorer/design.md
+  _Verify:_ grep -c "A1[23]" .spec/specs/graph-explorer/design.md
+
+- [OPEN] T66 react.py: dilution_detected (log2 band, min(mean-sdev,
+  median-1.4826*MAD)), WIDEN exclusion in propose, ladder reorder,
+  entails_first_bundle -> result["answer_bundle"]
+  _Files:_ react.py, tests/test_react.py
+  _Verify:_ python -m pytest tests/test_react.py -q
+
+- [OPEN] T67 Loop answer wired: hero answers from answer_bundle when the loop
+  found entails ("answered after N agentic iterations"); diag_agentic swaps
+  to answer_bundle
+  _Files:_ walker_app.py, walker_core.py, tools/diag_agentic.py, tests/test_walker_render.py, tests/test_walker_core.py
+  _Verify:_ python -m pytest tests/test_walker_render.py tests/test_walker_core.py -q && PYTHONPATH=. python tools/diag_rerun.py mixed-full-dual
+
+- [OPEN] T68 Gates + gold rerun (ans delta vs 5/5 baseline) + live look
+  _Files:_ (none -- verification only)
+  _Verify:_ PYTHONPATH=. python tools/diag_agentic.py mixed-full-dual

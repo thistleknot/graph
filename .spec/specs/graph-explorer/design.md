@@ -2562,3 +2562,31 @@ the A3(c) no-repeat guard is this law enforced mechanically; (c) an answer
 over near-zero SNR is a guess -- the A6 gate is the SNR floor. Receipts:
 gold run 1 (WIDEN-free REANCHOR found #6323 at iteration 1; three identical
 walks bought zero recall).
+
+**A12 (SNR-guided proposal -- T65, 2026-09-06).** Dilution is detected with
+the house ruler: log2 of each iteration's mean_score; the band's lower bound
+is the LOWER of the two estimators over the history -- mean - sdev and
+median - 1.4826*MAD (the estimator-pair gate, same idiom as the NORMAL
+stage and the CHUNK stage's MAD sizing; operator: "the lower of the two").
+An action whose resulting log2 mean falls below that bound while n_chunks
+ROSE is dilution: it is EXCLUDED from the allowed action set for the rest of
+the loop -- enforced algorithmically, and stated to the proposer in
+numbers-first form. The log2 scale is load-bearing: equal multiplicative
+drops are equal band distances anywhere on the score scale (ratios become
+differences); signal ADDITION stays linear-domain (the averaging law) --
+log space is for thresholds, linear space for accumulation. The fallback
+ladder reorders to REANCHOR -> DEEPEN -> WIDEN: narrowing first, the
+matched filter beat amplification in every gold run.
+
+**A13 (answer from loop evidence -- T65).** WHEN the loop terminates with
+entailing chunks from ANY iteration, the answer SHALL be synthesized from an
+ENTAILS-FIRST bundle: all entailing chunks first (by walk score), remaining
+capacity filled by score, total capped per A5. The hero renders this loop
+answer marked "answered after N agentic iterations" with citation pills from
+the entailing set; A6's insufficient-evidence text renders only when even
+the loop ends at zero entails; the superlative caution stays whenever
+entails exist but cannot crown a single candidate -- the answer model
+answers only what the entailing chunks support. Receipt driving this guard:
+gold G4/G5 evid=1.0 ans=0.0 -- the evidence held the gold and the answer,
+drawn from a score-capped bundle where neutrals crowd out entails, never
+named it.
