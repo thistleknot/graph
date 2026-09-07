@@ -1291,6 +1291,19 @@ created however that would look like, my guess was co-occurrence analysis";
   never joins analysis_inputs' per-(run,prompt,ords) cache. 132 pure+live_db tests
   green; diag gate held exactly at PASS 18/20 | FAIL ['E3'] | KNOWN-FAIL ['A2'].
 
-- [OPEN] T73 Live look: classes panel screenshots to operator
+- [DONE] T73 Live look: classes panel screenshots to operator
   _Files:_ (none -- verification only)
   _Verify:_ playwright screenshots of :8501
+
+Campaign close (2026-09-07): unsupervised classes T69-T73 DONE. Entity
+classes 2653691 pairs -> 16073 edges -> 4708 classed (27s); relation classes
+11328 templates -> 396 edges -> 301 classed (68s); Classes panel live in the
+REFERENCE zone; E17 counts on all three groupings (live: chain 1 . 82 chunks
+. 10582 entities . 163769 relations . c6:79 c12:3). Frozen diagnostic
+PASS 18/20 | FAIL [E3] | KNOWN-FAIL [A2]. OPEN defect: E16 gen-check
+negative -- genitive connector variants do not co-class because connector
+holds raw surface spans; fix is canonicalizing connectors (run the check
+over template, not connector), NOT lowering the threshold.
+Wiki updated: "C:/Users/user/Documents/wiki/data science/llm/DIRT relation
+extraction.md" -- implementation notes appended (3 deviations + the failed
+acceptance test), operator text untouched.
