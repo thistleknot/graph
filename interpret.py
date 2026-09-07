@@ -103,7 +103,27 @@ _CITE = re.compile(r"#(\d+)")
 _THINK = re.compile(r"<think>.*?</think>\s*", re.S)
 _FENCE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.S)
 
-SYSTEM = 'You are an evidence classifier. You will be shown a PROMPT, a list of VALID IDS, and chunks of text each tagged [id=<n>]. For EVERY valid id decide, on that chunk\'s content alone: ENTAILS = the chunk contains information that answers or partly answers the prompt; CONTRADICTS = it contains information that contradicts an answer; NEUTRAL = it carries no information bearing on the prompt. A partial answer is ENTAILS. Then write a short answer built only from entailing chunks, citing #<id> after each claim. If nothing entails, leave the answer empty.\n\nRules: exactly one verdict per VALID ID, no more, no fewer. Copy each id exactly from the list; ids you invent or renumber are discarded. Reply with ONE JSON object and nothing else:\n{"verdicts": [{"id": <valid id>, "verdict": "entails"|"contradicts"|"neutral", "why": "<=8 words"}, ...], "answer": "<text with #id citations>"}'
+# A16(c): a superlative/peak claim about a subject's OWN career or timeline
+# ("the height of his fame", "his biggest hit", "her peak years") is REFLEXIVE
+# -- it establishes a maximum over that one subject's own history and is NOT
+# evidence that the subject leads a wider population. It must never be
+# offered as support for a "most/best/first X" prompt asking about a
+# population; only a claim whose comparison class IS the population
+# ("the best-selling album of the decade") can answer such a prompt.
+_SCOPE_GUARD = (
+    "SCOPE: a superlative or peak claim about a subject's OWN career or "
+    "timeline (\"the height of his fame\", \"his biggest hit\", \"her peak "
+    "years\", \"a career high\") is REFLEXIVE -- it says the subject peaked "
+    "relative to themselves, and is NOT evidence that the subject leads or "
+    "wins against any wider population. Only treat a superlative claim as "
+    "answering a population question (\"most famous of the decade\", "
+    "\"best-selling in the world\") when its own comparison class is that "
+    "population, not the subject's own history."
+)
+
+SYSTEM = ('You are an evidence classifier. You will be shown a PROMPT, a list of VALID IDS, and chunks of text each tagged [id=<n>]. For EVERY valid id decide, on that chunk\'s content alone: ENTAILS = the chunk contains information that answers or partly answers the prompt; CONTRADICTS = it contains information that contradicts an answer; NEUTRAL = it carries no information bearing on the prompt. A partial answer is ENTAILS. Then write a short answer built only from entailing chunks, citing #<id> after each claim. If nothing entails, leave the answer empty.\n\n'
+          + _SCOPE_GUARD
+          + '\n\nRules: exactly one verdict per VALID ID, no more, no fewer. Copy each id exactly from the list; ids you invent or renumber are discarded. Reply with ONE JSON object and nothing else:\n{"verdicts": [{"id": <valid id>, "verdict": "entails"|"contradicts"|"neutral", "why": "<=8 words"}, ...], "answer": "<text with #id citations>"}')
 
 ANSWER_SYSTEM = 'You are answering a PROMPT using ONLY the ENTAILED EXCERPTS shown, each tagged [id=<n>]. Write a short, concrete answer. Cite #<id> after every claim; every claim must trace to an excerpt. Do not use anything not shown. Reply with ONE JSON object and nothing else: {"answer": "<text with #id citations>"}'
 
@@ -632,7 +652,10 @@ PREM_SYSTEM = (
     "ONE JSON object and nothing else: "
     '{"premises": [{"text": "<premise>", "ids": [<id>, ...]}, ...]}'
 )
-EVAL_SYSTEM = 'For each PREMISE, read ONLY the excerpts cited for it and decide: supports = an excerpt states, about the SAME subject as the premise, information that makes it true or partly true; contradicts = an excerpt states information against it; insufficient = the excerpts do not bear on it. An analogy, an implication drawn from a different subject, or a general statement that could apply to anything is INSUFFICIENT, not supports. Reply with ONE JSON object and nothing else: {"evaluations": [{"index": <premise index>, "verdict": "supports"|"contradicts"|"insufficient", "why": "<=12 words"}, ...]}'
+EVAL_SYSTEM = ('For each PREMISE, read ONLY the excerpts cited for it and decide: supports = an excerpt states, about the SAME subject as the premise, information that makes it true or partly true; contradicts = an excerpt states information against it; insufficient = the excerpts do not bear on it. An analogy, an implication drawn from a different subject, or a general statement that could apply to anything is INSUFFICIENT, not supports. '
+              + _SCOPE_GUARD
+              + ' A reflexive excerpt cited for a POPULATION premise is INSUFFICIENT, not supports. '
+              + 'Reply with ONE JSON object and nothing else: {"evaluations": [{"index": <premise index>, "verdict": "supports"|"contradicts"|"insufficient", "why": "<=12 words"}, ...]}')
 FINAL_SYSTEM = (
     "Answer the PROMPT using ONLY the SUPPORTED PREMISES and their cited "
     "excerpts. Cite #<id> after each claim. Reply with ONE JSON object and nothing else: "
@@ -657,7 +680,10 @@ ONE_SHOT_SYSTEM = (
     'list. (3) Evaluate each premise against ONLY its cited excerpts: supports = an '
     'excerpt states, about the SAME subject, information that makes it true or partly '
     'true; contradicts = states information against it; insufficient = does not bear on '
-    'it. Analogy or implication from a different subject is insufficient. (4) Answer the '
+    'it. Analogy or implication from a different subject is insufficient. '
+    + _SCOPE_GUARD +
+    ' A reflexive excerpt cited for a population premise is insufficient, not supports. '
+    '(4) Answer the '
     'PROMPT using ONLY premises judged supports, citing #<id> after each claim. Reply '
     'with ONE JSON object and nothing else: {"hypotheses": ["<statement>", ...], '
     '"chosen": <index>, "why": "<one line>", "premises": [{"text": "<premise>", "ids": '

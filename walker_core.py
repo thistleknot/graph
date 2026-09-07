@@ -190,11 +190,90 @@ def is_superlative(prompt: str) -> bool:
         tok = tok.strip(string.punctuation)
         if not tok:
             continue
-        if tok in _SUPERLATIVE_MARKERS:
-            return True
-        if len(tok) > 4 and tok.endswith("est") and tok not in _SUPERLATIVE_EST_EXCLUSIONS:
-            return True
+        # A16: split internal hyphens too ("best-selling") so a compound
+        # carrying a marker word is caught the same as the bare word would be.
+        for piece in tok.split("-"):
+            if not piece:
+                continue
+            if piece in _SUPERLATIVE_MARKERS:
+                return True
+            if (len(piece) > 4 and piece.endswith("est")
+                    and piece not in _SUPERLATIVE_EST_EXCLUSIONS):
+                return True
     return False
+
+
+# A16: possessive determiners/'s that scope a superlative to the SUBJECT's own
+# body of work or timeline, rather than to a population. "peak"/"height"/
+# "prime"/"high" are included as head nouns because they are inherently
+# self-scoped even without an accompanying -est/marker word ("her peak
+# years"), whereas a bare superlative marker after a non-possessive
+# determiner ("the biggest band") says nothing about scope by itself.
+_REFLEXIVE_POSSESSIVES = {"his", "her", "its", "their"}
+_REFLEXIVE_HEAD_NOUNS = {"peak", "height", "prime", "high"}
+_REFLEXIVE_WINDOW = 4
+_REFLEXIVE_IDIOMS = (
+    "height of", "peak of", "career high", "personal best", "to date",
+    "of his career", "of her career", "of their career", "of its career",
+)
+
+
+def is_reflexive_superlative(text: str) -> bool:
+    """A16(a): pure predicate over a TEXT SPAN (a chunk, a premise, a judge
+    'why' string) -- True when a superlative/peak claim is SELF-SCOPED: its
+    comparison class is the subject's own career or timeline rather than a
+    population. Two lexical signals, either one sufficient:
+
+    1. A self-scoped idiom ("height of", "peak of", "career high", "personal
+       best", "to date", "of his/her/their/its career") -- these name a
+       maximum over the subject's own history by construction.
+    2. A possessive pronoun or possessive-'s (his/her/its/their/<name>'s)
+       within a short word-window of a superlative marker, -est morphology,
+       or a self-scoped head noun (peak/height/prime/high) -- "his biggest
+       hit", "Gallagher's greatest record", "her peak years".
+
+    HONESTY (this is lexical, not syntactic): it does not parse dependency
+    structure, so it will misfire on constructions where a possessive sits
+    near a superlative without governing it ("his review called it the best
+    album of the decade" would false-positive on "his ... best"), and it will
+    miss reflexive scope expressed without a possessive or listed idiom
+    ("a high point for the band" -- no possessive, "high point" not in the
+    idiom list). It is a demotion heuristic for A14(b)'s exemption, not a
+    parser; false negatives leave the population gate's existing behaviour
+    (require a matching population superlative) intact, and false positives
+    only widen what counts as reflexive, which is the safer failure direction
+    for a "don't crown a winner" gate.
+
+    Spec: .spec/specs/graph-explorer/design.md 6.23 A16(a)
+    Task: playbook.md T81
+    """
+    text = (text or "").lower()
+    for idiom in _REFLEXIVE_IDIOMS:
+        if idiom in text:
+            return True
+    tokens = re.findall(r"[a-z']+", text)
+    for i, tok in enumerate(tokens):
+        if tok in _REFLEXIVE_POSSESSIVES or tok.endswith("'s"):
+            window = tokens[i + 1:i + 1 + _REFLEXIVE_WINDOW]
+            for w in window:
+                if (w in _SUPERLATIVE_MARKERS or w in _REFLEXIVE_HEAD_NOUNS
+                        or (len(w) > 4 and w.endswith("est")
+                            and w not in _SUPERLATIVE_EST_EXCLUSIONS)):
+                    return True
+    return False
+
+
+def count_population_superlatives(texts) -> int:
+    """A16(b): count of `texts` that carry a superlative/aggregate marker
+    (`is_superlative`) AND are NOT reflexive (`is_reflexive_superlative`).
+    Reflexive superlatives establish a maximum over the subject's own
+    history and must not count as population-ranking evidence -- this is
+    what A14(b)'s `superlative_entails` should have been counting all along.
+
+    Spec: .spec/specs/graph-explorer/design.md 6.23 A16(b)
+    Task: playbook.md T81
+    """
+    return sum(1 for t in texts if is_superlative(t) and not is_reflexive_superlative(t))
 
 
 def cited_ords(text: str) -> list[int]:
@@ -322,6 +401,21 @@ def loop_answer_caption(n_iters: int) -> str:
     Task: playbook.md T67
     """
     return f"answered after {n_iters} agentic iteration{'s' if n_iters != 1 else ''}"
+
+
+def stop_reason_label(stop_reason: str) -> str:
+    """A17(d): honest stop semantics. "budget" means the loop ran out of
+    iterations -- it is NOT a claim that the evidence was judged sufficient,
+    and every surface that prints a stop_reason must not read it that way.
+    Every other stop_reason (sufficient/no-movement/fixed-point/no-op
+    action/...) already names itself honestly and passes through unchanged.
+
+    Spec: .spec/specs/graph-explorer/design.md 6.23 A17(d)
+    Task: playbook.md T81
+    """
+    if stop_reason == "budget":
+        return "budget (iterations exhausted, not sufficiency)"
+    return stop_reason
 
 
 def clip(text: str, n: int) -> str:

@@ -674,8 +674,8 @@ with tab_analysis:
                 _ans_ords = walker_core.cited_ords(rr["answer"]) if rr.get("ok") else []
                 _why_map = ({v["ord"]: v.get("why", "") for v in rr.get("verdicts") or []}
                             if rr.get("ok") else {})
-                _sup_entails = (sum(1 for o in rr["entailed"]
-                                     if walker_core.is_superlative(_why_map.get(o, "")))
+                _sup_entails = (walker_core.count_population_superlatives(
+                                    [_why_map.get(o, "") for o in rr["entailed"]])
                                 if rr.get("ok") else 0)
                 _needs_loop = bool(rr.get("ok")) and walker_core.needs_more_evidence(
                     rr["answer"], _entails, prompt=q, entail_ords=rr.get("entailed") or [],
@@ -736,8 +736,8 @@ with tab_analysis:
                                     _acc_why = {o: v.get("why", "")
                                                 for o, v in (rx.get("verdicts") or {}).items()}
                                     _acc_ans_ords = walker_core.cited_ords(_loop_ans["answer"])
-                                    _acc_sup = sum(1 for o in _acc_entails
-                                                   if walker_core.is_superlative(_acc_why.get(o, "")))
+                                    _acc_sup = walker_core.count_population_superlatives(
+                                        [_acc_why.get(o, "") for o in _acc_entails])
                                     _gated, _hero_text = walker_core.answer_gate(
                                         _loop_ans["answer"], len(_acc_entails), prompt=q,
                                         entail_ords=_acc_entails, answer_ords=_acc_ans_ords,
@@ -911,7 +911,8 @@ with tab_analysis:
                             panel_head("Agentic retrieval")
                             st.caption(
                                 f"{rx['n_iters']} iterations beyond the base walk · "
-                                f"stop: {rx['stop_reason']} · union {len(rx['ords'])} chunks · "
+                                f"stop: {walker_core.stop_reason_label(rx['stop_reason'])} · "
+                                f"union {len(rx['ords'])} chunks · "
                                 f"{len(rx['entails'])} entail / {len(rx['contradicts'])} contradict")
                             st.code(rx["history_table"], language="text")
                             _new_ent = [o for o in rx["entails"]

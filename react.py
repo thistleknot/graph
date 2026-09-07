@@ -60,6 +60,9 @@ class IterationRecord:
     new_chunks: int
     precision_proxy: float               # A9: entails / judged, judged = entails+contradicts
     contradiction_rate: float            # A9: contradicts / judged
+    yield_ratio: float = 0.0             # A17(a): entails / n_chunks -- the informative SNR;
+                                          # precision_proxy degenerates to 1.00 when contradicts
+                                          # is zero, since the denominator becomes the numerator
     action: str | None = None
     stop_reason: str | None = None
     gold_recall_evidence: float | None = None   # A9/A10: only when gold_terms given to run()
@@ -105,11 +108,13 @@ def stats(bundle, rr, cid_of=None) -> dict:
     judged = entails + contradicts               # A9: definitively judged, excludes neutral
     precision_proxy = round(entails / judged, 4) if judged else 0.0
     contradiction_rate = round(contradicts / judged, 4) if judged else 0.0
+    yield_ratio = round(entails / n, 4) if n else 0.0   # A17(a): entails / n_chunks
 
     return {"n_chunks": n, "mean_score": round(mean, 4), "sdev_score": round(sdev, 4),
             "entails": entails, "contradicts": contradicts, "neutrals": neutrals,
             "per_cid_mean": per_cid_mean,
-            "precision_proxy": precision_proxy, "contradiction_rate": contradiction_rate}
+            "precision_proxy": precision_proxy, "contradiction_rate": contradiction_rate,
+            "yield_ratio": yield_ratio}
 
 
 def gold_recall(texts, gold_terms) -> float:
@@ -136,7 +141,7 @@ def render_history(history) -> str:
     """PURE (A8/A9: numbers, not narrative). Fixed-width table, one row per
     IterationRecord, header first, plus a trailing per-community line."""
     header = ("it action     ef  k_anch ring   alias  n   mean   sdev  ent con neu "
-              "prec  cr   query")
+              "prec  yield cr   query")
     lines = [header]
     for r in history:
         action = r.action if r.action else "base"
@@ -149,7 +154,7 @@ def render_history(history) -> str:
             f"{r.params.get('k_anchor', 0):<6} {ring:<6} {alias:<5} "
             f"{r.n_chunks:<3} {r.mean_score:<6.4f} {r.sdev_score:<6.4f} "
             f"{r.entails:<3} {r.contradicts:<3} {r.neutrals:<3} "
-            f"{r.precision_proxy:<5.2f} {r.contradiction_rate:<4.2f} {r.query}")
+            f"{r.precision_proxy:<5.2f} {r.yield_ratio:<5.2f} {r.contradiction_rate:<4.2f} {r.query}")
     for r in history:
         if not r.per_cid_mean:
             continue
@@ -166,8 +171,13 @@ You will be given the prompt, a history table of (parameters -> walk score
 distribution -> judge verdicts) for every iteration tried so far, and the latest
 evidence digest. Read the history as a signal-to-noise problem, numbers first:
 
-- precision_proxy (prec column) IS the signal-to-noise ratio: entails / judged.
-  Judge any action by whether it RAISED prec, not by whether n_chunks grew.
+- yield (entails / n_chunks) IS the signal-to-noise ratio to move. Judge any
+  action by whether it RAISED yield, not by whether n_chunks grew.
+- prec (precision_proxy, entails / judged) is kept for continuity but can be
+  DEGENERATE: when the judge returns zero contradicts, judged == entails and
+  prec reads 1.00 on every row regardless of how much of the walk actually
+  entails -- prec cannot tell a 1/88 walk from a 7/88 walk if both have zero
+  contradicts. yield is what distinguishes them.
 - An action already marked diluted in the history (shown as
   "PROPOSED>SUBSTITUTED" in the action column, or an action whose log2 mean
   score dropped below the history's band while n_chunks rose) must NOT be
@@ -238,12 +248,23 @@ def apply_action(params, action, *, query, query_add="", pivot_terms="") -> tupl
     q = query
 
     def _append(base_query, terms):
-        terms = " ".join(str(terms).split())
-        if not terms:
+        # A17(b): dedup PER TOKEN against the accumulated query, case-
+        # insensitive -- a whole-string containment check let a partially-
+        # overlapping proposal slip through (live receipt: iteration 3
+        # re-appended "kurt cobain dave grohl eddie vedder grunge nirvana
+        # pearl jam soundgarden alice in chains", every token already
+        # present). Order preserved; only genuinely new tokens are added.
+        base_toks = base_query.split()
+        seen = {t.lower() for t in base_toks}
+        new_toks = []
+        for t in str(terms).split():
+            low = t.lower()
+            if low not in seen:
+                seen.add(low)
+                new_toks.append(t)
+        if not new_toks:
             return base_query
-        if terms.lower() in base_query.lower():
-            return base_query
-        return f"{base_query} {terms}".strip()
+        return f"{base_query} {' '.join(new_toks)}".strip()
 
     if action == "WIDEN":
         p["ef"] = p.get("ef", 0) * 2
@@ -432,6 +453,7 @@ def run(conn, run_, query, *, embed=None, judge_fn=None, walk_fn=None,
     history: list = []
     last_bundle = last_ev = last_rr = None
     stop_reason = None
+    prev_ent_total = None         # A17(c): cumulative entails as of the prior iteration
 
     i = 0
     while True:
@@ -481,6 +503,7 @@ def run(conn, run_, query, *, embed=None, judge_fn=None, walk_fn=None,
             per_cid_mean=st["per_cid_mean"], new_chunks=len(new),
             precision_proxy=st["precision_proxy"],
             contradiction_rate=st["contradiction_rate"],
+            yield_ratio=st["yield_ratio"],
             action=action, stop_reason=None,
             gold_recall_evidence=gr_evidence, gold_recall_answer=None,
             excluded=excluded_note)
@@ -492,6 +515,33 @@ def run(conn, run_, query, *, embed=None, judge_fn=None, walk_fn=None,
             excluded_actions.add(diluted)
 
         ent_total = sum(1 for v in verdict_of.values() if v["verdict"] == "entails")
+
+        # A17(c): no-movement stop. Needs a previous record, and one more
+        # beyond that -- never fires at iteration 0 (no previous record at
+        # all) or iteration 1 (only one prior point, too little to call
+        # stagnation rather than noise; the dilution-detection idiom above
+        # applies the same >=3-point discipline). Live receipt: it2 -> it3
+        # moved mean 0.5517 -> 0.5503 with per-cid mass identical to 2dp and
+        # no new entails, while A12's dilution band could not fire (n was
+        # pinned, mean did not drop below the band) -- the loop spent its
+        # remaining budget for nothing. Also requires ent_total > 0: a walk
+        # that has found NOTHING yet is already routed by A2's forced-
+        # insufficient path, and "flat at zero" is not the stagnation this
+        # guards against -- it is the ordinary zero-entail case, which keeps
+        # spending budget on purpose (A6) rather than giving up early.
+        if i >= 2 and prev_ent_total is not None and ent_total > 0:
+            prev_rec = history[-2]
+            mean_ok = (abs(record.mean_score - prev_rec.mean_score)
+                       <= 0.01 * abs(prev_rec.mean_score)
+                       if prev_rec.mean_score else record.mean_score == 0)
+            shared_cids = set(record.per_cid_mean) & set(prev_rec.per_cid_mean)
+            cid_ok = all(abs(record.per_cid_mean[c] - prev_rec.per_cid_mean[c]) <= 0.02
+                         for c in shared_cids)
+            no_new_entails = ent_total == prev_ent_total
+            if mean_ok and cid_ok and no_new_entails:
+                stop_reason = "no-movement"
+                break
+        prev_ent_total = ent_total
 
         if ent_total == 0 and i == max_iters:
             stop_reason = "budget"

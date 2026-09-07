@@ -24,6 +24,7 @@ import evidence
 import graph_tools as gt
 import interpret
 import react
+import walker_core
 
 # -- G-class rows: (id, prompt, gold_terms) -- counts are
 # `SELECT count(*) FROM node WHERE run_id=<run> AND body ILIKE '%term%'`
@@ -139,7 +140,7 @@ def main():
             n_fail += 1
         extra = f" answer_error={sc['answer_error']}" if sc["answer_error"] else ""
         print(f"{rid} {v} evid={sc['evid']:.2f} ans={sc['ans']:.2f} "
-              f"iters={sc['n_iters']} stop={sc['stop_reason']} "
+              f"iters={sc['n_iters']} stop={walker_core.stop_reason_label(sc['stop_reason'])} "
               f"({sc['elapsed_s']}s){extra}")
 
     print("---")

@@ -491,6 +491,113 @@ def test_run_result_includes_answer_bundle():
     assert result["bundle"].sampled == [1, 2, 3]   # union across both walks
 
 
+# ---------------------------------------- A17(a) yield column
+
+def test_stats_yield_ratio_is_entails_over_n_chunks():
+    bnd = mk_bundle([1, 2, 3, 4, 5, 6, 7, 8])
+    rr = {"verdicts": [{"ord": 1, "verdict": "entails"}]}
+    st = react.stats(bnd, rr)
+    assert st["yield_ratio"] == round(1 / 8, 4)
+    # precision_proxy is degenerate at 1.00 (zero contradicts) while yield
+    # tells 1/8 apart from a fuller walk -- that is the whole point of A17(a)
+    assert st["precision_proxy"] == 1.0
+
+    rr2 = {"verdicts": [{"ord": o, "verdict": "entails"} for o in [1, 2, 3, 4, 5, 6]]}
+    st2 = react.stats(bnd, rr2)
+    assert st2["yield_ratio"] == round(6 / 8, 4)
+    assert st2["precision_proxy"] == 1.0     # still degenerate, both zero contradicts
+
+    empty = mk_bundle([])
+    assert react.stats(empty, None)["yield_ratio"] == 0.0
+
+
+def test_render_history_carries_a_yield_column():
+    r = react.IterationRecord(
+        i=0, params={}, query="q", n_chunks=8, mean_score=1.0, sdev_score=0.0,
+        entails=1, contradicts=0, neutrals=7, per_cid_mean={}, new_chunks=8,
+        precision_proxy=1.0, contradiction_rate=0.0, yield_ratio=0.125)
+    table = react.render_history([r])
+    assert "yield" in table.splitlines()[0]
+    assert "0.12" in table.splitlines()[1] or "0.13" in table.splitlines()[1]
+
+
+def test_sufficiency_system_names_yield_as_the_snr():
+    assert "yield" in react.SUFFICIENCY_SYSTEM
+    assert "degenerate" in react.SUFFICIENCY_SYSTEM.lower()
+
+
+# ---------------------------------------- A17(b) per-token query dedup
+
+def test_apply_action_dedups_reanchor_terms_per_token():
+    before = {"ef": 64, "ring_top": 0, "ring_per": 0, "k_anchor": 3, "m": 3,
+              "bridge_pairs": 0, "expand_aliases": False}
+    q = "who is the most famous musician of the 1990s"
+    p1, q1 = react.apply_action(dict(before), "REANCHOR", query=q,
+                                 query_add="grunge nirvana")
+    assert q1 == q + " grunge nirvana"
+    # re-appending the SAME phrase a second time, plus one genuinely new word,
+    # must keep exactly one copy of each already-present token and add only
+    # the new one -- the live defect re-appended a whole already-present
+    # multi-word phrase because the old check tested the WHOLE string.
+    p2, q2 = react.apply_action(p1, "REANCHOR", query=q1,
+                                 query_add="grunge nirvana pearl jam")
+    assert q2 == q1 + " pearl jam"
+    assert q2.lower().split().count("nirvana") == 1
+    assert q2.lower().split().count("grunge") == 1
+
+    # case-insensitive dedup
+    p3, q3 = react.apply_action(dict(before), "REANCHOR", query="kurt cobain",
+                                 query_add="Kurt Cobain Dave Grohl")
+    assert q3 == "kurt cobain Dave Grohl"
+
+
+# ---------------------------------------- A17(c) no-movement stop
+
+def test_no_movement_stop_fires_on_a_flat_history():
+    """A17(c): once the walk has run long enough to have two full iterations
+    of history beyond the base (i>=2), a mean/per-cid/entails-flat iteration
+    stops the loop rather than spending the rest of the budget for nothing."""
+    bnd = mk_bundle([1, 2, 3, 4], scores={1: 1.0, 2: 1.0, 3: 1.0, 4: 1.0})
+    ev = FakeEv(cid_of={1: "a", 2: "a", 3: "b", 4: "b"})
+    walk = fake_walk([(bnd, ev)] * 10)
+    judge = fake_judge({1: "entails"}, [])   # entails found once, at iteration 0
+
+    def widen_forever(query, digest, history, missing_hint=None):
+        return {"sufficient": False, "missing": [], "action": "WIDEN",
+                "query_add": "", "why": "", "source": "stub"}
+
+    result = react.run(None, None, "q", walk_fn=walk, judge_fn=judge,
+                        propose_fn=widen_forever, max_iters=5)
+    assert result["stop_reason"] == "no-movement"
+    # must not fire at iteration 0 or 1 -- earliest possible stop is i=2
+    assert result["n_iters"] == 2
+
+
+def test_no_movement_stop_does_not_fire_when_entails_increase():
+    bnds = [mk_bundle([1, 2]), mk_bundle([1, 2, 3]),
+            mk_bundle([1, 2, 3, 4]), mk_bundle([1, 2, 3, 4, 5])]
+    walk = fake_walk([(b, FakeEv()) for b in bnds])
+    # every newly-seen ord entails -- entails strictly increases each iteration
+    judge = fake_judge({1: "neutral", 2: "neutral", 3: "entails",
+                         4: "entails", 5: "entails"}, [])
+
+    result = react.run(None, None, "q", walk_fn=walk, judge_fn=judge,
+                        propose_fn=always_insufficient, max_iters=3)
+    assert result["stop_reason"] != "no-movement"
+    assert result["stop_reason"] == "budget"
+
+
+# ---------------------------------------- A17(d) honest stop semantics
+
+def test_stop_reason_label_clarifies_budget_is_not_sufficiency():
+    import walker_core
+    assert walker_core.stop_reason_label("budget") != "budget"
+    assert "iterations exhausted" in walker_core.stop_reason_label("budget")
+    assert "sufficiency" in walker_core.stop_reason_label("budget")
+    assert walker_core.stop_reason_label("sufficient") == "sufficient"
+    assert walker_core.stop_reason_label("no-movement") == "no-movement"
+
+
 def test_repeated_identical_walk_stops_as_fixed_point():
     """A3(c): a proposer that always echoes the prompt (empty after filter ->
     DEEPEN) still may not re-walk a seen (query, params); after one ladder

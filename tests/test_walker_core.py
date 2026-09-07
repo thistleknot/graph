@@ -1246,3 +1246,14 @@ def test_reflexive_evidence_does_not_exempt_the_superlative_gate():
     n2 = walker_core.count_population_superlatives(
         ["Nevermind was the best-selling album of the decade"])
     assert n2 == 1
+
+
+def test_interpret_prompts_state_the_reflexive_scope_distinction():
+    """A16(c) source pin: the Reason/Judge system prompt text must state the
+    self-scoped-vs-population distinction explicitly -- the live defect was
+    the model offering "the height of his fame" as support for "most famous
+    musician of the 1990s" in its own premise chain."""
+    import interpret
+    assert "own career" in interpret.SYSTEM.lower()
+    assert "own career" in interpret.EVAL_SYSTEM.lower()
+    assert "own career" in interpret.ONE_SHOT_SYSTEM.lower()
