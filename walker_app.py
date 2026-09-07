@@ -687,11 +687,34 @@ with tab_analysis:
                                 f"community briefs + {len(rr.get('shown', []))} chunks judged"
                                 + (f" · {rr['structure_note']}" if rr.get("structure_note") else ""))
                             _loop_entails = list((rx or {}).get("entails") or [])
+                            _show_candidates = False
                             if _entails > 0:
-                                # A7: base walk already sufficient -- byte-identical
-                                # to pre-T67 behaviour, no loop was even engaged.
-                                _gated, _hero_text = False, rr["answer"]
-                                _cites, _caption, _color = rr.get("cited") or [], _model_line, PRIMARY
+                                # A7/A14: base walk already sufficient -- previously
+                                # byte-identical to pre-T67 behaviour with the loop
+                                # never engaged. A14(b)/(c) now route this through
+                                # the gate too: entails > 0 does not exempt a
+                                # superlative claim from needing superlative
+                                # evidence (live defect: 2 entails, 2 contradicts,
+                                # crowned Gallagher anyway), nor an answer that
+                                # cites an ord its own judge did not entail.
+                                _ans_ords = walker_core.cited_ords(rr["answer"])
+                                _why_map = {v["ord"]: v.get("why", "")
+                                            for v in rr.get("verdicts") or []}
+                                _sup_entails = sum(
+                                    1 for o in rr["entailed"]
+                                    if walker_core.is_superlative(_why_map.get(o, "")))
+                                _gated, _hero_text = walker_core.answer_gate(
+                                    rr["answer"], _entails, prompt=q,
+                                    entail_ords=rr["entailed"], answer_ords=_ans_ords,
+                                    superlative_entails=_sup_entails,
+                                    n_chunks=len(bnd.sampled))
+                                if _gated:
+                                    _cites, _caption, _color = [], _model_line, WARN
+                                    _uncited = [o for o in _ans_ords if o not in rr["entailed"]]
+                                    _show_candidates = (not _uncited and walker_core.is_superlative(q)
+                                                         and _sup_entails == 0)
+                                else:
+                                    _cites, _caption, _color = rr.get("cited") or [], _model_line, PRIMARY
                             elif rx and _loop_entails:
                                 # A13: the loop found entails -- answer from its
                                 # entails-first bundle, not the base walk's argument
@@ -733,6 +756,26 @@ with tab_analysis:
                             st.markdown(walker_core.hero_answer(
                                 _hero_text, _cites, _caption, color=_color),
                                 unsafe_allow_html=True)
+                            if _show_candidates:
+                                # A14(b): the corpus holds evidence ABOUT a
+                                # candidate, none RANKING the population --
+                                # render what it holds instead of a crowned claim.
+                                st.markdown("**Candidates the corpus holds**")
+                                st.caption("the corpus can show what it holds; "
+                                           "it cannot rank them")
+                                for label, ords_, verdict_word, colour in (
+                                        ("Entails", rr["entailed"], "entails", GOOD),
+                                        ("Contradicts", rr["contradicts"], "contradicts", BAD)):
+                                    for o in ords_:
+                                        nd = gt.node(conn, run, o)
+                                        badge = walker_core.pill(verdict_word, colour)
+                                        head = (f"#{o} · {nd['doc_id']} · c{nd['cid']} — "
+                                                f"{_why_map.get(o, '')}")
+                                        snippet = walker_core.clip(
+                                            interpret.excerpt(nd['body'], q, 300, embed), 300)
+                                        st.markdown(walker_core.evidence_row(
+                                            head, snippet, badge, cid_color(nd['cid'])),
+                                            unsafe_allow_html=True)
                         if rr["hypotheses"]:
                             st.markdown("**Hypothesis** " + (rr["hypothesis"] or ""))
                             others = [h for h in rr["hypotheses"] if h != rr["hypothesis"]]
@@ -755,9 +798,12 @@ with tab_analysis:
                         if rr["foreign"]:
                             st.error("Foreign ids named by the model (discarded): "
                                      + ", ".join(f"#{o}" for o in rr["foreign"]))
-                        if rr["self_contradicting"]:
-                            st.error("Answer cites ids outside the supported premises: "
-                                     + ", ".join(f"#{o}" for o in rr["self_contradicting"]))
+                        # A14(c): "self_contradicting" (cites an ord outside the
+                        # entailing set) is now a GATE inside answer_gate() above,
+                        # not a separate red annotation -- the annotation was
+                        # advisory only, and the live defect (#7666 cited despite
+                        # Reason marking it insufficient) shows advisory is not
+                        # enough.
 
                 with _z1R:
                     with st.container(border=True):            # P10 panel 2 — Judged evidence

@@ -1318,7 +1318,7 @@ zero-entail path, and no diagnostic covered the base-answer path.
   _Files:_ .spec/specs/graph-explorer/design.md
   _Verify:_ grep -c "A14" .spec/specs/graph-explorer/design.md
 
-- [OPEN] T75 KNOWN-BAD FIRST: a failing check before any fix -- pure
+- [DONE] T75 KNOWN-BAD FIRST: a failing check before any fix -- pure
   is_superlative + gate predicate, and a test that feeds THIS answer
   ("Noel Gallagher is the most famous musician...", entails=[3594,7666],
   cites 7666 not entailing) and asserts it is REJECTED. Test must fail
@@ -1327,10 +1327,16 @@ zero-entail path, and no diagnostic covered the base-answer path.
   _Verify:_ python -m pytest tests/test_walker_core.py -q (expect the new
   tests RED first -- record the red output verbatim)
 
-- [OPEN] T76 Implement: answer_gate gains the superlative + citation
+- [DONE] T76 Implement: answer_gate gains the superlative + citation
   branches; walker_app renders the candidate set when gated
   _Files:_ walker_core.py, walker_app.py, tests/test_walker_render.py
   _Verify:_ python -m pytest tests/test_walker_core.py tests/test_walker_render.py -q && PYTHONPATH=. python tools/diag_rerun.py mixed-full-dual
+  _Lessons:_ the entails>0 branch never called answer_gate at all (A7's
+  "byte-identical" comment hid the gap) -- routed it through the same gate
+  with prompt/entail_ords/answer_ords/superlative_entails, all new kwargs
+  keyword-only with no-op defaults so every old caller stays byte-identical;
+  137/137 green (incl. the 4 KNOWN-BAD-FIRST + a new cited_ords test) and
+  diag_rerun unchanged at 18/20 FAIL=[E3] KNOWN-FAIL=[A2].
 
 - [OPEN] T77 Coverage: G-rows for the BASE path (entails>0) in
   tools/diag_agentic.py, asserting the gate; live rerun

@@ -13,6 +13,7 @@ from __future__ import annotations
 import html
 import json
 import os
+import re
 import string
 from collections import Counter
 from pathlib import Path
@@ -150,35 +151,140 @@ def hero_answer(answer: str, cites, model_line: str, color: str = PRIMARY) -> st
     )
 
 
-def answer_gate(answer: str, entails: int, *, n_iters: int = 0,
-                n_chunks: int = 0, found_entails: int = 0) -> tuple[bool, str]:
-    """A6: a confident claim over zero entailing chunks is a defect. Returns
-    (gated, text). PURE -- no escaping here; hero_answer escapes what it
-    renders, and this returns plain text on purpose.
+_SUPERLATIVE_MARKERS = {
+    "most", "best", "greatest", "largest", "biggest", "first", "top", "worst",
+    "longest", "highest", "fastest", "leading",
+}
+_SUPERLATIVE_AGGREGATE_PHRASES = ("how many", "total number", "in total")
+# "-est" morphology false positives: ordinary words that happen to end in
+# "-est" but carry no comparative/superlative sense. "latest" is the
+# borderline case -- it reads as RECENCY ("the latest album"), not a ranking
+# over a population, so a prompt asking for "the latest X" is answerable from
+# a single dated chunk and should not be routed through the unrankable-by-
+# chunk gate the way "the largest X" must be.
+_SUPERLATIVE_EST_EXCLUSIONS = {
+    "interest", "forest", "honest", "earnest", "west", "test", "request",
+    "protest", "harvest", "modest", "latest",
+}
 
-    entails == 0 -> gated, and the text SAYS the corpus does not answer this,
-    with the walk size and how many agentic iterations were tried. When the
-    react loop did surface entailing chunks (found_entails > 0) the gate still
-    holds the hero -- the base answer was argued over nothing -- but points the
-    reader at the Agentic retrieval section rather than dead-ending.
 
-    Spec: .spec/specs/graph-explorer/design.md 6.23 A6
-    Task: playbook.md T62
+def is_superlative(prompt: str) -> bool:
+    """A14(a): pure predicate over the PROMPT text -- a superlative/aggregate
+    marker makes the prompt unrankable by any single chunk unless some
+    entailing chunk carries the same superlative claim (A14(b)).
+
+    Token-based and case-insensitive: an exact-match marker set ("most",
+    "best", "first", "top", ...) plus "-est" morphology on a word longer than
+    4 chars (comparative adjectives: "largest", "highest", "fastest") that is
+    not in the known false-positive set above, plus aggregate-count phrases
+    ("how many", "total number", "in total"). No deps -- string ops only.
+
+    Spec: .spec/specs/graph-explorer/design.md 6.23 A14(a)
+    Task: playbook.md T76
     """
-    if entails > 0:
-        return False, answer
-    tried = (f" {n_iters} agentic iteration{'s' if n_iters != 1 else ''} were tried"
-             if n_iters else " No further iterations were tried")
-    text = (f"The corpus, as walked, does not answer this. {n_chunks} chunks were "
-            f"walked and none of them entails the prompt.{tried}. "
-            f"A superlative or aggregate prompt (\"most famous\", \"best\", \"first\") "
-            f"is not entailed by any single chunk -- the graph can show what it "
-            f"holds, it cannot crown a candidate.")
-    if found_entails:
-        text += (f" Agentic retrieval did surface {found_entails} entailing "
-                 f"chunk{'s' if found_entails != 1 else ''} -- see Agentic "
-                 f"retrieval, below.")
-    return True, text
+    text = (prompt or "").lower()
+    for phrase in _SUPERLATIVE_AGGREGATE_PHRASES:
+        if phrase in text:
+            return True
+    for tok in text.split():
+        tok = tok.strip(string.punctuation)
+        if not tok:
+            continue
+        if tok in _SUPERLATIVE_MARKERS:
+            return True
+        if len(tok) > 4 and tok.endswith("est") and tok not in _SUPERLATIVE_EST_EXCLUSIONS:
+            return True
+    return False
+
+
+def cited_ords(text: str) -> list[int]:
+    """Ords the ANSWER TEXT itself cites, as "#123" markers -- order
+    preserved, de-duplicated. Pure string/regex, no deps. Mirrors
+    interpret.citations()'s "#(\\d+)" convention but lives here so
+    answer_gate's callers (and its tests) don't need a judge-shaped record.
+
+    Spec: .spec/specs/graph-explorer/design.md 6.23 A14(c)
+    Task: playbook.md T76
+    """
+    seen, out = set(), []
+    for m in re.finditer(r"#(\d+)", text or ""):
+        o = int(m.group(1))
+        if o not in seen:
+            seen.add(o)
+            out.append(o)
+    return out
+
+
+def answer_gate(answer: str, entails: int, *, n_iters: int = 0,
+                n_chunks: int = 0, found_entails: int = 0,
+                prompt: str | None = None, entail_ords=(), answer_ords=(),
+                superlative_entails: int = 0) -> tuple[bool, str]:
+    """A6/A14: a confident claim over zero entailing chunks is a defect
+    (A6, unchanged, takes precedence -- A14(d)); a confident claim that cites
+    a chunk its own judge did not entail is a defect (A14(c)); a confident
+    superlative/aggregate claim over entailing chunks that never themselves
+    rank the population is a defect (A14(b)). Returns (gated, text). PURE --
+    no escaping here; hero_answer escapes what it renders.
+
+    BACKWARD COMPATIBLE: every new parameter is keyword-only with a default
+    that reproduces today's behaviour exactly -- a caller that passes only
+    (answer, entails, n_iters=, n_chunks=, found_entails=) is unaffected,
+    because with prompt=None and empty ords the A14(b)/(c) checks below can
+    never fire (is_superlative(None) is False; an empty answer_ords has
+    nothing to fall outside entail_ords).
+
+    entails == 0 -> gated on the A6 text: the corpus does not answer this,
+    with the walk size and how many agentic iterations were tried, pointing
+    at Agentic retrieval when the loop separately surfaced entails.
+
+    entails > 0 -> A14(c) is checked before A14(b): an answer that cites an
+    ord outside entail_ords is gated regardless of the superlative question,
+    because citing unjudged/non-entailing evidence is a defect on its own.
+    Then A14(b): a superlative/aggregate prompt with superlative_entails == 0
+    gates even though entails > 0 -- entailing chunks about one candidate
+    never establish a maximum over a population; the caller renders the
+    candidate set separately (this function only says the two channels
+    disagree, it does not build that render).
+
+    Spec: .spec/specs/graph-explorer/design.md 6.23 A6, A14(a)-(d)
+    Task: playbook.md T62, T76
+    """
+    if entails <= 0:
+        tried = (f" {n_iters} agentic iteration{'s' if n_iters != 1 else ''} were tried"
+                 if n_iters else " No further iterations were tried")
+        text = (f"The corpus, as walked, does not answer this. {n_chunks} chunks were "
+                f"walked and none of them entails the prompt.{tried}. "
+                f"A superlative or aggregate prompt (\"most famous\", \"best\", \"first\") "
+                f"is not entailed by any single chunk -- the graph can show what it "
+                f"holds, it cannot crown a candidate.")
+        if found_entails:
+            text += (f" Agentic retrieval did surface {found_entails} entailing "
+                     f"chunk{'s' if found_entails != 1 else ''} -- see Agentic "
+                     f"retrieval, below.")
+        return True, text
+
+    entail_ords = list(entail_ords)
+    answer_ords = list(answer_ords)
+    uncited = [o for o in answer_ords if o not in entail_ords]
+    if uncited:
+        ids = ", ".join(f"#{o}" for o in uncited)
+        text = (f"The answer cites chunk{'s' if len(uncited) != 1 else ''} its own "
+                f"judge did not mark entailing: {ids}. {n_chunks} chunks were walked "
+                f"and {entails} entailed the prompt; the answer above is withheld "
+                f"until it is grounded only in what the judge accepted.")
+        return True, text
+
+    if prompt is not None and is_superlative(prompt) and superlative_entails == 0:
+        text = (f"The corpus can show what it holds about the candidate{'s' if entails != 1 else ''} "
+                f"named in the entailing evidence, but it cannot rank or crown a winner across "
+                f"the wider population this prompt asks about. {n_chunks} chunks were walked "
+                f"and {entails} entailed the prompt, but none of the entailing chunks itself "
+                f"carries a superlative or ranking claim -- entailing evidence about one "
+                f"candidate never establishes a maximum. The candidates the corpus holds are "
+                f"below.")
+        return True, text
+
+    return False, answer
 
 
 def loop_answer_caption(n_iters: int) -> str:

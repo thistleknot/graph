@@ -1165,6 +1165,11 @@ def test_answer_citing_a_non_entailing_ord_is_gated():
     assert gated, "citing a non-entailing ord must gate, not annotate"
 
 
+def test_cited_ords_parses_hash_markers_in_order_deduped():
+    assert walker_core.cited_ords("Nirvana defined the era. #6323 #9999 #6323") == [6323, 9999]
+    assert walker_core.cited_ords("no citations here") == []
+
+
 def test_superlative_prompt_with_matching_superlative_evidence_passes():
     """A14(b) is not a blanket ban: WHEN a chunk itself carries the ranking
     claim, the answer may stand."""
