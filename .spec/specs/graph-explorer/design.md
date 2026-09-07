@@ -2759,3 +2759,30 @@ Consequence for A7 (do-no-harm): a prompt whose base answer is NOT gated
 still behaves byte-identically -- the frozen diagnostic is retrieval-only
 and unaffected either way; the gold lane must show the superlative rows now
 reaching the loop on every run, not just when the judge happens to return 0.
+
+**A16 (reflexive superlatives are not ranking evidence -- operator,
+2026-09-07: "just because Noel is at the height of _his_ fame doesn't mean he
+was the most famous").** A14(b) exempts a superlative prompt when some
+entailing chunk "carries a matching superlative claim". That test is too
+weak: it counts SELF-SCOPED superlatives. Two comparison classes must be
+distinguished:
+
+    POPULATION superlative -- "the most famous musician of the 1990s",
+      "the best-selling album of the decade": the comparison class is a
+      population, so the claim CAN answer a superlative prompt.
+    REFLEXIVE superlative -- "the height of HIS fame", "his biggest hit",
+      "her peak years", "their most successful album", "a career high":
+      the comparison class is the SUBJECT'S OWN body of work or timeline.
+      It establishes a maximum over that subject and says NOTHING about any
+      other subject.
+
+Rules: (a) a pure predicate SHALL classify a superlative span as reflexive
+when its head noun is possessed by a pronoun or possessive referring to the
+subject (his/her/its/their/<name>'s) or when it uses self-scoped idiom
+(height of, peak of, career high, personal best); (b) reflexive superlatives
+SHALL NOT increment superlative_entails -- so A14(b) keeps gating; (c) the
+Reason/Judge instruction SHALL state the distinction explicitly, because the
+model produced the fallacy in its own premise ("supports -- Noel Gallagher
+reached the height of his fame during the Britpop era" offered as support
+for "most famous musician of the 1990s"). Live receipt: that exact premise
+chain, 2026-09-07.
