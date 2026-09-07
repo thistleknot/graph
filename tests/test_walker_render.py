@@ -760,6 +760,7 @@ def test_every_answer_gate_call_passes_entail_texts():
     supply entail_texts."""
     import re
     src = _src()
+    src = src + open("tools/diag_agentic.py", encoding="utf-8").read()   # the tool is a gate call site too
     calls = re.findall(r"(?:answer_gate|needs_more_evidence)\((?:[^()]|\([^()]*\))*\)", src)
     prompted = [c for c in calls if "prompt=q" in c]
     assert prompted, "no prompt-bearing gate calls found -- test is not measuring anything"

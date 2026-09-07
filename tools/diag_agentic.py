@@ -102,7 +102,11 @@ def gate_reason(result, prompt, answer_text):
     gated, _ = walker_core.answer_gate(
         answer_text or "", len(entails), prompt=prompt,
         entail_ords=entails, answer_ords=ans_ords,
-        superlative_entails=sup_entails, n_chunks=len(result.get("ords") or []))
+        superlative_entails=sup_entails,
+        entail_texts=why,          # A18(b): ranking evidence from CITED chunks only.
+                                    # Omitting this made the INSTRUMENT reproduce the
+                                    # Gallagher defect -- G9 read gate=ok (2026-09-07).
+        n_chunks=len(result.get("ords") or []))
     if not gated:
         return "ok"
     if len(entails) <= 0:

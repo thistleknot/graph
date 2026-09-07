@@ -1411,10 +1411,16 @@ git add -A during the A18 fix, BEFORE this verification ran and before the
 operator answered keep/revert. Verified after the fact; verdict happens to be
 keep. The rule stands: verify, then ask, then commit.
 
-- [OPEN] T84 G9 gate hole: the superlative pin ("what was the deadliest
+- [DONE] T84 G9 gate hole: the superlative pin ("what was the deadliest
   hurricane on record") returns gate=ok -- the gate let a superlative
   through. Same class as the Gallagher defect, caught by the diagnostic this
   time. Diagnose whether is_superlative misses "-est" here or a cited chunk
   supplies a ranking claim that should not count.
   _Files:_ walker_core.py, tests/test_walker_core.py
   _Verify:_ PYTHONPATH=. python tools/diag_agentic.py mixed-full-dual -> 9/9
+  _Lessons:_ NOT a gate hole -- an INSTRUMENT hole. gate_reason() was a FOURTH
+    answer_gate call site and never received entail_texts, so the diagnostic
+    reproduced the exact Gallagher defect it exists to catch. Re-probe after
+    the fix: gate=superlative, passed=True. The regression pin now scans
+    tools/diag_agentic.py too, not just walker_app.py -- a pin that only
+    covers the app cannot see a defect living in the measuring device.
