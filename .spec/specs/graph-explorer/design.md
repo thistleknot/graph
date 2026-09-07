@@ -2549,3 +2549,16 @@ bundles fed to ANY downstream model call SHALL cap at the base-walk scale:
 top ~100 chunks by walk score, lowest dropped first. Receipt: "G4 ...
 truncated at max_tokens=4096 (finish_reason=length, 11439 chars) | ollama
 fallback skipped: 121087 chars exceeds 40000".
+
+**A11 (SNR framing of the feedback signal -- operator, 2026-09-06).** The A8
+history is read as a signal-to-noise problem: signal is what repeats
+(entailing chunks), noise is what doesn't (the neutral mass);
+precision_proxy = entails/judged IS the SNR. Consequences the proposer's
+guidance encodes: (a) prefer window-NARROWING actions (REANCHOR with
+absent-from-prompt terms = matched filter) over amplification (WIDEN) when a
+prior WIDEN raised n but dropped mean score -- dilution admits noise;
+(b) iterating the SAME walk is correlated noise and averages out nothing --
+the A3(c) no-repeat guard is this law enforced mechanically; (c) an answer
+over near-zero SNR is a guess -- the A6 gate is the SNR floor. Receipts:
+gold run 1 (WIDEN-free REANCHOR found #6323 at iteration 1; three identical
+walks bought zero recall).
