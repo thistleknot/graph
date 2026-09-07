@@ -710,6 +710,7 @@ with tab_analysis:
                                 # byte-identical to pre-A15 behaviour, no loop, no
                                 # extra model call.
                                 _hero_text = rr["answer"]
+                                _gated = False           # by definition: the gate passed it
                                 _cites, _caption, _color = rr.get("cited") or [], _model_line, PRIMARY
                             elif rx and _loop_entails:
                                 # A13: the loop found entails -- answer from its
@@ -791,6 +792,19 @@ with tab_analysis:
                             st.markdown(walker_core.hero_answer(
                                 _hero_text, _cites, _caption, color=_color),
                                 unsafe_allow_html=True)
+                            if walker_core.is_superlative(q):
+                                # A18 diagnostic: the gate's own inputs, on the
+                                # page. A crowned superlative that reaches the
+                                # operator must be explainable from this line
+                                # alone -- no more reasoning backwards from a
+                                # screenshot about which branch ran.
+                                _dbg_cited = [o for o in _ans_ords
+                                              if o in (rr.get("entailed") or [])]
+                                st.caption(
+                                    f"gate: superlative=yes · entails={_entails} "
+                                    f"· cited={_ans_ords or '-'} · cited∩entail={_dbg_cited or '-'} "
+                                    f"· ranking-evidence={_sup_entails} "
+                                    f"· needs_loop={_needs_loop} · gated={_gated}")
                             if _show_candidates:
                                 # A14(b): the corpus holds evidence ABOUT a
                                 # candidate, none RANKING the population --
