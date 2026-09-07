@@ -2673,4 +2673,7 @@ identifiers: Hasegawa = aclanthology.org/P04-1053 (NOT P04-1052, which is a
 different ACL-04 paper -- checked 2026-09-07); Church & Hanks = J90-1003;
 Dunning = J93-1003; Blondel = arXiv:0803.0476; Mikolov = arXiv:1310.4546.
 Full write-up with the bibliography:
-"C:/Users/user/Documents/wiki/data science/llm/DIRT relation extraction.md".
+"C:/Users/user/Documents/wiki/data science/llm/unsupervised entity and
+relation extraction.md" (renamed from "DIRT relation extraction.md",
+2026-09-07 -- the note outgrew DIRT: it now carries the entity/relation
+CLASSING lanes and the parser-free lineage, not just extraction).

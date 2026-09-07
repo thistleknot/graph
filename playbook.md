@@ -1304,6 +1304,6 @@ PASS 18/20 | FAIL [E3] | KNOWN-FAIL [A2]. OPEN defect: E16 gen-check
 negative -- genitive connector variants do not co-class because connector
 holds raw surface spans; fix is canonicalizing connectors (run the check
 over template, not connector), NOT lowering the threshold.
-Wiki updated: "C:/Users/user/Documents/wiki/data science/llm/DIRT relation
-extraction.md" -- implementation notes appended (3 deviations + the failed
+Wiki updated: "C:/Users/user/Documents/wiki/data science/llm/unsupervised
+entity and relation extraction.md" (renamed 2026-09-07) -- implementation notes appended (3 deviations + the failed
 acceptance test), operator text untouched.
