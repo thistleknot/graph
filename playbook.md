@@ -1307,3 +1307,36 @@ over template, not connector), NOT lowering the threshold.
 Wiki updated: "C:/Users/user/Documents/wiki/data science/llm/unsupervised
 entity and relation extraction.md" (renamed 2026-09-07) -- implementation notes appended (3 deviations + the failed
 acceptance test), operator text untouched.
+
+## Layer 22 -- sequential (superlative gate; the Gallagher regression)
+Source: operator, 2026-09-07 -- Gallagher crowned again with 2 entails / 2
+contradicts; A6's superlative clause was never implemented off the
+zero-entail path, and no diagnostic covered the base-answer path.
+
+- [DONE] T74 Spec 6.23 A14 (a-d): superlative predicate, candidate-set
+  rendering, citation gate, coverage admission
+  _Files:_ .spec/specs/graph-explorer/design.md
+  _Verify:_ grep -c "A14" .spec/specs/graph-explorer/design.md
+
+- [OPEN] T75 KNOWN-BAD FIRST: a failing check before any fix -- pure
+  is_superlative + gate predicate, and a test that feeds THIS answer
+  ("Noel Gallagher is the most famous musician...", entails=[3594,7666],
+  cites 7666 not entailing) and asserts it is REJECTED. Test must fail
+  against today's answer_gate, then pass after T76.
+  _Files:_ tests/test_walker_core.py
+  _Verify:_ python -m pytest tests/test_walker_core.py -q (expect the new
+  tests RED first -- record the red output verbatim)
+
+- [OPEN] T76 Implement: answer_gate gains the superlative + citation
+  branches; walker_app renders the candidate set when gated
+  _Files:_ walker_core.py, walker_app.py, tests/test_walker_render.py
+  _Verify:_ python -m pytest tests/test_walker_core.py tests/test_walker_render.py -q && PYTHONPATH=. python tools/diag_rerun.py mixed-full-dual
+
+- [OPEN] T77 Coverage: G-rows for the BASE path (entails>0) in
+  tools/diag_agentic.py, asserting the gate; live rerun
+  _Files:_ tools/diag_agentic.py, tests/test_react.py
+  _Verify:_ PYTHONPATH=. python tools/diag_agentic.py mixed-full-dual
+
+- [OPEN] T78 Live look: the musician query must NOT crown; screenshot
+  _Files:_ (none -- verification only)
+  _Verify:_ playwright screenshot of :8501

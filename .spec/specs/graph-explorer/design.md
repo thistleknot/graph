@@ -2677,3 +2677,35 @@ Full write-up with the bibliography:
 relation extraction.md" (renamed from "DIRT relation extraction.md",
 2026-09-07 -- the note outgrew DIRT: it now carries the entity/relation
 CLASSING lanes and the parser-free lineage, not just extraction).
+
+**A14 (the superlative gate -- 2026-09-07, operator receipt: "AGAIN WITH THIS
+SHIT").** A6's superlative clause was specified and implemented ONLY inside
+the zero-entail branch; with entails > 0 the gate returned the answer
+untouched and crowned Noel Gallagher on 2 entails / 2 contradicts. Amended:
+
+(a) SUPERLATIVE DETECTION is a pure predicate over the prompt: a
+superlative/aggregate marker ("most", "best", "greatest", "largest",
+"first", "top", "-est" morphology on a comparable adjective, "how many",
+"total") makes the prompt UNRANKABLE-BY-CHUNK unless some entailing chunk
+carries the same superlative marker about the same subject.
+
+(b) WHEN the prompt is superlative and NO entailing chunk carries a matching
+superlative claim, the hero SHALL NOT assert a winner. It renders the
+CANDIDATE SET instead -- each candidate with its entailing/contradicting
+chunks -- plus one line stating the corpus can show what it holds and cannot
+rank it. Entails > 0 does NOT exempt this: 2 supporting chunks about one
+candidate never establish a maximum over a population.
+
+(c) CITATION DISCIPLINE (the second live defect): an answer citing an ord
+that is NOT in the entailing set is gated, not annotated. The existing
+"Answer cites ids outside the supported premises" check becomes a GATE.
+Receipt: the answer cited #7666, which Reason itself marked "insufficient".
+
+(d) COVERAGE (Article X, the real failure): tools/diag_rerun.py calls
+sampler.ef_evidence ONLY -- it measures retrieval and CANNOT observe an
+answer; tools/diag_agentic.py exercises react.run, which ALWAYS loops, so
+the UI's base-answer path (entails > 0, loop never fires) was in NO
+diagnostic. A G-row class with entails > 0 at the base walk SHALL exist and
+SHALL assert the gate, and the gate SHALL be validated against the KNOWN-BAD
+artifact (this Gallagher answer) BEFORE the fix -- a check that cannot fail
+is not a check.
