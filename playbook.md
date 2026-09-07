@@ -1343,7 +1343,7 @@ zero-entail path, and no diagnostic covered the base-answer path.
   _Files:_ tools/diag_agentic.py, tests/test_react.py
   _Verify:_ PYTHONPATH=. python tools/diag_agentic.py mixed-full-dual
 
-- [OPEN] T78 Live look: the musician query must NOT crown; screenshot
+- [DONE] T78 Live look: the musician query must NOT crown; screenshot
   _Files:_ (none -- verification only)
   _Verify:_ playwright screenshot of :8501
 
