@@ -1238,7 +1238,7 @@ created however that would look like, my guess was co-occurrence analysis";
 "graph-based entity resolution but for relations"); executed on "make it so",
 2026-09-07.
 
-- [OPEN] T69 Spec 6.24: E15-E19 -- entity co-mention graph (NPMI-weighted,
+- [DONE] T69 Spec 6.24: E15-E19 -- entity co-mention graph (NPMI-weighted,
   from mentions) -> Louvain entity classes, batch + fixed seed, stored
   additively (E8 pattern); DIRT-style relation classes (template similarity
   over shared (src,dst) pair sets -> components); per-class top entities and
@@ -1246,7 +1246,7 @@ created however that would look like, my guess was co-occurrence analysis";
   _Files:_ .spec/specs/graph-explorer/design.md
   _Verify:_ grep -c "E1[5-9]" .spec/specs/graph-explorer/design.md
 
-- [OPEN] T70 Entity classes build: entities.py additive pass (or classes.py
+- [WIP] T70 Entity classes build: entities.py additive pass (or classes.py
   if entities is sealed -- check E3 first) computing class_id over the
   co-mention graph; CLI + per-stage timings (E14 discipline); live build on
   mixed-full-dual + smoke pin

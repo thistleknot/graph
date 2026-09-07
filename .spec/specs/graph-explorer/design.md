@@ -2590,3 +2590,53 @@ answers only what the entailing chunks support. Receipt driving this guard:
 gold G4/G5 evid=1.0 ans=0.0 -- the evidence held the gold and the answer,
 drawn from a score-capped bundle where neutrals crowd out entails, never
 named it.
+
+### 6.24 Unsupervised classes: entities and relations (T69, 2026-09-07)
+
+Operator asks, gathered verbatim: "top entities by class (idk if you would
+use npmi, I didn't have defined classes and would prefer unsupervised
+classes created however that would look like, my guess was co-occurrence
+analysis)"; "we can construct the graph we already have setup, and add
+graph based entity resolution but for relations and let whatever
+unsupervised relationships that survived be cast to others that measure
+some type of co-occurrence threshold between similar terms".
+
+**E15 (entity classes from co-mention).** A batch pass SHALL build an entity
+co-mention graph straight from the mentions table: an edge between two
+entities that share a chunk, weighted by NPMI over co-mention counts
+(reuse entities.npmi_ppmi; N = chunks with >= 1 mention), with a support
+floor (>= 3 shared chunks). Louvain over this graph (fixed seed, python-
+louvain -- the ingest-time idiom) partitions entities into CLASSES. Stored
+additively per the E8/canonical_id pattern: class_id column (or sibling
+table), assigned over the FULL entity population -- an unclassed entity is
+its own singleton class. Deterministic: same rows, same classes. This
+sidesteps the E9-throttled entity_edges entirely -- mentions are already
+materialized.
+
+**E16 (relation classes, DIRT).** Two relation templates belong to the same
+class WHEN they connect similar (src, dst) populations: similarity = NPMI
+(or cosine) over the sets of canonical pairs each template joins, gated by a
+threshold and a shared-pair floor; connected components (or Louvain) over
+the template-similarity graph mint rel_class ids [empirical:cited -- DIRT,
+Lin & Pantel 2001, unsupervised discovery of inference rules from text].
+Stored additively beside relations (mapping table template -> rel_class,
+run-scoped). The hand-built GEN unification stays; E16 must REDISCOVER it
+(of / of the / 's landing in one class is the acceptance check).
+
+**E17 (per-class rankings).** Top entities per class = mention mass within
+class; top relations per class = summed n over the class's templates.
+Rendered factbook-style (P11 idiom): one line per class, members with
+counts, capped with "+ N more".
+
+**E18 (walk-local relation scoping).** Group digests' relations lines SHALL
+be scoped to pairs BOTH of whose endpoints are mentioned in the group's own
+chunks AND whose template's example pairs intersect the group's entities --
+labelled with the walk-local pair count first and corpus_n only as a
+suffix. Kills the "second -[]-> world_war corpus_n=527581 in a railway
+group" misread (live receipt, factbook v1).
+
+**E19 (cost discipline).** Both passes print per-stage wall clock (E14
+idiom); no cardinality bound is added unless a measured stage overruns
+Article VII. Estimated: co-mention pairs ~ chunks x C(mentions-per-chunk, 2)
+~ low millions; template similarity over ~20 templates x pair sets --
+minutes, not hours. The timings are the authority.
