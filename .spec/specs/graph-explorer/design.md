@@ -2668,5 +2668,9 @@ cosine, no dependency parse and no POS assumption. Operator constraint
 driving this: domain corpora carry part numbers/SKUs/codes that no tagger
 resolves as nouns, and spaCy is not called on the deterministic path.
 Term-inventory lineage for the same reason: Frantzi & Ananiadou C-value/
-NC-value; TopMine; AutoPhrase. Full write-up:
+NC-value; TopMine (arXiv:1406.6312); AutoPhrase (arXiv:1702.04457). Verified
+identifiers: Hasegawa = aclanthology.org/P04-1053 (NOT P04-1052, which is a
+different ACL-04 paper -- checked 2026-09-07); Church & Hanks = J90-1003;
+Dunning = J93-1003; Blondel = arXiv:0803.0476; Mikolov = arXiv:1310.4546.
+Full write-up with the bibliography:
 "C:/Users/user/Documents/wiki/data science/llm/DIRT relation extraction.md".
