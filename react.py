@@ -4,13 +4,14 @@ The agent chooses ef_evidence knobs and query text BETWEEN walks; it never edits
 chunks, edges or communities, and every individual walk stays the deterministic
 sampler.ef_evidence call it already was (A1).
 
-Spec: .spec/specs/graph-explorer/design.md 6.23 A1-A10
-Task: playbook.md T61
+Spec: .spec/specs/graph-explorer/design.md 6.23 A1-A13
+Task: playbook.md T61, T66
 """
 
 from __future__ import annotations
 
 import dataclasses
+import math
 import statistics
 from dataclasses import dataclass, field
 
@@ -24,7 +25,10 @@ MAX_ITERS = 3                 # A4: iterations BEYOND the base walk
 PROPOSE_TIMEOUT = 60.0
 PROPOSE_MAX_TOKENS = 700
 ACTIONS = ("WIDEN", "REANCHOR", "PIVOT", "DEEPEN")   # A3
-LADDER = ("WIDEN", "REANCHOR", "DEEPEN")             # deterministic fallback order
+LADDER = ("REANCHOR", "DEEPEN", "WIDEN")             # A12: narrowing before
+                                                      # amplification -- the
+                                                      # matched filter beat
+                                                      # WIDEN in every gold run
 BOUNDS = {"ef": (16, 512), "k_anchor": (1, 12), "ring_top": (0, 8),
           "ring_per": (0, 24), "m": (1, 8), "bridge_pairs": (0, 8)}
 BASE_PARAMS = {"ef": sampler.DEFAULT_EF, "m": sampler.DEFAULT_M,
@@ -60,6 +64,8 @@ class IterationRecord:
     stop_reason: str | None = None
     gold_recall_evidence: float | None = None   # A9/A10: only when gold_terms given to run()
     gold_recall_answer: float | None = None     # A9/A10: filled by the answer stage (T62)
+    excluded: str | None = None                 # A12: the proposer's original action, when
+                                                 # it was substituted for a diluted one
 
 
 def stats(bundle, rr, cid_of=None) -> dict:
@@ -134,6 +140,8 @@ def render_history(history) -> str:
     lines = [header]
     for r in history:
         action = r.action if r.action else "base"
+        if r.excluded:                             # A12: substitution note
+            action = f"{r.excluded}>{action}"
         ring = f"{r.params.get('ring_top', 0)}/{r.params.get('ring_per', 0)}"
         alias = 1 if r.params.get("expand_aliases") else 0
         lines.append(
@@ -156,7 +164,19 @@ SUFFICIENCY_SYSTEM = """You judge whether the assembled evidence answers the pro
 
 You will be given the prompt, a history table of (parameters -> walk score
 distribution -> judge verdicts) for every iteration tried so far, and the latest
-evidence digest. Decide:
+evidence digest. Read the history as a signal-to-noise problem, numbers first:
+
+- precision_proxy (prec column) IS the signal-to-noise ratio: entails / judged.
+  Judge any action by whether it RAISED prec, not by whether n_chunks grew.
+- An action already marked diluted in the history (shown as
+  "PROPOSED>SUBSTITUTED" in the action column, or an action whose log2 mean
+  score dropped below the history's band while n_chunks rose) must NOT be
+  proposed again -- it is excluded and will be substituted regardless.
+- Prefer narrowing (REANCHOR with terms absent from the prompt) over
+  amplification (WIDEN) when a prior WIDEN raised n but dropped mean score:
+  that is dilution, admitting noise rather than signal.
+
+Decide:
 
 1. sufficient: true only if the evidence, taken together, actually entails an
    answer to the prompt (not merely "some chunks are on-topic").
@@ -285,6 +305,67 @@ def cap_bundle(bundle, n: int = 100):
         origin={o: v for o, v in bundle.origin.items() if o in keep_set})
 
 
+def entails_first_bundle(bundle, verdict_of, n: int = 50):
+    """A13: like cap_bundle, but entailing ords come first (by walk score,
+    descending), non-entailing fill the rest by score; the cap still binds --
+    total kept is at most n, entails trimmed to their top-n share if there
+    are more entails than n. Pure -- dataclasses.replace, input never
+    mutated.
+
+    Spec: .spec/specs/graph-explorer/design.md 6.23 A13
+    Task: playbook.md T66
+    """
+    def is_entail(o):
+        v = verdict_of.get(o)
+        return bool(v) and v.get("verdict") == "entails"
+
+    sampled = list(bundle.sampled)
+    entails = sorted((o for o in sampled if is_entail(o)),
+                      key=lambda o: -float(bundle.scores.get(o, 0.0)))
+    rest = sorted((o for o in sampled if not is_entail(o)),
+                  key=lambda o: -float(bundle.scores.get(o, 0.0)))
+    keep = (entails + rest)[:n]
+    keep_set = set(keep)
+    return dataclasses.replace(
+        bundle, sampled=keep,
+        scores={o: s for o, s in bundle.scores.items() if o in keep_set},
+        origin={o: v for o, v in bundle.origin.items() if o in keep_set})
+
+
+def dilution_detected(history) -> str | None:
+    """A12: the house ruler for detecting a dilating action. Over every
+    IterationRecord with mean_score > 0, take log2(mean_score) (guards
+    zero/negative means, which have no log). The band's lower bound is the
+    LOWER of two estimators computed over ALL those log2 values: mean - sdev
+    (population sdev) and median - 1.4826*MAD (MAD = median absolute
+    deviation from the median). Any iteration whose own log2 mean falls
+    below that bound WHILE its n_chunks >= the previous (usable) iteration's
+    n_chunks is dilution -- more chunks bought a lower signal. Returns the
+    ACTION that produced the first such iteration, or None. Needs >= 3
+    usable iterations to fire; a 2-point band is noise. Pure.
+
+    Spec: .spec/specs/graph-explorer/design.md 6.23 A12
+    Task: playbook.md T66
+    """
+    usable = [(r, math.log2(r.mean_score)) for r in history if r.mean_score > 0]
+    if len(usable) < 3:
+        return None
+
+    logs = [lv for _, lv in usable]
+    mean = sum(logs) / len(logs)
+    sdev = statistics.pstdev(logs)
+    med = statistics.median(logs)
+    mad = statistics.median([abs(lv - med) for lv in logs])
+    bound = min(mean - sdev, med - 1.4826 * mad)
+
+    for idx in range(1, len(usable)):
+        rec, log_mean = usable[idx]
+        prev_rec, _ = usable[idx - 1]
+        if rec.action and log_mean < bound and rec.n_chunks >= prev_rec.n_chunks:
+            return rec.action
+    return None
+
+
 def pivot_terms(conn, run_, cids) -> str:
     """LIVE, one small helper: strongest adjacent community by gt.quotient.
     A proposal aid, not a critical path -- any failure degrades to '' (PIVOT
@@ -342,8 +423,11 @@ def run(conn, run_, query, *, embed=None, judge_fn=None, walk_fn=None,
     verdict_of: dict = {}
     found_at: dict = {}
     scores_all: dict = {}
+    origin_all: dict = {}
     missing_acc: list = []
     evidence_texts: list = []
+    excluded_actions: set = set()
+    excluded_note = None          # A12: the proposer's action when substituted
 
     history: list = []
     last_bundle = last_ev = last_rr = None
@@ -372,6 +456,7 @@ def run(conn, run_, query, *, embed=None, judge_fn=None, walk_fn=None,
         for o in bundle.sampled:
             found_at.setdefault(o, i)
             scores_all.setdefault(o, bundle.scores.get(o, 0.0))
+            origin_all.setdefault(o, bundle.origin.get(o, "walk"))
 
         merged_view = {"verdicts": [
             {"ord": o, "verdict": verdict_of[o]["verdict"]}
@@ -397,8 +482,14 @@ def run(conn, run_, query, *, embed=None, judge_fn=None, walk_fn=None,
             precision_proxy=st["precision_proxy"],
             contradiction_rate=st["contradiction_rate"],
             action=action, stop_reason=None,
-            gold_recall_evidence=gr_evidence, gold_recall_answer=None)
+            gold_recall_evidence=gr_evidence, gold_recall_answer=None,
+            excluded=excluded_note)
         history.append(record)
+        excluded_note = None
+
+        diluted = dilution_detected(history)          # A12
+        if diluted:
+            excluded_actions.add(diluted)
 
         ent_total = sum(1 for v in verdict_of.values() if v["verdict"] == "entails")
 
@@ -441,6 +532,15 @@ def run(conn, run_, query, *, embed=None, judge_fn=None, walk_fn=None,
         if act == "REANCHOR" and not query_add:
             act = "DEEPEN"
 
+        # A12: the proposer may repeat an action already marked dilution --
+        # enforce the exclusion algorithmically rather than trusting the
+        # model to honour the history table. Substitute the first
+        # non-excluded action from the deterministic ladder.
+        substituted_from = None
+        if act in excluded_actions:
+            substituted_from = act
+            act = next((a for a in LADDER if a not in excluded_actions), act)
+
         new_params, new_query = apply_action(
             params, act, query=cur_query, query_add=query_add,
             pivot_terms=pterms)
@@ -462,6 +562,7 @@ def run(conn, run_, query, *, embed=None, judge_fn=None, walk_fn=None,
             break
 
         params, cur_query, action = new_params, new_query, act
+        excluded_note = substituted_from
         i += 1
 
     if stop_reason is None:
@@ -472,9 +573,23 @@ def run(conn, run_, query, *, embed=None, judge_fn=None, walk_fn=None,
     entails = [o for o, v in verdict_of.items() if v["verdict"] == "entails"]
     contradicts = [o for o, v in verdict_of.items() if v["verdict"] == "contradicts"]
 
+    # A5/A13: the accumulated-union bundle across every iteration -- template
+    # fields (query, run_id, anchors, communities, ...) come from the last
+    # walk, but sampled/scores/origin are the full union so the answer stage
+    # sees everything the loop found, not just the final walk.
+    union_bundle = None
+    if last_bundle is not None:
+        union_bundle = dataclasses.replace(
+            last_bundle, sampled=ords,
+            scores={o: scores_all.get(o, 0.0) for o in ords},
+            origin={o: origin_all.get(o, "walk") for o in ords})
+    answer_bundle = (entails_first_bundle(union_bundle, verdict_of, 50)
+                      if union_bundle is not None else None)
+
     return {"ords": ords, "found_at": found_at, "verdicts": verdict_of,
             "entails": entails, "contradicts": contradicts,
             "iterations": history, "history_table": render_history(history),
             "stop_reason": stop_reason, "n_iters": len(history) - 1,
             "missing": missing_acc,
-            "bundle": last_bundle, "ev": last_ev, "rr": last_rr}
+            "bundle": union_bundle, "ev": last_ev, "rr": last_rr,
+            "answer_bundle": answer_bundle}

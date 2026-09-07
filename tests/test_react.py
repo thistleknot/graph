@@ -262,19 +262,19 @@ def test_propose_fallback_ladder_on_junk_and_transport_failure():
     def wrong_action(*a, **k):
         return '{"sufficient": false, "action": "TELEPORT"}', "backend"
 
-    history = [_mk_record(0)]        # len 1 -> LADDER[0] == WIDEN
+    history = [_mk_record(0)]        # len 1 -> LADDER[0] == REANCHOR (A12 reorder)
     for stub in (raises, not_json, wrong_action):
         result = react.propose("q", "digest", history, call=stub)
         assert result["source"] == "fallback"
-        assert result["action"] == "WIDEN"
+        assert result["action"] == "REANCHOR"
 
-    history2 = [_mk_record(0), _mk_record(1)]     # len 2 -> LADDER[1] == REANCHOR
+    history2 = [_mk_record(0), _mk_record(1)]     # len 2 -> LADDER[1] == DEEPEN
     result2 = react.propose("q", "digest", history2, call=raises)
-    assert result2["action"] == "REANCHOR"
+    assert result2["action"] == "DEEPEN"
 
-    history3 = [_mk_record(0), _mk_record(1), _mk_record(2)]  # len 3 -> LADDER[2] == DEEPEN
+    history3 = [_mk_record(0), _mk_record(1), _mk_record(2)]  # len 3 -> LADDER[2] == WIDEN
     result3 = react.propose("q", "digest", history3, call=raises)
-    assert result3["action"] == "DEEPEN"
+    assert result3["action"] == "WIDEN"
 
 
 # --------------------------------------------------------------------------- transcript
@@ -395,6 +395,100 @@ def test_cap_bundle_keeps_top_n_by_score_and_never_mutates():
     assert set(capped.scores) == {9, 8, 7}
     assert len(bnd.sampled) == 10          # input untouched
     assert react.cap_bundle(bnd, 100) is bnd  # within cap -> unchanged
+
+
+def _dil_record(i, action, mean, n):
+    return react.IterationRecord(
+        i=i, params={}, query="q", n_chunks=n, mean_score=mean, sdev_score=0.0,
+        entails=0, contradicts=0, neutrals=0, per_cid_mean={}, new_chunks=0,
+        precision_proxy=0.0, contradiction_rate=0.0, action=action)
+
+
+# ---------------------------------------- A12 dilution detection + ladder reorder
+
+def test_ladder_reorder_is_reanchor_deepen_widen():
+    assert react.LADDER == ("REANCHOR", "DEEPEN", "WIDEN")
+
+
+def test_dilution_detected_fires_on_widen_drop_with_rising_n():
+    history = [_dil_record(0, None, 1.0, 10),
+               _dil_record(1, "REANCHOR", 1.2, 12),
+               _dil_record(2, "DEEPEN", 1.1, 15),
+               _dil_record(3, "WIDEN", 0.3, 20)]
+    assert react.dilution_detected(history) == "WIDEN"
+
+
+def test_dilution_detected_needs_three_iterations():
+    history = [_dil_record(0, None, 1.0, 10), _dil_record(1, "WIDEN", 0.01, 20)]
+    assert react.dilution_detected(history) is None
+
+
+def test_dilution_detected_skips_nonpositive_means():
+    # a zero mean_score record must be skipped (no log2), not crash
+    history = [_dil_record(0, None, 1.0, 10),
+               _dil_record(1, "REANCHOR", 0.0, 12),
+               _dil_record(2, "DEEPEN", 1.1, 15),
+               _dil_record(3, "WIDEN", 0.3, 20)]
+    assert react.dilution_detected(history) == "WIDEN"
+
+
+def test_diluted_action_excluded_and_substituted_in_run():
+    """A12: once WIDEN is flagged as dilution, the loop must not walk it
+    again even when the proposer keeps proposing it -- the deterministic
+    ladder (REANCHOR, DEEPEN, WIDEN) supplies the first non-excluded
+    substitute, and the substitution is recorded on the next record."""
+    bnds = [mk_bundle([1, 2], {1: 2.0, 2: 2.0}),
+            mk_bundle([1, 2, 3], {1: 2.2, 2: 2.2, 3: 2.2}),
+            mk_bundle([1, 2, 3, 4], {1: 2.1, 2: 2.1, 3: 2.1, 4: 2.1}),
+            mk_bundle(list(range(1, 10)), {i: 0.3 for i in range(1, 10)}),
+            mk_bundle(list(range(1, 12)), {i: 0.3 for i in range(1, 12)})]
+    walk = fake_walk([(b, FakeEv()) for b in bnds])
+    judge = fake_judge({}, [])
+
+    def always_widen(query, digest, history, missing_hint=None):
+        return {"sufficient": False, "missing": [], "action": "WIDEN",
+                "query_add": "", "why": "", "source": "stub"}
+
+    result = react.run(None, None, "q", walk_fn=walk, judge_fn=judge,
+                        propose_fn=always_widen, max_iters=4)
+    iters = result["iterations"]
+    # iteration 3's WIDEN drops mean_score with n rising -> dilution fires;
+    # iteration 4 must NOT be WIDEN despite the proposer asking for it again.
+    assert iters[3].action == "WIDEN"
+    assert iters[4].action != "WIDEN"
+    assert iters[4].excluded == "WIDEN"
+    # the substitution shows up in the renderable transcript
+    assert "WIDEN>" in result["history_table"]
+
+
+# ---------------------------------------- A13 entails-first answer bundle
+
+def test_entails_first_bundle_orders_entails_before_neutrals_and_caps():
+    bnd = mk_bundle(list(range(6)), {0: 1.0, 1: 5.0, 2: 2.0, 3: 9.0, 4: 3.0, 5: 8.0})
+    verdict_of = {1: {"verdict": "entails"}, 3: {"verdict": "neutral"},
+                  5: {"verdict": "entails"}}
+    capped = react.entails_first_bundle(bnd, verdict_of, n=3)
+    assert capped.sampled == [5, 1, 3]          # entails by score desc, then best fill
+    assert set(capped.scores) == {5, 1, 3}
+
+    uncapped = react.entails_first_bundle(bnd, verdict_of, n=10)
+    assert uncapped.sampled == [5, 1, 3, 4, 2, 0]
+    assert bnd.sampled == [0, 1, 2, 3, 4, 5]    # input never mutated
+
+
+def test_run_result_includes_answer_bundle():
+    bnd0 = mk_bundle([1, 2])
+    bnd1 = mk_bundle([2, 3])
+    walk = fake_walk([(bnd0, FakeEv()), (bnd1, FakeEv())])
+    judge = fake_judge({1: "entails"}, [])
+
+    result = react.run(None, None, "q", walk_fn=walk, judge_fn=judge,
+                        propose_fn=always_insufficient, max_iters=1)
+    ab = result["answer_bundle"]
+    assert ab is not None
+    assert 1 in ab.sampled          # the entail found in iteration 0 survives
+    assert set(ab.sampled) <= {1, 2, 3}
+    assert result["bundle"].sampled == [1, 2, 3]   # union across both walks
 
 
 def test_repeated_identical_walk_stops_as_fixed_point():

@@ -1185,11 +1185,16 @@ Source: operator SNR frame + log2 deviation band + estimator-pair bound,
   _Files:_ .spec/specs/graph-explorer/design.md
   _Verify:_ grep -c "A1[23]" .spec/specs/graph-explorer/design.md
 
-- [OPEN] T66 react.py: dilution_detected (log2 band, min(mean-sdev,
+- [DONE] T66 react.py: dilution_detected (log2 band, min(mean-sdev,
   median-1.4826*MAD)), WIDEN exclusion in propose, ladder reorder,
   entails_first_bundle -> result["answer_bundle"]
   _Files:_ react.py, tests/test_react.py
   _Verify:_ python -m pytest tests/test_react.py -q
+  _Lessons:_ "bundle" in run()'s return was only ever the LAST walk's bundle,
+    not a union (A5 says evidence unions) -- built the real accumulated-union
+    bundle (scores_all/origin_all) so answer_bundle draws from every
+    iteration's entails, not just the final walk's. 26 passed, 1 deselected
+    (live_net); full DB-free suite 386 passed, 1 skipped.
 
 - [OPEN] T67 Loop answer wired: hero answers from answer_bundle when the loop
   found entails ("answered after N agentic iterations"); diag_agentic swaps
