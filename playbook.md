@@ -1374,14 +1374,14 @@ zero-entail path, and no diagnostic covered the base-answer path.
 ## Layer 23 -- parallel (operator: "everything you suggested", 2026-09-07)
 Disjoint files, dispatched together.
 
-- [OPEN] T82 A17(c) loosened: no-movement stops on ONE condition -- an
+- [DONE] T82 A17(c) loosened: no-movement stops on ONE condition -- an
   iteration added no NEW entailing chunks (drop mean-flat/cid-flat); verify
   against the gold lane (keep if 5/5 holds with fewer iterations, revert if a
   row drops -- the extra iterations were then load-bearing)
   _Files:_ react.py, tests/test_react.py
   _Verify:_ python -m pytest tests/test_react.py -q && PYTHONPATH=. python tools/diag_agentic.py mixed-full-dual
 
-- [OPEN] T77 Base-path G-rows: G6-G8 whose base walk has entails>0 so the
+- [DONE] T77 Base-path G-rows: G6-G8 whose base walk has entails>0 so the
   UI's non-loop path is covered; assert the gate fires (A14/A15)
   _Files:_ tools/diag_agentic.py, tests/test_react.py
   _Verify:_ PYTHONPATH=. python tools/diag_agentic.py mixed-full-dual
@@ -1402,3 +1402,19 @@ Disjoint files, dispatched together.
   _Lessons:_ I verified the trace table screenshot and never read the hero in
     the same shot -- the crown was visible in a screenshot I took and passed
     over. Read the ANSWER, not just the instrument, on every live look.
+
+Layer 23 close (2026-09-07): T82 KEPT per its own decision rule -- gold lane
+AGENTIC 8/9, all five original rows PASS, 7 of 9 now stop at 2 iterations
+(no-movement) instead of 3. T77 base-path rows G6-G8 all PASS. T79 committed.
+NOTE (process defect, mine): T82/T77 were swept into commit fb30808 by a
+git add -A during the A18 fix, BEFORE this verification ran and before the
+operator answered keep/revert. Verified after the fact; verdict happens to be
+keep. The rule stands: verify, then ask, then commit.
+
+- [OPEN] T84 G9 gate hole: the superlative pin ("what was the deadliest
+  hurricane on record") returns gate=ok -- the gate let a superlative
+  through. Same class as the Gallagher defect, caught by the diagnostic this
+  time. Diagnose whether is_superlative misses "-est" here or a cited chunk
+  supplies a ranking claim that should not count.
+  _Files:_ walker_core.py, tests/test_walker_core.py
+  _Verify:_ PYTHONPATH=. python tools/diag_agentic.py mixed-full-dual -> 9/9
