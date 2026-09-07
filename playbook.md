@@ -1365,3 +1365,24 @@ zero-entail path, and no diagnostic covered the base-answer path.
   prompt states the population-vs-self scope distinction
   _Files:_ walker_core.py, walker_app.py, interpret.py, tests/test_walker_core.py
   _Verify:_ python -m pytest tests/test_walker_core.py tests/test_walker_render.py -q && PYTHONPATH=. python tools/diag_rerun.py mixed-full-dual
+
+## Layer 23 -- parallel (operator: "everything you suggested", 2026-09-07)
+Disjoint files, dispatched together.
+
+- [OPEN] T82 A17(c) loosened: no-movement stops on ONE condition -- an
+  iteration added no NEW entailing chunks (drop mean-flat/cid-flat); verify
+  against the gold lane (keep if 5/5 holds with fewer iterations, revert if a
+  row drops -- the extra iterations were then load-bearing)
+  _Files:_ react.py, tests/test_react.py
+  _Verify:_ python -m pytest tests/test_react.py -q && PYTHONPATH=. python tools/diag_agentic.py mixed-full-dual
+
+- [OPEN] T77 Base-path G-rows: G6-G8 whose base walk has entails>0 so the
+  UI's non-loop path is covered; assert the gate fires (A14/A15)
+  _Files:_ tools/diag_agentic.py, tests/test_react.py
+  _Verify:_ PYTHONPATH=. python tools/diag_agentic.py mixed-full-dual
+
+- [OPEN] T79 Class naming: argmax(mass x ln(chunks/df)) -- the PPMI demotion
+  band -- replaces min(entity_id); class_id stays the join key
+  _Files:_ evidence.py, tests/test_evidence.py
+  _Verify:_ python -m pytest tests/test_evidence.py -q + live: the song/album
+  class no longer reads "later"
