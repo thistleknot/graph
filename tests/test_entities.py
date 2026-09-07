@@ -9,12 +9,13 @@ fixture pattern).
 """
 from __future__ import annotations
 
+import itertools
 from pathlib import Path
 
 import pytest
 
 import entities as ent
-from conftest import require_dsn_db
+from conftest import require_dsn_db, require_gt_conn, require_run
 
 # ================================================================== 8.1 DB-free
 
@@ -175,6 +176,130 @@ def test_ddl_is_runtime_idempotent():
     assert ent._DDL
     for stmt in ent._DDL:
         assert "IF NOT EXISTS" in stmt
+
+
+# ------------------------------------------------ classes v0 (T70), 8.1 half
+
+
+def test_comention_pairs_counts_shared_chunks():
+    # chunk 0: a,b,c ; chunk 1: a,b ; chunk 2: b,c ; chunk 3: a,c
+    rows = [
+        (0, "a", 1), (0, "b", 1), (0, "c", 1),
+        (1, "a", 1), (1, "b", 1),
+        (2, "b", 1), (2, "c", 1),
+        (3, "a", 1), (3, "c", 1),
+    ]
+    pairs = ent.comention_pairs(rows, top_k=32)
+    assert pairs[("a", "b")] == 2   # chunks 0, 1
+    assert pairs[("b", "c")] == 2   # chunks 0, 2
+    assert pairs[("a", "c")] == 2   # chunks 0, 3
+    assert set(pairs) == {("a", "b"), ("b", "c"), ("a", "c")}
+
+
+def test_comention_topk_cuts_by_mention_count_ties_by_id():
+    # one chunk, 5 entities with distinct+tied counts; top_k=3 keeps the
+    # highest-cnt 3, ties broken by ascending id.
+    rows = [
+        (0, 5, 10),   # highest cnt
+        (0, 1, 5),
+        (0, 2, 5),    # tie with 1 at cnt=5 -> lower id (1) wins the slot
+        (0, 3, 5),    # also tied at 5, but only 2 slots left after 5 and 10
+        (0, 4, 1),
+    ]
+    pairs = ent.comention_pairs(rows, top_k=3)
+    # survivors by (-cnt, id): (10,5) then (5,1) then (5,2) -- ids {5,1,2}
+    survivors = {1, 2, 5}
+    expected = {tuple(sorted(p)) for p in itertools.combinations(sorted(survivors), 2)}
+    assert set(pairs) == expected
+    for a, b in pairs:
+        assert 3 not in (a, b)
+        assert 4 not in (a, b)
+
+
+def test_class_graph_applies_the_support_floor_before_npmi():
+    pairs = {(0, 1): 2, (2, 3): 3}
+    df_by_id = {0: 5, 1: 5, 2: 5, 3: 5}
+    n_chunks = 20
+    edges = ent.class_graph(pairs, df_by_id, n_chunks, min_joint=3)
+    assert (0, 1) not in edges
+    assert (2, 3) in edges
+
+
+def test_class_graph_weight_matches_npmi_closed_form():
+    pairs = {(0, 1): 6}
+    df_by_id = {0: 8, 1: 6}
+    n_chunks = 30
+    edges = ent.class_graph(pairs, df_by_id, n_chunks, min_joint=3)
+    expected_npmi, _ = ent.npmi_ppmi(8, 6, 6, 30)
+    assert edges[(0, 1)] == pytest.approx(expected_npmi, abs=1e-9)
+
+
+def test_unclassed_entity_is_its_own_class():
+    result = ent.class_partition({}, [7, 9, 11])
+    assert result == {7: 7, 9: 9, 11: 11}
+
+
+def test_class_assignment_is_deterministic():
+    pytest.importorskip("community")
+    rows_a = [
+        (0, "a", 1), (0, "b", 1), (0, "c", 1),
+        (1, "a", 1), (1, "b", 1), (1, "c", 1),
+        (2, "a", 1), (2, "b", 1), (2, "c", 1),
+    ]
+    rows_b = [
+        (0, "c", 1), (0, "a", 1), (0, "b", 1),
+        (1, "c", 1), (1, "b", 1), (1, "a", 1),
+        (2, "b", 1), (2, "a", 1), (2, "c", 1),
+    ]
+    df_by_id = {"a": 3, "b": 3, "c": 3}
+    n_chunks = 3
+    all_ids = ["a", "b", "c"]
+
+    def run(rows):
+        pairs = ent.comention_pairs(rows, top_k=32)
+        edges = ent.class_graph(pairs, df_by_id, n_chunks, min_joint=2)
+        return ent.class_partition(edges, all_ids)
+
+    assert run(rows_a) == run(rows_b)
+
+
+# ------------------------------------------------- classes v0 (T70), 8.2 half
+
+
+def test_every_entity_row_gets_a_class_id(db, run_a):
+    conn, run, rid = run_a
+    ent.build_entities(conn, run)
+    with psycopg.connect(db) as c2, c2.cursor() as cur:
+        cur.execute("SELECT count(*) FROM entities WHERE run_id=%s AND class_id IS NULL",
+                   (run.run_id,))
+        assert cur.fetchone()[0] == 0
+
+
+def test_classes_leave_the_other_run_alone(db, run_a, run_b):
+    conn_a, run_a_h, _ = run_a
+    conn_b, run_b_h = run_b
+
+    ent.build_entities(conn_a, run_a_h)
+    ent.build_entities(conn_b, run_b_h)
+
+    def _snapshot(conn, run):
+        with conn.cursor() as cur:
+            cur.execute("SELECT entity_id, name, class_id FROM entities WHERE run_id=%s "
+                       "ORDER BY entity_id", (run.run_id,))
+            return cur.fetchall()
+
+    snap_a1 = _snapshot(conn_a, run_a_h)
+    snap_b1 = _snapshot(conn_b, run_b_h)
+
+    result_1 = ent.assign_classes(conn_a, run_a_h)
+    result_2 = ent.assign_classes(conn_a, run_a_h)
+    assert {k: v for k, v in result_1.items() if k != "timings"} == \
+           {k: v for k, v in result_2.items() if k != "timings"}
+
+    snap_a2 = _snapshot(conn_a, run_a_h)
+    snap_b2 = _snapshot(conn_b, run_b_h)
+    assert snap_a2 == snap_a1
+    assert snap_b2 == snap_b1
 
 
 # ------------------------------------------------ resolution v1 (T19), 8.1 half
@@ -418,7 +543,14 @@ def test_rebuild_replaces_this_run_and_leaves_the_other_alone(db, run_a, run_b):
     snap_b_before = _snapshot(conn_b, run_b_h)
 
     result_a2 = ent.build_entities(conn_a, run_a_h)
-    assert result_a2 == result_a1
+
+    def _no_timings(result):
+        out = dict(result)
+        if "classes" in out:
+            out["classes"] = {k: v for k, v in out["classes"].items() if k != "timings"}
+        return out
+
+    assert _no_timings(result_a2) == _no_timings(result_a1)
 
     snap_b_after = _snapshot(conn_b, run_b_h)
     assert snap_b_after == snap_b_before
@@ -579,3 +711,49 @@ def test_an_edgeless_entity_is_not_a_resolution_candidate(db, run_a):
         cur.execute("DELETE FROM entities WHERE run_id=%s AND entity_id=%s",
                    (run.run_id, new_id))
     conn.commit()
+
+
+# --------------------------------------------------- classes v0 live pin (T70)
+
+
+@pytest.mark.live_db
+def test_mixed_full_dual_class_pin():
+    """T70 pin (2026-09-07): the live `python entities.py mixed-full-dual
+    --classes-only` build printed:
+        entities=275328 n_chunks=10816
+        mentions rows consumed, pairs=2653691
+        edges=16073
+        read+pairs           17.76s
+        graph                 0.49s
+        louvain               1.47s
+        write                 6.84s
+    mixed-full-dual ... entities=275328 pairs=2653691 edges=16073
+    classes=270620 classed=4708
+    largest class_id 541 carries 338 members. Skips cleanly without the live
+    run or without Postgres."""
+    conn = require_gt_conn()
+    run = require_run(conn, "mixed-full-dual")
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM entities WHERE run_id=%s", (run.run_id,))
+        total = cur.fetchone()["count"]
+        if total == 0:
+            pytest.skip("entities not built for this run")
+        cur.execute("SELECT count(*) FROM entities WHERE run_id=%s AND class_id IS NULL",
+                    (run.run_id,))
+        n_null = cur.fetchone()["count"]
+        if n_null == total:
+            pytest.skip("classes not built for this run yet")
+        cur.execute("SELECT count(DISTINCT class_id) FROM entities WHERE run_id=%s",
+                    (run.run_id,))
+        n_classes = cur.fetchone()["count"]
+        cur.execute("SELECT count(*) FROM entities WHERE run_id=%s AND class_id <> entity_id",
+                    (run.run_id,))
+        n_classed = cur.fetchone()["count"]
+        cur.execute("SELECT count(*) FROM entities WHERE run_id=%s "
+                    "GROUP BY class_id ORDER BY count(*) DESC LIMIT 1", (run.run_id,))
+        largest_class = cur.fetchone()["count"]
+    assert total == 275328
+    assert n_null == 0
+    assert n_classes == 270620
+    assert n_classed == 4708
+    assert largest_class == 338

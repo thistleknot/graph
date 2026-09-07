@@ -1,9 +1,12 @@
 """entities.py -- Entities v0: bipartite entity/mention store beside the chunk
 graph, built over the run's EXISTING salient vocabulary (node.attrs->'tf'),
-plus resolution v1: deterministic canonical ids over that population (E6-E8).
+plus resolution v1: deterministic canonical ids over that population (E6-E8),
+plus class assignment: a co-mention Louvain partition over the SAME
+population (E15/E17/E19).
 
-Spec: .spec/specs/graph-explorer/design.md §6.15 blocks C + D, guards E1-E9
-Task: playbook.md T4 (v0), T19 (resolution v1), T24 (E9 scale bound)
+Spec: .spec/specs/graph-explorer/design.md §6.15 blocks C + D, guards E1-E9;
+      §6.24 E15 (class graph), E17 (consumers), E19 (cost bound)
+Task: playbook.md T4 (v0), T19 (resolution v1), T24 (E9 scale bound), T70 (classes)
 
 E1  Entities v0 SHALL be populated from the run's EXISTING salient/phrase vocabulary
     (the terms already persisted in node.attrs->'tf'), typed "term_v0", by
@@ -91,6 +94,32 @@ E9  WHERE the run's df-eligible pool (E4's floor) exceeds VOCAB_BOUND terms, pai
     needs MIN_SHARED_NEIGHBORS shared entity_edges neighbors, so an edge-less
     entity can never merge and its candidate pairs are only ever discarded.
 
+E15 class_id SHALL be assigned additively (idempotent DDL, same discipline as
+    canonical_id) over a co-mention graph: for each pair of entities sharing
+    at least CLASS_MIN_JOINT (= 3) chunks, an edge weighted by npmi_ppmi's
+    npmi (E5's one ruler, no second implementation), floored to npmi > 0.0.
+    Louvain (LOUVAIN_SEED = 7, the house convention already used by
+    chunkgraph.py, graph3d.py and walker_core.subgraph_louvain) partitions
+    that graph; each member's class_id is the MIN entity_id in its partition,
+    exactly parallel to canonical_ids picking a representative. Every entity
+    with no qualifying edge is its own class (the singleton fallback) --
+    class_id is non-NULL over the FULL population, never a dropped row.
+
+E19 (class cost bound) Pair enumeration for E15 SHALL be bounded PER CHUNK,
+    not corpus-wide: CLASS_CHUNK_TOPK (= 32) is the top-k entities by mention
+    count kept per chunk (ties by ascending entity_id) before pairs are
+    formed. Measured motivation: the committed live receipt in the E9
+    docstring is 275,328 entities / 5,813,717 mentions over 10,830 chunks,
+    ~537 distinct entities per chunk mean, so an unbounded `sum C(k, 2)` is
+    ~1.5e9 pair slots in pure Python -- the same wall E9 hit (2.47e9 slots,
+    killed at 23 min; Article VII bounds any stage to 15 minutes). E9's
+    VOCAB_BOUND is corpus-wide and therefore wrong here -- it would class only
+    the 65 bound-surviving terms corpus-wide. The per-chunk cut instead keeps
+    the FULL population eligible: top-32 by (-cnt, entity_id) gives
+    10,830 * C(32, 2) ~ 5.4e6 slots. Determinism: the cut sorts by
+    (-cnt, entity_id); every downstream intermediate (pairs, edges, the
+    partition) is sorted, so the same rows produce the same classes.
+
 Require:  a live run exists for the given label (graph_tools.get_run).
 Guarantee: build_entities() is read-only against node/edge/community and
           idempotent per run -- a rebuild replaces exactly that run's three
@@ -107,9 +136,11 @@ EXISTS) -- design.md block C already states this is the correct call. Do not
 from __future__ import annotations
 
 import difflib
+import itertools
 import math
 import os
 import sys
+import time
 
 import psycopg
 from psycopg.rows import dict_row
@@ -140,6 +171,18 @@ VOCAB_BOUND = 65            # E9: cap on the df-eligible pool's cardinality befo
                             # mixed-full-dual (Article VII), so halved once per plan to
                             # 65 (~2.3e7 worst-case slots) -- Article VI: the pure-Python
                             # per-chunk loop, not the DB write, is the live bottleneck.
+
+CLASS_CHUNK_TOPK = 32       # E19: per-chunk cut for co-mention enumeration.
+                            # Measured basis: 5,813,717 mentions / 10,830 chunks
+                            # ~ 537 entities/chunk -> ~1.5e9 unbounded pair slots
+                            # (E9 killed at 2.47e9). Top-32 by mention cnt, ties by
+                            # ascending entity_id, gives 10,830 * C(32,2) ~ 5.4e6
+                            # slots. Corpus-wide population is UNCUT: an entity that
+                            # never makes a chunk's top-32 is simply its own class
+                            # (E15's singleton fallback), never a dropped row.
+CLASS_MIN_JOINT = 3         # E15 support floor: >= 3 shared chunks before NPMI
+LOUVAIN_SEED = 7            # house convention: chunkgraph.py:732, graph3d.py:168,
+                            # walker_core.LOUVAIN_SEED
 
 _DDL = (
     """CREATE TABLE IF NOT EXISTS entities (
@@ -177,6 +220,9 @@ _DDL = (
     # self-referential composite FK cannot be added idempotently in this pattern.
     """ALTER TABLE entities ADD COLUMN IF NOT EXISTS canonical_id integer""",
     """CREATE INDEX IF NOT EXISTS entities_canonical ON entities (run_id, canonical_id)""",
+    # No FK on class_id either, same reason as canonical_id above.
+    """ALTER TABLE entities ADD COLUMN IF NOT EXISTS class_id integer""",
+    """CREATE INDEX IF NOT EXISTS entities_class ON entities (run_id, class_id)""",
 )
 
 
@@ -189,14 +235,18 @@ def ensure_schema(conn) -> None:
     the relation before checking), which stalls behind any concurrent reader
     holding even an AccessShare lock on that table. Skipping the ALTER once
     the column is already present avoids re-acquiring that lock on every
-    build/resolve call -- the common case after the first run.
+    build/resolve/classify call -- the common case after the first run. Now
+    covers both canonical_id (E8) and class_id (E15/E19).
     """
-    with conn.cursor() as cur:
-        cur.execute("""SELECT 1 FROM information_schema.columns
-                        WHERE table_name = 'entities' AND column_name = 'canonical_id'""")
-        has_canonical_id = cur.fetchone() is not None
+    with conn.cursor(row_factory=_tuple_row) as cur:
+        cur.execute("""SELECT column_name FROM information_schema.columns
+                        WHERE table_name = 'entities'
+                          AND column_name IN ('canonical_id', 'class_id')""")
+        present = {r[0] for r in cur.fetchall()}
         for stmt in _DDL:
-            if "ADD COLUMN IF NOT EXISTS canonical_id" in stmt and has_canonical_id:
+            if "ADD COLUMN IF NOT EXISTS canonical_id" in stmt and "canonical_id" in present:
+                continue
+            if "ADD COLUMN IF NOT EXISTS class_id" in stmt and "class_id" in present:
                 continue
             cur.execute(stmt)
 
@@ -407,6 +457,150 @@ def canonical_ids(comp_root: dict, names_by_id: dict) -> dict:
     return out
 
 
+def comention_pairs(mention_rows, top_k: int = CLASS_CHUNK_TOPK) -> "Counter":
+    """E15/E19: DB-free. `mention_rows` is an iterable of (ord, entity_id,
+    cnt) ordered by ord -- exactly `SELECT ord, entity_id, cnt FROM mentions
+    WHERE run_id = %s ORDER BY ord`.
+
+    Per chunk, keeps only the top-`top_k` entities by (-cnt, entity_id) --
+    the E19 per-chunk cut that bounds `sum C(k, 2)` without dropping any
+    entity from the corpus-wide population (an entity that never makes a
+    chunk's top-k is simply its own class downstream, E15's singleton
+    fallback). Pairs come out canonical a < b. No floor applied here -- that
+    is class_graph's job, so a caller can inspect the raw joint counts.
+    """
+    from collections import Counter
+
+    pairs: Counter = Counter()
+    for _ord, group in itertools.groupby(mention_rows, key=lambda r: r[0]):
+        ranked = sorted(((-cnt, eid) for _o, eid, cnt in group))[:top_k]
+        present = sorted(eid for _neg_cnt, eid in ranked)
+        for a, b in itertools.combinations(present, 2):
+            pairs[(a, b)] += 1
+    return pairs
+
+
+def class_graph(pairs: dict, df_by_id: dict, n_chunks: int,
+                min_joint: int = CLASS_MIN_JOINT) -> dict:
+    """E15: DB-free. Applies the support floor BEFORE NPMI, then reuses the
+    incumbent npmi_ppmi (E5's one ruler) rather than a second implementation.
+
+    `npmi > 0.0` is a stated design choice, not spec text -- a negative- or
+    zero-association edge is not evidence of a shared class [colloquial:
+    convention chosen here, matching npmi_ppmi's own note].
+    """
+    out: dict = {}
+    for (a, b), joint in pairs.items():
+        if joint < min_joint:
+            continue
+        npmi, _ppmi = npmi_ppmi(df_by_id[a], df_by_id[b], joint, n_chunks)
+        if npmi > 0.0:
+            out[(a, b)] = npmi
+    return out
+
+
+def class_partition(edges: dict, all_ids, seed: int = LOUVAIN_SEED) -> dict:
+    """E15: DB-free (lazy-imports networkx/community, mirroring
+    walker_core.subgraph_louvain's style verbatim). Every id in `all_ids` not
+    present in the graph maps to itself (the singleton fallback) -- the
+    return is non-NULL for every id in `all_ids`, exactly parallel to
+    canonical_ids returning an entity_id for every entity.
+
+    Fewer than 2 graph nodes or no edges short-circuits to the all-singleton
+    map without importing networkx at all (mirrors subgraph_louvain's early
+    return).
+    """
+    all_ids = list(all_ids)
+    node_ids = sorted({i for pair in edges for i in pair})
+    if len(node_ids) < 2 or not edges:
+        return {i: i for i in all_ids}
+
+    import networkx as nx
+    import community as community_louvain
+
+    G = nx.Graph()
+    G.add_nodes_from(node_ids)
+    for (a, b) in sorted(edges):
+        G.add_edge(a, b, weight=edges[(a, b)])
+    part = community_louvain.best_partition(G, weight="weight", random_state=seed)
+
+    groups: dict = {}
+    for i, label in part.items():
+        groups.setdefault(label, []).append(i)
+
+    class_of: dict = {}
+    for members in groups.values():
+        rep = min(members)
+        for i in members:
+            class_of[i] = rep
+
+    return {i: class_of.get(i, i) for i in all_ids}
+
+
+def assign_classes(conn, run, top_k: int = CLASS_CHUNK_TOPK,
+                   min_joint: int = CLASS_MIN_JOINT, seed: int = LOUVAIN_SEED) -> dict:
+    """The only writer of class_id (E15/E19). Structure mirrors
+    resolve_entities line-for-line: read, DB-free compute stages, then a
+    single write pass.
+
+    E19: prints per-stage wall-clock timings, the same discipline E14
+    requires of relations.py's builder -- a live receipt of where the time
+    goes, since this stage is the one CLASS_CHUNK_TOPK exists to bound.
+    """
+    ensure_schema(conn)
+    rid = run.run_id
+    timings: dict = {}
+
+    t0 = time.perf_counter()
+    with conn.cursor(row_factory=_tuple_row) as cur:
+        cur.execute("SELECT entity_id FROM entities WHERE run_id = %s", (rid,))
+        all_ids = [r[0] for r in cur.fetchall()]
+
+        cur.execute("SELECT count(DISTINCT ord) FROM mentions WHERE run_id = %s", (rid,))
+        n_chunks = cur.fetchone()[0]
+
+        cur.execute("SELECT entity_id, count(*) FROM mentions WHERE run_id = %s "
+                   "GROUP BY entity_id", (rid,))
+        df_by_id = {r[0]: r[1] for r in cur.fetchall()}
+
+        cur.execute("SELECT ord, entity_id, cnt FROM mentions WHERE run_id = %s "
+                   "ORDER BY ord", (rid,))
+        mention_rows = cur           # psycopg cursors are iterable; no fetchall
+        print(f"  entities={len(all_ids)} n_chunks={n_chunks}")
+        pairs = comention_pairs(mention_rows, top_k=top_k)
+        print(f"  mentions rows consumed, pairs={len(pairs)}")
+    timings["read+pairs"] = time.perf_counter() - t0
+
+    t0 = time.perf_counter()
+    edges = class_graph(pairs, df_by_id, n_chunks, min_joint=min_joint)
+    print(f"  edges={len(edges)}")
+    timings["graph"] = time.perf_counter() - t0
+
+    t0 = time.perf_counter()
+    classes = class_partition(edges, all_ids, seed=seed)
+    timings["louvain"] = time.perf_counter() - t0
+
+    t0 = time.perf_counter()
+    with conn.cursor() as cur:
+        cur.execute("UPDATE entities SET class_id = entity_id WHERE run_id = %s", (rid,))
+        rows = sorted((cid, rid, eid) for eid, cid in classes.items() if cid != eid)
+        if rows:
+            cur.executemany(
+                "UPDATE entities SET class_id = %s WHERE run_id = %s AND entity_id = %s",
+                rows)
+    conn.commit()
+    timings["write"] = time.perf_counter() - t0
+
+    for stage, dt in timings.items():
+        print(f"  {stage:<18} {dt:7.2f}s")
+
+    n_classes = len(set(classes.values()))
+    n_classed = sum(1 for eid, cid in classes.items() if cid != eid)
+    return {"entities": len(all_ids), "n_chunks": n_chunks, "pairs": len(pairs),
+            "edges": len(edges), "classes": n_classes, "classed": n_classed,
+            "timings": timings}
+
+
 def embedding_candidates(names_by_id: dict, model_dir: str | None = None,
                          threshold: float = EMB_THRESHOLD,
                          n: int = GRAM_N, max_block: int = MAX_GRAM_BLOCK) -> list:
@@ -526,7 +720,8 @@ def resolve_entities(conn, run, threshold: float = SIM_THRESHOLD,
             "aliases": n_aliases}
 
 
-def build_entities(conn, run, min_joint: int = MIN_JOINT_CHUNKS, resolve: bool = True) -> dict:
+def build_entities(conn, run, min_joint: int = MIN_JOINT_CHUNKS, resolve: bool = True,
+                   classes: bool = True) -> dict:
     """The only writer. `conn` must be a WRITABLE connection -- gt.connect()
     is read-only at the server (W3) and raises on the first CREATE TABLE.
 
@@ -577,14 +772,29 @@ def build_entities(conn, run, min_joint: int = MIN_JOINT_CHUNKS, resolve: bool =
               "edges": len(pairs)}
     if resolve:
         result["resolution"] = resolve_entities(conn, run)
+    if classes:
+        # order matters: classes run AFTER resolve so a later E17 consumer
+        # can join canonical_id and class_id off the same committed rows.
+        result["classes"] = assign_classes(conn, run)
     return result
 
 
 def main(argv: list) -> int:
+    """usage: python entities.py <label> [--classes-only]
+
+    --classes-only skips the ~20-minute entity build entirely and runs
+    assign_classes alone against an already-built run -- reads only
+    entities/mentions, so it is standalone-callable. A separate classes.py
+    would duplicate DSN/get_run/ensure_schema/npmi_ppmi imports for one
+    function, and class_id lives on the entities table whose DDL this file
+    already owns -- one flag on the incumbent CLI is the smaller change
+    (Article III / anti-sprawl).
+    """
     if len(argv) < 2:
-        print("usage: python entities.py <label>", file=sys.stderr)
+        print("usage: python entities.py <label> [--classes-only]", file=sys.stderr)
         return 2
     label = argv[1]
+    classes_only = "--classes-only" in argv[2:]
     conn = psycopg.connect(DSN, row_factory=dict_row)
     try:
         try:
@@ -592,14 +802,22 @@ def main(argv: list) -> int:
         except LookupError as exc:
             print(str(exc), file=sys.stderr)
             return 1
+        if classes_only:
+            cls = assign_classes(conn, run)
+            print(f"{label} {run.run_id} entities={cls['entities']} "
+                  f"pairs={cls['pairs']} edges={cls['edges']} "
+                  f"classes={cls['classes']} classed={cls['classed']}")
+            return 0
         result = build_entities(conn, run)
     finally:
         conn.close()
     res = result.get("resolution", {})
+    cls = result.get("classes", {})
     print(f"{label} {run.run_id} N={result['n_chunks']} "
           f"entities={result['entities']} mentions={result['mentions']} "
           f"edges={result['edges']} "
-          f"canonical={res.get('clusters', 0)} aliases={res.get('aliases', 0)}")
+          f"canonical={res.get('clusters', 0)} aliases={res.get('aliases', 0)} "
+          f"classes={cls.get('classes', 0)} classed={cls.get('classed', 0)}")
     return 0
 
 

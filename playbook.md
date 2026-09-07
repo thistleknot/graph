@@ -1246,12 +1246,24 @@ created however that would look like, my guess was co-occurrence analysis";
   _Files:_ .spec/specs/graph-explorer/design.md
   _Verify:_ grep -c "E1[5-9]" .spec/specs/graph-explorer/design.md
 
-- [WIP] T70 Entity classes build: entities.py additive pass (or classes.py
+- [DONE] T70 Entity classes build: entities.py additive pass (or classes.py
   if entities is sealed -- check E3 first) computing class_id over the
   co-mention graph; CLI + per-stage timings (E14 discipline); live build on
   mixed-full-dual + smoke pin
   _Files:_ entities.py or classes.py, tests/test_entities.py or tests/test_classes.py
   _Verify:_ live build completes inside Article VII + pytest -q on its tests
+  _Lessons:_ extended entities.py (E3 check: it seals the read set, not the
+    file -- canonical_id was already additive there, same shape). Pair-bound
+    receipt (E19): 5,813,717 mentions / 10,830 chunks ~ 537 entities/chunk
+    mean -> unbounded sum C(k,2) ~ 1.5e9 pair slots, the E9 wall (killed at
+    2.47e9). A PER-CHUNK top-32 cut (not E9's corpus-wide VOCAB_BOUND, which
+    would class only 65 entities total) bounds it to
+    10,830 * C(32,2) ~ 5.4e6 slots. Live `python entities.py mixed-full-dual
+    --classes-only`: entities=275328 n_chunks=10816 pairs=2653691 edges=16073
+    classes=270620 classed=4708 (largest class 338 members); stages
+    read+pairs=17.76s graph=0.49s louvain=1.47s write=6.84s, total ~27s --
+    well inside Article VII's 15 min, no CLASS_CHUNK_TOPK tightening needed.
+    Full-suite regression: 690 passed, 3 skipped, 0 failed.
 
 - [OPEN] T71 Relation classes build: template pair-set similarity -> class
   ids stored beside relations (additive table/column); live build + smoke
