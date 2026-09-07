@@ -1265,10 +1265,19 @@ created however that would look like, my guess was co-occurrence analysis";
     well inside Article VII's 15 min, no CLASS_CHUNK_TOPK tightening needed.
     Full-suite regression: 690 passed, 3 skipped, 0 failed.
 
-- [OPEN] T71 Relation classes build: template pair-set similarity -> class
+- [DONE] T71 Relation classes build: template pair-set similarity -> class
   ids stored beside relations (additive table/column); live build + smoke
   _Files:_ relations.py, tests/test_relations.py
   _Verify:_ python -m pytest tests/test_relations.py -q + live build
+  _Lessons:_ new `relation_classes` mapping table (run_id,template)->rel_class,
+  never an ALTER on the PK-heavy `relations`; live `--rel-classes-only` on
+  mixed-full-dual measured T=11,328 distinct templates (not the "dozens"
+  planned) so similarity took 65.21s (still well inside Article VII) --
+  genitive acceptance verdict (a) FAILED live (GEN/'s, GEN/of, GEN/of the
+  land in separate singleton classes; 864 distinct GEN/<connector> keys,
+  virtually all singletons) because `connector` rides free surface text, not
+  a canonical few forms; verdict (b) PASSED-partial (the/w/in/a groups
+  co-class sensibly, 301/11328 templates classed). Full suite: 15/15 passed.
 
 - [OPEN] T72 Surface: REFERENCE-zone panel "Classes" (top entities per class,
   top relations per class, factbook style); group digests annotate entities

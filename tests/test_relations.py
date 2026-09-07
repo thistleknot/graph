@@ -147,6 +147,77 @@ def test_llr_gate_and_support_floor():
     assert row["llr"] == pytest.approx(expected_llr, abs=1e-5)
 
 
+def test_pairsets_split_gen_keys_by_connector():
+    rows = [
+        {"template": "GEN", "connector": "'s", "src": 1, "dst": 2},
+        {"template": "GEN", "connector": "of the", "src": 3, "dst": 4},
+        {"template": "in the", "connector": "in the", "src": 5, "dst": 6},
+    ]
+    default = rel.template_pairsets(rows)
+    assert set(default) == {"GEN", "in the"}
+    assert default["GEN"] == {(1, 2), (3, 4)}
+
+    split = rel.template_pairsets(rows, split_gen=True)
+    assert set(split) == {"GEN/'s", "GEN/of the", "in the"}
+    assert split["GEN/'s"] == {(1, 2)}
+    assert split["GEN/of the"] == {(3, 4)}
+
+
+def test_similar_templates_coclass_and_floor_holds_the_rest():
+    pairs = [(i, i + 1) for i in range(10)]
+    pairsets = {
+        "A": set(pairs),
+        "B": set(pairs[:8]),                       # shares 8/10 with A -> cos 0.8
+        "C": set(pairs[:2]) | {(100, 101)},         # shares 2 with A -> below MIN_SHARED
+    }
+    sim = rel.template_similarity(pairsets)
+    assert ("A", "B") in sim
+    expected_cos = 8 / (10 * 8) ** 0.5   # shared / sqrt(|A|*|B|) = 8/sqrt(80)
+    assert sim[("A", "B")][0] == pytest.approx(expected_cos, abs=1e-6)
+    assert ("A", "C") not in sim and ("B", "C") not in sim   # shared floor, not threshold, excludes C
+
+    classes = rel.rel_class_partition({k: v[0] for k, v in sim.items()}, sorted(pairsets))
+    assert classes["A"] == classes["B"]
+    assert classes["C"] != classes["A"]
+
+
+def test_singleton_template_gets_its_own_class():
+    all_templates = ["A", "B", "C"]
+    classes = rel.rel_class_partition({}, all_templates)
+    assert classes == {"A": "A", "B": "B", "C": "C"}
+    assert all(t in classes and classes[t] is not None for t in all_templates)
+
+
+def test_rel_class_partition_is_deterministic_and_order_free():
+    edges = {("A", "B"): 0.5, ("B", "C"): 0.4, ("D", "E"): 0.9}
+    all_templates = ["A", "B", "C", "D", "E"]
+
+    forward = rel.rel_class_partition(edges, all_templates)
+    reversed_edges = {(b, a): v for (a, b), v in edges.items()}
+    shuffled = {k: reversed_edges[k] for k in reversed(list(reversed_edges))}
+    backward = rel.rel_class_partition(shuffled, list(reversed(all_templates)))
+
+    assert forward == backward
+    assert forward["A"] == "A" and forward["B"] == "A" and forward["C"] == "A"
+    assert forward["D"] == "D" and forward["E"] == "D"
+
+
+def test_gen_connector_variants_coclass():
+    base = [(i, i + 1) for i in range(10)]
+    pairsets = {
+        "GEN/'s": set(base),
+        "GEN/of": set(base[:9]),
+        "GEN/of the": set(base[:8]),
+        "in the": {(200, 201), (202, 203), (204, 205)},
+    }
+    sim = rel.template_similarity(pairsets)
+    edges = {k: v[0] for k, v in sim.items()}
+    classes = rel.rel_class_partition(edges, sorted(pairsets))
+    gen_keys = [k for k in pairsets if k.startswith("GEN/")]
+    assert len({classes[k] for k in gen_keys}) == 1
+    assert classes["in the"] not in {classes[k] for k in gen_keys}
+
+
 # =============================================================== DB-backed
 
 import psycopg
@@ -231,6 +302,24 @@ def test_rebuild_replaces_this_run_and_leaves_the_other_alone(db):
     snap_b_after = _snapshot(conn_b, run_b)
     assert snap_b_after == snap_b_before
 
+    # E16/E19: same idempotence law, at class grain.
+    def _snapshot_classes(conn, run):
+        with conn.cursor() as cur:
+            cur.execute("SELECT template, rel_class FROM relation_classes "
+                       "WHERE run_id=%s ORDER BY template", (run.run_id,))
+            return cur.fetchall()
+
+    cls_a1 = rel.assign_rel_classes(conn_a, run_a)
+    rel.assign_rel_classes(conn_b, run_b)
+    snap_b_classes_before = _snapshot_classes(conn_b, run_b)
+
+    cls_a2 = rel.assign_rel_classes(conn_a, run_a)
+    assert {k: v for k, v in cls_a1.items() if k != "timings"} == \
+           {k: v for k, v in cls_a2.items() if k != "timings"}
+
+    snap_b_classes_after = _snapshot_classes(conn_b, run_b)
+    assert snap_b_classes_after == snap_b_classes_before
+
     conn_a.close()
     conn_b.close()
 
@@ -262,3 +351,53 @@ def test_live_smoke_mixed_full_dual():
     assert all(g["llr"] >= 10.83 and g["n"] >= 3 for g in gen)   # E13 floors
     assert any(g["connector"] in ("'s",) or g["connector"].startswith("of")
                for g in gen)                    # genitive surface forms
+
+
+@pytest.mark.live_db
+def test_live_rel_classes_mixed_full_dual():
+    """T71 pin (2026-09-07): live `python relations.py mixed-full-dual
+    --rel-classes-only` produced templates=11,328 rows=328,825 edges=396
+    classes=11,027 classed=301 (largest classes: '' mass=1,096,925 (96,839
+    rows), GEN mass=152,609, w mass=141,764, the/the w/the w w/the w w w
+    mass=108,881); similarity stage 65.21s, well inside Article VII's 15 min
+    (T=11,328 measured, not the "dozens" first assumed -- template includes
+    the free-text connector shape). Asserted structurally against whatever
+    run is live; skips without it.
+
+    gt.connect() (require_gt_conn) opens read-only at the server (W3) --
+    assign_rel_classes writes, so this test needs its own writable
+    connection, gated the same way (require_dsn_db skips cleanly with no
+    Postgres)."""
+    from psycopg.rows import dict_row
+    require_dsn_db(rel.DSN)
+    conn = psycopg.connect(rel.DSN, row_factory=dict_row)
+    run = require_run(conn, "mixed-full-dual")
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM relations WHERE run_id=%s", (run.run_id,))
+        total = cur.fetchone()["count"]
+        if total == 0:
+            conn.close()
+            pytest.skip("relations not built for this run")
+
+    result = rel.assign_rel_classes(conn, run)
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT DISTINCT template FROM relations WHERE run_id=%s", (run.run_id,))
+        rel_templates = {r["template"] for r in cur.fetchall()}
+        cur.execute("SELECT template, rel_class FROM relation_classes WHERE run_id=%s",
+                    (run.run_id,))
+        class_rows = cur.fetchall()
+
+    class_templates = {r["template"] for r in class_rows}
+    assert class_templates == rel_templates          # every template classed, none unclassed
+    assert len(class_rows) == len(class_templates)    # no dupes -- PK (run_id, template) already enforces this
+    rel_classes = {r["rel_class"] for r in class_rows}
+    assert rel_classes <= rel_templates               # rel_class values are a subset of the templates
+
+    sizes = Counter(r["rel_class"] for r in class_rows)
+    has_multi_member_class = any(n >= 2 for n in sizes.values())
+    # Either at least one class has >= 2 members, or the run's own census
+    # (classed=0) says none qualified -- a reportable threshold result, not
+    # a failure to hide (subplan §3.6).
+    assert has_multi_member_class == (result["classed"] > 0)
+    conn.close()

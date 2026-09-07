@@ -70,7 +70,33 @@ Guarantee: build_relations() is read-only against node/entities and
 
 DDL lives HERE, not in sql/, for the same reason as entities.py (§6.15 block
 C): 001_schema.sql runs once on an empty volume and cannot create a table on
-an existing populated database.
+an existing populated database. The relation_classes DDL added below (E16)
+lives here for the identical reason.
+
+Spec: .spec/specs/graph-explorer/design.md §6.24, guards E16/E17/E19
+Task: playbook.md T71 (relation classes)
+
+E16 Templates SHALL be grouped into rel_classes by set-cosine similarity
+    (|A intersect B| / sqrt(|A|*|B|)) over each template's pair-set, gated by
+    BOTH REL_CLASS_MIN_SHARED (shared-pair floor, same ruler as E13/E15) and
+    REL_CLASS_SIM (cosine threshold). Partition is connected components (not
+    Louvain) so it is order-independent and needs no seed. rel_class SHALL be
+    stored in a NEW run-scoped mapping table `relation_classes`
+    (run_id, template) -> rel_class -- never an ALTER on `relations`, whose
+    PK-heavy, FK-referenced shape makes a functionally-dependent-on-template-
+    alone column a normalization defect and an ACCESS EXCLUSIVE lock hazard
+    (entities.py:229-251's law, restated here).
+
+E17 The per-class ranking SHALL be a query (top classes by summed n, joining
+    relations to relation_classes), not a rebuilt or duplicated column --
+    E5's "ranking is a column choice, never a rebuild" restated at class
+    grain. This task delivers the ranking query; the factbook render is out
+    of scope.
+
+E19 assign_rel_classes SHALL print per-stage wall-clock timings on EVERY
+    build (read / similarity / partition / write), and NO cardinality bound
+    SHALL be added without a measured stage exceeding Article VII's budget --
+    E14's law, restated for the class pass.
 """
 from __future__ import annotations
 
@@ -97,6 +123,17 @@ G2_GATE = 10.83            # E13: W17's gate, one significance ruler
 MIN_SENT_TOKENS = 3        # E10: fragment floor
 MAX_PHRASE_TOKENS = 4      # E11: longest-match window; see anchor()
 POSS = "'s"                # E10: the clitic marker's surface form
+REL_CLASS_MIN_SHARED = 3   # E16 shared-pair floor. Same ruler as E15's
+                           # CLASS_MIN_JOINT / E13's MIN_REL_SUPPORT -- three
+                           # co-occurrences is this project's one support floor;
+                           # no new knob invented for a new pass.
+REL_CLASS_SIM = 0.10       # E16 similarity threshold on set cosine. Basis: pair-set
+                           # sizes span ~4 orders of magnitude ('' ~9.7e4 pairs vs a
+                           # long template's handful), so any threshold above ~0.2
+                           # can only ever join same-size templates. Provisional
+                           # until the live census (main() --rel-classes-only) prints
+                           # the distribution; the census print IS the evidence
+                           # trail (Article XI).
 
 
 @dataclass(frozen=True)
@@ -326,6 +363,160 @@ def score(events, sent_df, pair_sent_df, n_sent) -> list:
     return rows
 
 
+# ---------------------------------------------------------- relation classes
+# Spec: design.md §6.24 E16/E17/E19 · Task: playbook.md T71
+
+
+def template_pairsets(rows, split_gen: bool = False) -> dict:
+    """{template_key: {(src, dst), ...}}. DB-free -- rows is any iterable of
+    mappings/tuples exposing template/connector/src/dst (E16).
+
+    split_gen=True keys GEN rows as f"GEN/{connector}" instead of "GEN"; every
+    other template is unchanged. This is the §5-subplan genitive acceptance
+    instrument and is OFF on the production path (main() never passes it)."""
+    out: dict = defaultdict(set)
+    for r in rows:
+        template = r["template"] if isinstance(r, dict) else r[0]
+        connector = r["connector"] if isinstance(r, dict) else r[1]
+        src = r["src"] if isinstance(r, dict) else r[2]
+        dst = r["dst"] if isinstance(r, dict) else r[3]
+        key = f"GEN/{connector}" if (split_gen and template == "GEN") else template
+        out[key].add((src, dst))
+    return dict(out)
+
+
+def _shared_pair_scores(pairsets: dict, min_shared: int) -> dict:
+    """{(a, b): (cosine, shared)} for every C(T,2) template pair clearing ONLY
+    the shared-pair floor (threshold not applied) -- the shared helper behind
+    template_similarity and the below-threshold census, so the T^2/2
+    intersection pass runs exactly once."""
+    out: dict = {}
+    keys = sorted(pairsets)
+    for a, b in itertools.combinations(keys, 2):
+        sa, sb = pairsets[a], pairsets[b]
+        if len(sb) < len(sa):
+            sa, sb = sb, sa
+        shared = sum(1 for pair in sa if pair in sb)
+        if shared < min_shared:
+            continue
+        cosine = shared / ((len(pairsets[a]) * len(pairsets[b])) ** 0.5)
+        out[(a, b)] = (cosine, shared)
+    return out
+
+
+def template_similarity(pairsets: dict, min_shared: int = REL_CLASS_MIN_SHARED,
+                        threshold: float = REL_CLASS_SIM) -> dict:
+    """{(a, b): (cosine, shared)} for a < b, over all C(T,2) template pairs
+    (E16). Emitted only where shared >= min_shared AND cosine >= threshold.
+    Python intersects the smaller side; cost is O(min(|A|,|B|)) per pair, so
+    the whole pass is ~T^2/2 intersections bounded by the smaller set each
+    time -- T is the distinct-template count, measured (not "dozens" as
+    first assumed) at T=11,328 on mixed-full-dual, since `template` includes
+    the free-text 'w'-collapsed connector shape, not a small closed set.
+    similarity stage measured 65.21s there -- seconds-to-a-minute, well
+    inside Article VII's 15 min budget, so NO cardinality bound is added
+    because nothing has been measured to overrun (E14's law, restated for
+    the class pass)."""
+    return {pair: sc for pair, sc in _shared_pair_scores(pairsets, min_shared).items()
+            if sc[0] >= threshold}
+
+
+def rel_class_partition(edges: dict, all_templates) -> dict:
+    """Connected components over `edges` (E16) via iterative union-find, path
+    compression, union by min string so the representative is always the
+    component's smallest template -- deterministic without a seed, unlike
+    Louvain's random_state (entities.class_partition). Every template in
+    `all_templates` with no edge maps to itself, the singleton fallback exactly
+    parallel to class_partition's (entities.py:537); non-None for every
+    template."""
+    parent = {t: t for t in all_templates}
+
+    def find(x):
+        root = x
+        while parent[root] != root:
+            root = parent[root]
+        while parent[x] != root:
+            parent[x], x = root, parent[x]
+        return root
+
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra == rb:
+            return
+        if ra < rb:
+            parent[rb] = ra
+        else:
+            parent[ra] = rb
+
+    for (a, b) in edges:
+        parent.setdefault(a, a)
+        parent.setdefault(b, b)
+        union(a, b)
+
+    return {t: find(t) for t in parent}
+
+
+def assign_rel_classes(conn, run, min_shared: int = REL_CLASS_MIN_SHARED,
+                       threshold: float = REL_CLASS_SIM, split_gen: bool = False) -> dict:
+    """The only writer of relation_classes (E16/E19). Structure mirrors
+    entities.assign_classes line-for-line: read, DB-free compute stages, then
+    a single write pass, timings throughout.
+
+    split_gen re-splits GEN by connector before computing -- the §5-subplan
+    genitive acceptance instrument (main()'s --gen-check); it never writes
+    (callers that pass split_gen=True must not commit its result as the
+    production mapping)."""
+    ensure_schema(conn)
+    rid = run.run_id
+    timings: dict = {}
+
+    t0 = time.perf_counter()
+    with conn.cursor() as cur:
+        cur.execute("SELECT template, connector, src, dst FROM relations WHERE run_id=%s",
+                    (rid,))
+        n_rows = 0
+        pairsets: dict = defaultdict(set)
+        for r in cur:
+            n_rows += 1
+            key = f"GEN/{r['connector']}" if (split_gen and r["template"] == "GEN") else r["template"]
+            pairsets[key].add((r["src"], r["dst"]))
+        pairsets = dict(pairsets)
+        print(f"  templates={len(pairsets)} rows={n_rows}")
+    timings["read"] = time.perf_counter() - t0
+
+    t0 = time.perf_counter()
+    scores = _shared_pair_scores(pairsets, min_shared)
+    sim = {pair: sc for pair, sc in scores.items() if sc[0] >= threshold}
+    below = len(scores) - len(sim)
+    print(f"  edges={len(sim)} below_threshold_above_floor={below}")
+    for (a, b), (cos, shared) in sorted(sim.items(), key=lambda kv: -kv[1][0])[:20]:
+        print(f"    {a!r} ~ {b!r} cos={cos:.3f} shared={shared}")
+    edges = {pair: cos for pair, (cos, _shared) in sim.items()}
+    timings["similarity"] = time.perf_counter() - t0
+
+    t0 = time.perf_counter()
+    classes = rel_class_partition(edges, sorted(pairsets))
+    timings["partition"] = time.perf_counter() - t0
+
+    t0 = time.perf_counter()
+    if not split_gen:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM relation_classes WHERE run_id = %s", (rid,))
+            cur.executemany(
+                "INSERT INTO relation_classes (run_id, template, rel_class) VALUES (%s, %s, %s)",
+                [(rid, tmpl, cls) for tmpl, cls in classes.items()])
+        conn.commit()
+    timings["write"] = time.perf_counter() - t0
+
+    for stage, dt in timings.items():
+        print(f"  {stage:<18} {dt:7.2f}s")
+
+    return {"templates": len(pairsets), "rows": n_rows, "edges": len(edges),
+            "classes": len(set(classes.values())),
+            "classed": sum(1 for t, c in classes.items() if c != t),
+            "assignments": classes, "timings": timings}
+
+
 # ----------------------------------------------------------- schema/build/CLI
 
 _DDL = (
@@ -344,6 +535,13 @@ _DDL = (
         FOREIGN KEY (run_id, dst) REFERENCES entities (run_id, entity_id) ON DELETE CASCADE
     )""",
     """CREATE INDEX IF NOT EXISTS relations_llr ON relations (run_id, llr DESC)""",
+    """CREATE TABLE IF NOT EXISTS relation_classes (
+        run_id    uuid NOT NULL REFERENCES graph_run ON DELETE CASCADE,
+        template  text NOT NULL,
+        rel_class text NOT NULL,
+        PRIMARY KEY (run_id, template)
+    )""",
+    """CREATE INDEX IF NOT EXISTS relation_classes_class ON relation_classes (run_id, rel_class)""",
 )
 
 
@@ -426,11 +624,43 @@ def build_relations(conn, run) -> dict:
             "relations": len(rows), "timings": timings}
 
 
+def _print_class_ranking(conn, rid) -> None:
+    """E17: the per-class ranking QUERY -- top 10 classes by summed n. A
+    query, not a rebuilt column (E5's law at class grain); the factbook
+    render is out of scope for T71."""
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT rc.rel_class, count(*) AS templates, sum(r.n) AS mass,
+                   string_agg(DISTINCT r.template, ', ' ORDER BY r.template) AS members
+              FROM relations r JOIN relation_classes rc
+                ON rc.run_id = r.run_id AND rc.template = r.template
+             WHERE r.run_id = %s GROUP BY rc.rel_class ORDER BY mass DESC LIMIT 10""",
+            (rid,))
+        for row in cur.fetchall():
+            print(f"  class={row['rel_class']!r} templates={row['templates']} "
+                  f"mass={row['mass']}  members=[{row['members']}]")
+
+
 def main(argv: list) -> int:
+    """usage: python relations.py <label> [--rel-classes-only] [--gen-check]
+
+    --rel-classes-only skips build_relations and runs assign_rel_classes
+    alone against an already-built run, then prints the E17 ranking query --
+    mirrors entities.py's --classes-only (one flag on the incumbent CLI beats
+    a new module, Article III).
+
+    --gen-check is the §6.24-subplan genitive acceptance instrument: re-reads
+    relations with GEN re-split by connector, runs the identical similarity +
+    partition, and prints whether the surviving GEN/<connector> keys land in
+    one class. Read-only -- writes nothing (assign_rel_classes(split_gen=True)
+    never commits)."""
     if len(argv) < 2:
-        print("usage: python relations.py <label>", file=sys.stderr)
+        print("usage: python relations.py <label> [--rel-classes-only] [--gen-check]",
+              file=sys.stderr)
         return 2
     label = argv[1]
+    rel_classes_only = "--rel-classes-only" in argv[2:]
+    gen_check = "--gen-check" in argv[2:]
     conn = psycopg.connect(DSN, row_factory=dict_row)
     try:
         try:
@@ -438,6 +668,25 @@ def main(argv: list) -> int:
         except LookupError as exc:
             print(str(exc), file=sys.stderr)
             return 1
+
+        if gen_check:
+            gc = assign_rel_classes(conn, run, split_gen=True)
+            gen_classes = {t: c for t, c in gc["assignments"].items() if t.startswith("GEN/")}
+            all_one_class = len(set(gen_classes.values())) <= 1
+            print(f"{label} {run.run_id} gen-check templates={gc['templates']}")
+            for key, cls in sorted(gen_classes.items()):
+                print(f"  {key!r} -> class={cls!r}")
+            print(f"  all GEN/* co-classed: {all_one_class}")
+            return 0
+
+        if rel_classes_only:
+            cls = assign_rel_classes(conn, run)
+            print(f"{label} {run.run_id} templates={cls['templates']} "
+                  f"rows={cls['rows']} edges={cls['edges']} "
+                  f"classes={cls['classes']} classed={cls['classed']}")
+            _print_class_ranking(conn, run.run_id)
+            return 0
+
         result = build_relations(conn, run)
 
         with conn.cursor() as cur:
