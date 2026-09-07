@@ -1215,3 +1215,34 @@ def test_superlative_prompt_with_matching_superlative_evidence_passes():
         prompt="who was the best selling act of the 1990s", entail_ords=[6323],
         answer_ords=[6323], superlative_entails=2, n_chunks=88)
     assert not gated
+
+
+# ------------------------------------------- A16 reflexive superlative guard
+# KNOWN-BAD FIRST: written against the live premise chain (operator, 2026-09-07)
+# "supports -- Noel Gallagher reached the height of his fame during the Britpop
+# era" offered as support for "the most famous musician of the 1990's".
+
+def test_reflexive_superlatives_are_not_population_claims():
+    R = walker_core.is_reflexive_superlative
+    assert R("Noel Gallagher reached the height of his fame during the Britpop era")
+    assert R("it was his biggest hit")
+    assert R("her peak years were the 1980s")
+    assert R("their most successful album to date")
+    assert R("a career high for the band")
+    # population-scoped claims are NOT reflexive -- these may answer a superlative
+    assert not R("the best-selling album of the decade")
+    assert not R("the most famous musician of the 1990s")
+    assert not R("Nirvana was the biggest band in the world that year")
+
+
+def test_reflexive_evidence_does_not_exempt_the_superlative_gate():
+    """A16(b): a chunk saying X peaked in his own career is not evidence that
+    X led a population -- superlative_entails must not count it, so A14(b)
+    still gates."""
+    n = walker_core.count_population_superlatives(
+        ["Noel Gallagher reached the height of his fame during the Britpop era",
+         "his most successful album was released in 1995"])
+    assert n == 0, "self-scoped superlatives must not count as ranking evidence"
+    n2 = walker_core.count_population_superlatives(
+        ["Nevermind was the best-selling album of the decade"])
+    assert n2 == 1

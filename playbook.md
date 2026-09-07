@@ -1359,7 +1359,8 @@ zero-entail path, and no diagnostic covered the base-answer path.
   _Files:_ walker_app.py, walker_core.py, tests/test_walker_core.py, tests/test_walker_render.py
   _Verify:_ python -m pytest tests/test_walker_core.py tests/test_walker_render.py -q && PYTHONPATH=. python tools/diag_rerun.py mixed-full-dual
 
-- [OPEN] T81 A16 reflexive superlative guard: is_reflexive_superlative()
+- [OPEN] T81 A16 reflexive superlative guard + A17 (yield column, per-token
+  dedup, no-movement stop, honest budget semantics): is_reflexive_superlative()
   pure predicate; discount reflexive spans from superlative_entails; Reason
   prompt states the population-vs-self scope distinction
   _Files:_ walker_core.py, walker_app.py, interpret.py, tests/test_walker_core.py

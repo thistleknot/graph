@@ -2786,3 +2786,30 @@ model produced the fallacy in its own premise ("supports -- Noel Gallagher
 reached the height of his fame during the Britpop era" offered as support
 for "most famous musician of the 1990s"). Live receipt: that exact premise
 chain, 2026-09-07.
+
+**A17 (the proposer's signal, and two loop economies -- operator, 2026-09-07:
+"word").** From the live trace of the musician prompt:
+
+(a) DEGENERATE SNR COLUMN. precision_proxy = entails/judged read 1.00 on
+every row because the judge returned zero contradicts throughout -- the
+denominator was the numerator. The informative ratio is entails/n_chunks
+(1/88 -> 6/88 -> 5/88 -> 7/88). The history table SHALL carry BOTH:
+`prec` (entails/judged, unchanged for continuity) and `yield` (entails/n),
+and the proposer's instruction SHALL name `yield` as the SNR to move.
+
+(b) QUERY ACCRETION. `_append` tests whether the WHOLE added string is
+already present, so a partially-overlapping set slips through: iteration 3
+re-appended "kurt cobain dave grohl eddie vedder grunge nirvana pearl jam
+soundgarden alice in chains", all already in the query. Dedup SHALL be
+per-token against the accumulated query.
+
+(c) NO-MOVEMENT STOP. it2 -> it3 moved mean 0.5517 -> 0.5503 with per-cid
+mass identical to 2dp; A12's dilution band cannot fire because n was pinned
+at 88 (ef never changed) and the mean did not drop below the band. WHEN an
+iteration's mean AND per-cid mass are unchanged within tolerance and no NEW
+entails appeared, the loop SHALL stop with stop_reason="no-movement" rather
+than spend the remaining budget.
+
+(d) HONEST STOP SEMANTICS: stop_reason="budget" means the loop ran out of
+iterations, NOT that it judged the evidence sufficient. The UI and the gold
+lane SHALL not read budget as success.
