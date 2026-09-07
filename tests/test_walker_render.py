@@ -750,3 +750,18 @@ def test_every_panel_head_title_has_an_accent():
     titles = set(re.findall(r'panel_head\("([^"]+)"', src))
     accents = set(re.findall(r'"([^"]+)":\s*(?:GOOD|BAD|WARN|PRIMARY|"#\w+")', src))
     assert titles <= accents, f"panel titles missing an ACCENT entry: {titles - accents}"
+
+
+def test_every_answer_gate_call_passes_entail_texts():
+    """A18(b) regression pin: the crown returned because ONE of the three gate
+    call sites (the loop-answer gate) never received entail_texts, so it kept
+    counting superlatives over chunks the answer does not cite. Every
+    answer_gate/needs_more_evidence call that supplies a prompt must also
+    supply entail_texts."""
+    import re
+    src = _src()
+    calls = re.findall(r"(?:answer_gate|needs_more_evidence)\((?:[^()]|\([^()]*\))*\)", src)
+    prompted = [c for c in calls if "prompt=q" in c]
+    assert prompted, "no prompt-bearing gate calls found -- test is not measuring anything"
+    missing = [c[:80] for c in prompted if "entail_texts" not in c]
+    assert not missing, f"gate call(s) without entail_texts (A18b): {missing}"

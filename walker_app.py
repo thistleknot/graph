@@ -742,15 +742,20 @@ with tab_analysis:
                                     _gated, _hero_text = walker_core.answer_gate(
                                         _loop_ans["answer"], len(_acc_entails), prompt=q,
                                         entail_ords=_acc_entails, answer_ords=_acc_ans_ords,
-                                        superlative_entails=_acc_sup, n_chunks=len(bnd.sampled))
+                                        superlative_entails=_acc_sup,
+                                        entail_texts=_acc_why,   # A18(b): CITED only
+                                        n_chunks=len(bnd.sampled))
                                     _cand_entails = _acc_entails
                                     _cand_contradicts = rx.get("contradicts") or []
                                     _cand_why = _acc_why
                                     if _gated:
                                         _cites, _caption, _color = [], _model_line, WARN
                                         _uncited = [o for o in _acc_ans_ords if o not in _acc_entails]
+                                        _cited_sup = walker_core.count_population_superlatives(
+                                            [_acc_why.get(o, "") for o in _acc_ans_ords
+                                             if o in _acc_entails])
                                         _show_candidates = (not _uncited and walker_core.is_superlative(q)
-                                                             and _acc_sup == 0)
+                                                             and _cited_sup == 0)
                                     else:
                                         _cites = _loop_entails
                                         _caption = walker_core.loop_answer_caption(rx["n_iters"])
