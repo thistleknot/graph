@@ -2732,3 +2732,30 @@ to consider. This is exactly A14(b)'s case: the corpus holds evidence ABOUT a
 candidate and no evidence RANKING the population, so the honest render is
 the candidate set. A superlative answer that looks locally supported is a
 regional artifact of which chunks were walked.
+
+**A15 (the gate IS the trigger -- operator, 2026-09-07: "earlier you showed me
+nirvana surfaced so what gives?").** Two live runs of the SAME prompt took
+different paths and only one found Nirvana:
+
+    run A: base judge -> 0 entails -> loop fired -> REANCHOR -> #6323
+           Nirvana/Cobain -> answered from loop evidence
+    run B: base judge -> 3 entails (Frah/Gallagher/Gilmour, each merely
+           "was famous in the 1990s") -> walker_app.py:669 `_entails == 0`
+           false -> LOOP NEVER RAN -> gate refused to crown, but the
+           candidate set held only what the base walk happened to reach
+
+The defect is that the loop's trigger and the answer's gate use different
+definitions of "insufficient". A6/A13/A14 already encode the real one.
+Amended: the loop SHALL fire whenever `answer_gate` would GATE the base
+answer -- zero entails (A6), a superlative with no ranking evidence (A14b),
+or a citation outside the entailing set (A14c) -- not on `entails == 0`
+alone. One predicate, consulted twice: once to decide whether to search
+harder, once to decide whether to speak. After the loop, the gate re-runs
+over the accumulated evidence: if some entailing chunk then carries the
+ranking claim, the answer stands; otherwise the CANDIDATE SET renders, now
+containing what the loop found.
+
+Consequence for A7 (do-no-harm): a prompt whose base answer is NOT gated
+still behaves byte-identically -- the frozen diagnostic is retrieval-only
+and unaffected either way; the gold lane must show the superlative rows now
+reaching the loop on every run, not just when the judge happens to return 0.

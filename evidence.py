@@ -405,6 +405,48 @@ def walk_relations(conn, run, entity_ids) -> list:
         return cur.fetchall()
 
 
+CLASS_LABEL_SQL = """
+    WITH m AS (
+      SELECT e.class_id, e.name,
+             sum(mn.cnt)::bigint            AS mass,
+             count(DISTINCT mn.ord)::bigint AS df
+        FROM entities e
+        JOIN mentions mn ON mn.run_id = e.run_id AND mn.entity_id = e.entity_id
+       WHERE e.run_id = %s AND e.class_id IS NOT NULL
+       GROUP BY e.class_id, e.name),
+    n AS (SELECT count(DISTINCT ord)::numeric AS chunks FROM mentions WHERE run_id = %s),
+    rk AS (
+      SELECT m.class_id, m.name, m.mass, m.df,
+             m.mass * ln((SELECT chunks FROM n) / greatest(m.df, 1)) AS score,
+             row_number() OVER (PARTITION BY m.class_id
+                                ORDER BY m.mass * ln((SELECT chunks FROM n)
+                                                     / greatest(m.df, 1)) DESC,
+                                         m.mass DESC, m.name) AS rn
+        FROM m)
+    SELECT class_id, name FROM rk WHERE rn = 1"""
+
+
+def class_labels(conn, run) -> dict:
+    """E15 amendment: a class is NAMED by argmax(mass x distinctiveness), not by
+    its representative entity_id (an insertion-order artifact) and not by raw
+    mass (which elects the function word -- live receipt: a song/album class
+    named "later", whose mass 23360 beat song 16796).
+
+    distinctiveness = ln(chunks / df): a term mentioned in nearly every chunk
+    contributes ~0 no matter how often it fires, which is the operator's PPMI
+    law (PPMI demotes, it does not weight) expressed on document frequency.
+
+    The label is DISPLAY ONLY. class_id stays min(members) -- the deterministic
+    join key (determinism boundary).
+
+    Spec: .spec/specs/graph-explorer/design.md 6.24 E15 amendment
+    Task: playbook.md T79
+    """
+    with conn.cursor() as cur:
+        cur.execute(CLASS_LABEL_SQL, (run.run_id, run.run_id))
+        return {r["class_id"]: r["name"] for r in cur.fetchall()}
+
+
 def class_reference(conn, run, *, k_classes=10, k_members=6) -> dict:
     """P18 REFERENCE: the run's top entity/relation classes by mention/n mass,
     RUN-scoped and prompt-independent -- unlike walk_entities/walk_relations,

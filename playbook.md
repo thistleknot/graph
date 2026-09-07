@@ -1352,3 +1352,9 @@ zero-entail path, and no diagnostic covered the base-answer path.
   _Files:_ evidence.py, tests/test_evidence.py
   _Verify:_ python -m pytest tests/test_evidence.py -q + live spot-check that
   the song/album class no longer reads "later"
+
+- [OPEN] T80 A15: the gate becomes the loop trigger -- react fires whenever
+  answer_gate would gate the base answer (0 entails OR superlative-unranked
+  OR bad citation), gate re-runs over accumulated evidence afterward
+  _Files:_ walker_app.py, walker_core.py, tests/test_walker_core.py, tests/test_walker_render.py
+  _Verify:_ python -m pytest tests/test_walker_core.py tests/test_walker_render.py -q && PYTHONPATH=. python tools/diag_rerun.py mixed-full-dual
