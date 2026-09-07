@@ -1231,3 +1231,39 @@ phenomenon #6323..." after 3 agentic iterations. Frozen diagnostic
 PASS 18/20 | FAIL [E3] | KNOWN-FAIL [A2] (A7 held). NOTE: the loop is
 LLM-proposer-stochastic run to run; per-row single runs are noise-prone --
 n>=3 per row before any future pass/fail claim on a single G-row delta.
+
+## Layer 21 -- sequential (unsupervised classes: entities and relations)
+Source: operator, 2026-09-06 ("top entities by class... unsupervised classes
+created however that would look like, my guess was co-occurrence analysis";
+"graph-based entity resolution but for relations"); executed on "make it so",
+2026-09-07.
+
+- [OPEN] T69 Spec 6.24: E15-E19 -- entity co-mention graph (NPMI-weighted,
+  from mentions) -> Louvain entity classes, batch + fixed seed, stored
+  additively (E8 pattern); DIRT-style relation classes (template similarity
+  over shared (src,dst) pair sets -> components); per-class top entities and
+  top relations; walk-local relation scoping for group digests
+  _Files:_ .spec/specs/graph-explorer/design.md
+  _Verify:_ grep -c "E1[5-9]" .spec/specs/graph-explorer/design.md
+
+- [OPEN] T70 Entity classes build: entities.py additive pass (or classes.py
+  if entities is sealed -- check E3 first) computing class_id over the
+  co-mention graph; CLI + per-stage timings (E14 discipline); live build on
+  mixed-full-dual + smoke pin
+  _Files:_ entities.py or classes.py, tests/test_entities.py or tests/test_classes.py
+  _Verify:_ live build completes inside Article VII + pytest -q on its tests
+
+- [OPEN] T71 Relation classes build: template pair-set similarity -> class
+  ids stored beside relations (additive table/column); live build + smoke
+  _Files:_ relations.py, tests/test_relations.py
+  _Verify:_ python -m pytest tests/test_relations.py -q + live build
+
+- [OPEN] T72 Surface: REFERENCE-zone panel "Classes" (top entities per class,
+  top relations per class, factbook style); group digests annotate entities
+  with class; relations lines in digests become walk-local-scoped
+  _Files:_ evidence.py, walker_core.py, walker_app.py, tests/test_walker_core.py, tests/test_walker_render.py
+  _Verify:_ python -m pytest tests/test_walker_core.py tests/test_walker_render.py -q && PYTHONPATH=. python tools/diag_rerun.py mixed-full-dual
+
+- [OPEN] T73 Live look: classes panel screenshots to operator
+  _Files:_ (none -- verification only)
+  _Verify:_ playwright screenshots of :8501
