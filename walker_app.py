@@ -666,9 +666,23 @@ with tab_analysis:
                 rr = got[1]
                 _entails = len(rr.get("entailed") or []) if rr.get("ok") else 0
                 rx = None
-                if rr.get("ok") and _entails == 0:      # A7: insufficient path ONLY
-                    with st.spinner("0 entails -- agentic retrieval: re-walking "
-                                    "with new parameters …"):
+                # A15: the loop's trigger and the answer's gate must be the SAME
+                # question, so compute the base-answer gate inputs once and hand
+                # them to needs_more_evidence() -- one source of truth, shared
+                # with answer_gate() below, instead of a bare `_entails == 0`
+                # that let a 3-entail superlative slip past the loop entirely.
+                _ans_ords = walker_core.cited_ords(rr["answer"]) if rr.get("ok") else []
+                _why_map = ({v["ord"]: v.get("why", "") for v in rr.get("verdicts") or []}
+                            if rr.get("ok") else {})
+                _sup_entails = (sum(1 for o in rr["entailed"]
+                                     if walker_core.is_superlative(_why_map.get(o, "")))
+                                if rr.get("ok") else 0)
+                _needs_loop = bool(rr.get("ok")) and walker_core.needs_more_evidence(
+                    rr["answer"], _entails, prompt=q, entail_ords=rr.get("entailed") or [],
+                    answer_ords=_ans_ords, superlative_entails=_sup_entails)
+                if _needs_loop:
+                    with st.spinner("insufficient evidence -- agentic retrieval: "
+                                    "re-walking with new parameters …"):
                         try:
                             rx = react_for(str(run.run_id), q, _bnd=bnd, _ws=ws,
                                            _rr=rr, _embed=embed)
@@ -688,37 +702,18 @@ with tab_analysis:
                                 + (f" · {rr['structure_note']}" if rr.get("structure_note") else ""))
                             _loop_entails = list((rx or {}).get("entails") or [])
                             _show_candidates = False
-                            if _entails > 0:
-                                # A7/A14: base walk already sufficient -- previously
-                                # byte-identical to pre-T67 behaviour with the loop
-                                # never engaged. A14(b)/(c) now route this through
-                                # the gate too: entails > 0 does not exempt a
-                                # superlative claim from needing superlative
-                                # evidence (live defect: 2 entails, 2 contradicts,
-                                # crowned Gallagher anyway), nor an answer that
-                                # cites an ord its own judge did not entail.
-                                _ans_ords = walker_core.cited_ords(rr["answer"])
-                                _why_map = {v["ord"]: v.get("why", "")
-                                            for v in rr.get("verdicts") or []}
-                                _sup_entails = sum(
-                                    1 for o in rr["entailed"]
-                                    if walker_core.is_superlative(_why_map.get(o, "")))
-                                _gated, _hero_text = walker_core.answer_gate(
-                                    rr["answer"], _entails, prompt=q,
-                                    entail_ords=rr["entailed"], answer_ords=_ans_ords,
-                                    superlative_entails=_sup_entails,
-                                    n_chunks=len(bnd.sampled))
-                                if _gated:
-                                    _cites, _caption, _color = [], _model_line, WARN
-                                    _uncited = [o for o in _ans_ords if o not in rr["entailed"]]
-                                    _show_candidates = (not _uncited and walker_core.is_superlative(q)
-                                                         and _sup_entails == 0)
-                                else:
-                                    _cites, _caption, _color = rr.get("cited") or [], _model_line, PRIMARY
+                            _cand_entails, _cand_contradicts, _cand_why = (
+                                rr["entailed"], rr["contradicts"], _why_map)
+                            if not _needs_loop:
+                                # A7 do-no-harm: the base answer was not gated --
+                                # byte-identical to pre-A15 behaviour, no loop, no
+                                # extra model call.
+                                _hero_text = rr["answer"]
+                                _cites, _caption, _color = rr.get("cited") or [], _model_line, PRIMARY
                             elif rx and _loop_entails:
                                 # A13: the loop found entails -- answer from its
                                 # entails-first bundle, not the base walk's argument
-                                # over zero premises.
+                                # over zero (or ungrounded) premises.
                                 with st.spinner("answering from agentic evidence …"):
                                     try:
                                         _loop_ans = loop_answer_for(
@@ -728,11 +723,37 @@ with tab_analysis:
                                     except Exception as e:                       # noqa: BLE001
                                         _loop_ans = {"ok": False, "error": str(e)}
                                 if _loop_ans.get("ok") and _loop_ans.get("answer"):
-                                    _gated = False
-                                    _hero_text = _loop_ans["answer"]
-                                    _cites = _loop_entails
-                                    _caption = walker_core.loop_answer_caption(rx["n_iters"])
-                                    _color = PRIMARY
+                                    # A15: re-run the SAME gate over the ACCUMULATED
+                                    # evidence -- rx["entails"]/["verdicts"] already
+                                    # merge the base judge with every loop iteration
+                                    # (react.run's verdict_of). If the loop's answer
+                                    # still fails the gate (e.g. Frah/Gallagher/
+                                    # Gilmour entails plus a Nirvana entail that
+                                    # itself never ranks the population), the
+                                    # candidate set renders from what the loop found,
+                                    # not just the base walk.
+                                    _acc_entails = _loop_entails
+                                    _acc_why = {o: v.get("why", "")
+                                                for o, v in (rx.get("verdicts") or {}).items()}
+                                    _acc_ans_ords = walker_core.cited_ords(_loop_ans["answer"])
+                                    _acc_sup = sum(1 for o in _acc_entails
+                                                   if walker_core.is_superlative(_acc_why.get(o, "")))
+                                    _gated, _hero_text = walker_core.answer_gate(
+                                        _loop_ans["answer"], len(_acc_entails), prompt=q,
+                                        entail_ords=_acc_entails, answer_ords=_acc_ans_ords,
+                                        superlative_entails=_acc_sup, n_chunks=len(bnd.sampled))
+                                    _cand_entails = _acc_entails
+                                    _cand_contradicts = rx.get("contradicts") or []
+                                    _cand_why = _acc_why
+                                    if _gated:
+                                        _cites, _caption, _color = [], _model_line, WARN
+                                        _uncited = [o for o in _acc_ans_ords if o not in _acc_entails]
+                                        _show_candidates = (not _uncited and walker_core.is_superlative(q)
+                                                             and _acc_sup == 0)
+                                    else:
+                                        _cites = _loop_entails
+                                        _caption = walker_core.loop_answer_caption(rx["n_iters"])
+                                        _color = PRIMARY
                                 else:
                                     # answer stage failed even though entails exist --
                                     # A13's superlative caution still applies.
@@ -745,14 +766,21 @@ with tab_analysis:
                                         found_entails=len(_loop_entails))
                                     _cites, _caption, _color = [], _model_line, WARN
                             else:
-                                # A6: even the loop ended at zero entails.
+                                # A6: even the loop ended at zero (new) entails, or
+                                # react_for raised -- fall back to the base gate's
+                                # own verdict/text (A7: never invent a different
+                                # answer than the one already gated above).
                                 _gated, _hero_text = walker_core.answer_gate(
                                     rr["answer"] or "No premise was judged supported, so there is "
                                                     "nothing to answer from. The premises below say why.",
-                                    _entails,
+                                    _entails, prompt=q, entail_ords=rr.get("entailed") or [],
+                                    answer_ords=_ans_ords, superlative_entails=_sup_entails,
                                     n_iters=(rx or {}).get("n_iters", 0),
                                     n_chunks=len(bnd.sampled), found_entails=0)
                                 _cites, _caption, _color = [], _model_line, WARN
+                                _uncited = [o for o in _ans_ords if o not in (rr.get("entailed") or [])]
+                                _show_candidates = (not _uncited and walker_core.is_superlative(q)
+                                                     and _sup_entails == 0)
                             st.markdown(walker_core.hero_answer(
                                 _hero_text, _cites, _caption, color=_color),
                                 unsafe_allow_html=True)
@@ -760,17 +788,20 @@ with tab_analysis:
                                 # A14(b): the corpus holds evidence ABOUT a
                                 # candidate, none RANKING the population --
                                 # render what it holds instead of a crowned claim.
+                                # A15: sourced from the ACCUMULATED evidence
+                                # (_cand_entails/_cand_contradicts/_cand_why), which
+                                # is the loop's superset when the loop ran.
                                 st.markdown("**Candidates the corpus holds**")
                                 st.caption("the corpus can show what it holds; "
                                            "it cannot rank them")
                                 for label, ords_, verdict_word, colour in (
-                                        ("Entails", rr["entailed"], "entails", GOOD),
-                                        ("Contradicts", rr["contradicts"], "contradicts", BAD)):
+                                        ("Entails", _cand_entails, "entails", GOOD),
+                                        ("Contradicts", _cand_contradicts, "contradicts", BAD)):
                                     for o in ords_:
                                         nd = gt.node(conn, run, o)
                                         badge = walker_core.pill(verdict_word, colour)
                                         head = (f"#{o} · {nd['doc_id']} · c{nd['cid']} — "
-                                                f"{_why_map.get(o, '')}")
+                                                f"{_cand_why.get(o, '')}")
                                         snippet = walker_core.clip(
                                             interpret.excerpt(nd['body'], q, 300, embed), 300)
                                         st.markdown(walker_core.evidence_row(

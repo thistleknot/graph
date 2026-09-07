@@ -287,6 +287,32 @@ def answer_gate(answer: str, entails: int, *, n_iters: int = 0,
     return False, answer
 
 
+def needs_more_evidence(answer: str, entails: int, *, prompt: str | None = None,
+                         entail_ords=(), answer_ords=(),
+                         superlative_entails: int = 0) -> bool:
+    """A15: the loop's trigger and the gate's verdict are the SAME question --
+    "is this answer insufficient" -- so they must consult the SAME logic
+    rather than two definitions that can drift apart. Delegates to
+    answer_gate() and returns only its `gated` flag; the branch logic (A6
+    zero-entails, A14(c) uncited-ord, A14(b) unranked-superlative) lives in
+    exactly one place.
+
+    Live defect this closes: run A had 0 entails, the old `_entails == 0`
+    trigger fired, the loop found Nirvana. Run B had 3 entails, each merely
+    "X was famous in the 1990s" -- the old trigger never fired because it
+    only checked entails == 0, the loop never ran, and the candidate set held
+    only Frah/Gallagher/Gilmour. answer_gate already gates run B (A14(b));
+    this predicate makes that gate the loop's trigger too.
+
+    Spec: .spec/specs/graph-explorer/design.md A15
+    Task: playbook.md T80
+    """
+    gated, _ = answer_gate(answer, entails, prompt=prompt, entail_ords=entail_ords,
+                            answer_ords=answer_ords,
+                            superlative_entails=superlative_entails)
+    return gated
+
+
 def loop_answer_caption(n_iters: int) -> str:
     """A13: the hero caption when the answer is drawn from the loop's
     entails-first bundle rather than the base walk. PURE, no escaping --

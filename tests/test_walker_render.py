@@ -646,10 +646,42 @@ def test_classes_panel_uses_the_cached_helper_not_inline_sql():
 # ------------------------- 6.23 agentic retrieval (T62)
 
 def test_react_engages_only_on_the_insufficient_path():
+    """A15: the trigger is the SAME gate answer_gate() would apply, not a bare
+    `_entails == 0` -- a superlative answer with entails > 0 must still be able
+    to fire the loop, so the trigger delegates to needs_more_evidence()."""
     src = _src()
-    assert 'if rr.get("ok") and _entails == 0:' in src
+    import re as _re
+    # Precise: no bare zero-entails TRIGGER statement. (A loose substring test
+    # false-positives on `_sup_entails == 0`, a different variable, and on the
+    # comment that quotes the retired form -- assert the statement, not the text.)
+    _trigger = _re.compile(r'if\s+rr\.get\(.ok.\)\s+and\s+_entails\s*==\s*0\s*:')
+    assert not _trigger.search(src), "the old zero-only trigger statement must be gone"
+    assert "walker_core.needs_more_evidence(" in src
+    assert "_needs_loop = " in src
     assert src.count("react_for(") == 2, "react_for: one def + exactly one call site"
-    assert src.find('_entails == 0') < src.find("rx = react_for(")
+    assert src.find("walker_core.needs_more_evidence(") < src.find("rx = react_for(")
+    assert 'if _needs_loop:' in src
+
+
+def test_needs_more_evidence_agrees_with_answer_gate_on_all_gated_cases():
+    """A15: needs_more_evidence must be a thin wrapper over answer_gate, not a
+    second copy of the branch logic -- verified against all four cases from
+    the walker_core gate test suite (zero entails, superlative-unranked,
+    bad citation, clean answer)."""
+    import walker_core
+    cases = [
+        dict(answer="x", entails=0),
+        dict(answer="Noel Gallagher is the most famous musician of the 1990's.",
+             entails=2, prompt="who is the most famous musician of the 1990's?",
+             entail_ords=[3594, 7666], answer_ords=[3594, 7666], superlative_entails=0),
+        dict(answer="Nirvana defined the era. #6323 #9999", entails=1,
+             prompt="what defined the 1990s", entail_ords=[6323],
+             answer_ords=[6323, 9999], superlative_entails=0),
+        dict(answer="A.", entails=4),
+    ]
+    for c in cases:
+        gated, _ = walker_core.answer_gate(**c)
+        assert walker_core.needs_more_evidence(**c) == gated
 
 
 def test_agentic_trace_lands_in_the_evidence_zone():
@@ -686,13 +718,27 @@ def test_loop_answer_caption_reads_answered_after():
     assert walker_core.loop_answer_caption(1) == "answered after 1 agentic iteration"
 
 
+def test_candidate_set_renders_from_accumulated_evidence():
+    """A15: once the loop runs, the candidate-set render must read the
+    ACCUMULATED entails/contradicts/why (rx-derived _cand_* vars), not just
+    the base walk's rr["entailed"]/rr["contradicts"] -- else a Nirvana chunk
+    the loop found never reaches the render even though the loop found it."""
+    src = _src()
+    i_render = src.find('st.markdown("**Candidates the corpus holds**")')
+    assert i_render > -1
+    block = src[i_render:i_render + 900]
+    assert '_cand_entails' in block and '_cand_contradicts' in block and '_cand_why' in block
+    assert 'rr["entailed"]' not in block
+    assert 'rr["contradicts"]' not in block
+
+
 def test_a6_gate_only_fires_when_the_loop_also_found_zero_entails():
     """A13: the A6 insufficient-evidence text renders only when even the loop
     ends at zero entails -- the loop-found-entails branch must sit strictly
     before the zero-entails answer_gate() fallback in source order."""
     src = _src()
     i_loop_branch = src.find("elif rx and _loop_entails:")
-    i_zero_gate = src.find("# A6: even the loop ended at zero entails.")
+    i_zero_gate = src.find("# A6: even the loop ended at zero")   # wording may vary
     assert -1 < i_loop_branch < i_zero_gate
 
 

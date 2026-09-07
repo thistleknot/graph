@@ -1170,6 +1170,43 @@ def test_cited_ords_parses_hash_markers_in_order_deduped():
     assert walker_core.cited_ords("no citations here") == []
 
 
+def test_needs_more_evidence_matches_answer_gate_zero_entails():
+    """A15: the loop's trigger must agree with the gate on the A6 zero-entails
+    case -- both say True."""
+    # n_iters shapes the gated TEXT only, never the verdict -- not a param here.
+    assert walker_core.needs_more_evidence("x", 0) is True
+    gated, _ = walker_core.answer_gate("x", 0, n_iters=0)
+    assert walker_core.needs_more_evidence("x", 0) == gated
+
+
+def test_needs_more_evidence_matches_answer_gate_superlative_unranked():
+    """A15: the live defect -- 3 entails, none ranking the population -- must
+    trigger the loop even though entails > 0 (the old `_entails == 0` trigger
+    missed exactly this case)."""
+    kw = dict(prompt="who is the most famous musician of the 1990's?",
+              entail_ords=[3594, 7666], answer_ords=[3594, 7666],
+              superlative_entails=0)
+    gated, _ = walker_core.answer_gate(GALLAGHER, entails=2, **kw)
+    assert gated is True
+    assert walker_core.needs_more_evidence(GALLAGHER, 2, **kw) == gated is True
+
+
+def test_needs_more_evidence_matches_answer_gate_bad_citation():
+    kw = dict(prompt="what defined the 1990s", entail_ords=[6323],
+              answer_ords=[6323, 9999], superlative_entails=0)
+    gated, _ = walker_core.answer_gate("Nirvana defined the era. #6323 #9999", 1, **kw)
+    assert gated is True
+    assert walker_core.needs_more_evidence(
+        "Nirvana defined the era. #6323 #9999", 1, **kw) == gated is True
+
+
+def test_needs_more_evidence_matches_answer_gate_clean_answer():
+    """A7 do-no-harm: a clean, ungated answer must not trigger the loop."""
+    gated, _ = walker_core.answer_gate("A.", 4, n_iters=0, n_chunks=20)
+    assert gated is False
+    assert walker_core.needs_more_evidence("A.", 4) == gated is False
+
+
 def test_superlative_prompt_with_matching_superlative_evidence_passes():
     """A14(b) is not a blanket ban: WHEN a chunk itself carries the ranking
     claim, the answer may stand."""
