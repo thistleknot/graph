@@ -679,7 +679,8 @@ with tab_analysis:
                                 if rr.get("ok") else 0)
                 _needs_loop = bool(rr.get("ok")) and walker_core.needs_more_evidence(
                     rr["answer"], _entails, prompt=q, entail_ords=rr.get("entailed") or [],
-                    answer_ords=_ans_ords, superlative_entails=_sup_entails)
+                    answer_ords=_ans_ords, superlative_entails=_sup_entails,
+                    entail_texts=_why_map)          # A18(b): recount over CITED only
                 if _needs_loop:
                     with st.spinner("insufficient evidence -- agentic retrieval: "
                                     "re-walking with new parameters …"):
@@ -775,6 +776,7 @@ with tab_analysis:
                                                     "nothing to answer from. The premises below say why.",
                                     _entails, prompt=q, entail_ords=rr.get("entailed") or [],
                                     answer_ords=_ans_ords, superlative_entails=_sup_entails,
+                                    entail_texts=_why_map,        # A18(b)
                                     n_iters=(rx or {}).get("n_iters", 0),
                                     n_chunks=len(bnd.sampled), found_entails=0)
                                 _cites, _caption, _color = [], _model_line, WARN

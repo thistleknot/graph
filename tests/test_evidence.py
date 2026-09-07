@@ -317,3 +317,103 @@ def test_analysis_inputs_smoke():
             assert r["dst"] in mentioned
     finally:
         conn.close()
+
+
+# ---- class naming (T79, design 6.24 E15 amendment) ----
+
+def test_pick_class_label_picks_the_planted_song_over_the_ubiquitous_later():
+    # live receipt (spec 6.24 E15 amendment): mass order is later 23360 >
+    # song 16796 > became 15965 > album 15124, so raw mass elects "later".
+    # "later" is planted near-ubiquitous (high df) so distinctiveness demotes
+    # it; "song" is comparatively rare (low df) so it survives the demotion.
+    chunks = 40000
+    candidates = [
+        ("later", 23360, 38000),   # in nearly every chunk -> ln(~1.05) ~ 0
+        ("song", 16796, 4000),     # far rarer -> ln(10) ~ 2.3
+        ("became", 15965, 30000),
+        ("album", 15124, 6000),
+    ]
+    assert evidence.pick_class_label(candidates, chunks) == "song"
+
+
+def test_pick_class_label_breaks_ties_by_mass_then_name():
+    # identical score (same mass, same df -> same distinctiveness): mass tie
+    # too, so alphabetically-first name wins deterministically.
+    chunks = 100
+    candidates = [("zeta", 10, 5), ("alpha", 10, 5)]
+    assert evidence.pick_class_label(candidates, chunks) == "alpha"
+
+    # unequal mass, same df: higher mass wins even though score ties are not
+    # in play here (score scales with mass directly).
+    candidates2 = [("low", 5, 5), ("high", 10, 5)]
+    assert evidence.pick_class_label(candidates2, chunks) == "high"
+
+
+def test_class_label_score_demotes_high_df_toward_zero():
+    # a term touching every chunk (df == chunks) scores near zero regardless
+    # of mass -- the PPMI-as-demotion-filter law (memory: PPMI is a demotion
+    # filter, not a term weight).
+    ubiquitous = evidence.class_label_score(mass=50000, df=10000, chunks=10000)
+    rare = evidence.class_label_score(mass=50000, df=10, chunks=10000)
+    assert ubiquitous == pytest.approx(0.0, abs=1e-9)
+    assert rare > ubiquitous
+
+
+@pytest.mark.live_db
+def test_class_labels_covers_every_class_and_changes_at_least_one_label():
+    conn = require_gt_conn()
+    try:
+        run = require_run(conn, "mixed-full-dual")
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT DISTINCT class_id FROM entities"
+                " WHERE run_id = %s AND class_id IS NOT NULL",
+                (run.run_id,))
+            class_ids = {r["class_id"] for r in cur.fetchall()}
+            cur.execute(
+                "SELECT entity_id, name FROM entities"
+                " WHERE run_id = %s AND entity_id = ANY(%s::int[])",
+                (run.run_id, sorted(class_ids)))
+            min_id_name = {r["entity_id"]: r["name"] for r in cur.fetchall()}
+
+        labels = evidence.class_labels(conn, run)
+
+        # every class_id the run knows about gets a label
+        assert class_ids
+        assert set(labels) == class_ids
+        for cid in class_ids:
+            assert labels[cid]
+
+        # the rule changed something: at least one class's argmax label
+        # differs from the old min(members) representative's own name
+        assert any(labels[cid] != min_id_name[cid] for cid in class_ids)
+    finally:
+        conn.close()
+
+
+@pytest.mark.live_db
+def test_walk_entities_class_names_use_class_labels_not_raw_min_id_name():
+    conn = require_gt_conn()
+    try:
+        run = require_run(conn, "mixed-full-dual")
+        bnd, _ = sampler.ef_evidence(conn, run, Q_A, seed=0)
+        assert bnd.sampled
+        ents = evidence.walk_entities(conn, run, bnd.sampled)
+        labels = evidence.class_labels(conn, run)
+        for cid, name in ents["class_names"].items():
+            assert name == labels.get(cid, name)
+    finally:
+        conn.close()
+
+
+@pytest.mark.live_db
+def test_class_reference_label_matches_class_labels():
+    conn = require_gt_conn()
+    try:
+        run = require_run(conn, "mixed-full-dual")
+        labels = evidence.class_labels(conn, run)
+        ref = evidence.class_reference(conn, run)
+        for c in ref["entity_classes"]:
+            assert c["label"] == labels.get(c["class_id"], c["label"])
+    finally:
+        conn.close()

@@ -1257,3 +1257,30 @@ def test_interpret_prompts_state_the_reflexive_scope_distinction():
     assert "own career" in interpret.SYSTEM.lower()
     assert "own career" in interpret.EVAL_SYSTEM.lower()
     assert "own career" in interpret.ONE_SHOT_SYSTEM.lower()
+
+
+# ------------------------------------------------- A18 hedged + cited guard
+# KNOWN-BAD FIRST: the live crown (operator screenshot, 2026-09-07) exempted
+# by "Rakoto Frah was one of the most famous Malagasy artists" (#8680) while
+# the answer crowned Gallagher citing only #3594 ("height of his fame").
+
+def test_hedged_superlatives_are_not_maxima():
+    C = walker_core.count_population_superlatives
+    assert C(["Rakoto Frah was one of the most famous Malagasy artists"]) == 0
+    assert C(["among the most successful bands of the era"]) == 0
+    assert C(["one of the best albums of the decade"]) == 0
+    assert C(["Nevermind was the best-selling album of the decade"]) == 1
+
+
+def test_superlative_evidence_must_come_from_a_CITED_chunk():
+    """A18(b): evidence about Frah cannot license a crown on Gallagher."""
+    gated, _ = walker_core.answer_gate(
+        "Noel Gallagher is the most famous musician of the 1990's #3594",
+        entails=5, prompt="who is the most famous musician of the 1990's?",
+        entail_ords=[3594, 8680, 6993],
+        answer_ords=[3594],
+        entail_texts={3594: "reached the height of his fame during Britpop",
+                      8680: "Rakoto Frah was one of the most famous Malagasy artists",
+                      6993: "Pink Floyd active in 1990s"},
+        n_chunks=88)
+    assert gated, "only the CITED chunk's own claim may exempt the gate"

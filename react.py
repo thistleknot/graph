@@ -516,29 +516,24 @@ def run(conn, run_, query, *, embed=None, judge_fn=None, walk_fn=None,
 
         ent_total = sum(1 for v in verdict_of.values() if v["verdict"] == "entails")
 
-        # A17(c): no-movement stop. Needs a previous record, and one more
-        # beyond that -- never fires at iteration 0 (no previous record at
-        # all) or iteration 1 (only one prior point, too little to call
-        # stagnation rather than noise; the dilution-detection idiom above
-        # applies the same >=3-point discipline). Live receipt: it2 -> it3
-        # moved mean 0.5517 -> 0.5503 with per-cid mass identical to 2dp and
-        # no new entails, while A12's dilution band could not fire (n was
-        # pinned, mean did not drop below the band) -- the loop spent its
-        # remaining budget for nothing. Also requires ent_total > 0: a walk
-        # that has found NOTHING yet is already routed by A2's forced-
-        # insufficient path, and "flat at zero" is not the stagnation this
-        # guards against -- it is the ordinary zero-entail case, which keeps
-        # spending budget on purpose (A6) rather than giving up early.
+        # A17(c) no-movement stop, LOOSENED (operator decision, 2026-09-07):
+        # the original three-way conjunction (mean within 1%, per-cid mass
+        # within 0.02, AND no new entails) never fired in practice -- mean
+        # and per-cid mass keep wiggling even when the loop is adding
+        # nothing useful, so the conjunction almost never held even across
+        # genuinely wasted iterations. The ONE condition that actually
+        # matters is whether the iteration added any new entailing chunks:
+        # if the accumulated entail count did not increase versus the
+        # previous iteration, the loop is spending budget for nothing and
+        # SHALL stop. Needs a previous record (i >= 2), and still requires
+        # ent_total > 0: a walk that has found NOTHING yet is already routed
+        # by A2's forced-insufficient path, and "flat at zero" is not the
+        # stagnation this guards against -- it is the ordinary zero-entail
+        # case, which keeps spending budget on purpose (A6) rather than
+        # giving up early.
         if i >= 2 and prev_ent_total is not None and ent_total > 0:
-            prev_rec = history[-2]
-            mean_ok = (abs(record.mean_score - prev_rec.mean_score)
-                       <= 0.01 * abs(prev_rec.mean_score)
-                       if prev_rec.mean_score else record.mean_score == 0)
-            shared_cids = set(record.per_cid_mean) & set(prev_rec.per_cid_mean)
-            cid_ok = all(abs(record.per_cid_mean[c] - prev_rec.per_cid_mean[c]) <= 0.02
-                         for c in shared_cids)
-            no_new_entails = ent_total == prev_ent_total
-            if mean_ok and cid_ok and no_new_entails:
+            no_new_entails = ent_total <= prev_ent_total
+            if no_new_entails:
                 stop_reason = "no-movement"
                 break
         prev_ent_total = ent_total

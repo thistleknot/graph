@@ -331,7 +331,7 @@ def test_gold_rows_have_id_prompt_and_nonempty_gold_terms():
         assert prompt and isinstance(prompt, str)
         assert gold_terms, f"{rid} has empty gold_terms"
         assert all(isinstance(t, str) and t for t in gold_terms)
-    assert len(diag_agentic.ROWS) == 5
+    assert len(diag_agentic.ROWS) == 9
 
 
 def test_score_row_pass_rule_is_full_gold_recall_evidence():
@@ -357,6 +357,28 @@ def test_score_row_pass_rule_is_full_gold_recall_evidence():
     assert sc2["evid"] < 1.0
     assert sc2["passed"] is False
     assert sc2["ans"] == 0.0    # no answer_text given
+
+
+def test_gate_reason_ok_for_non_superlative_with_cited_entail():
+    result = {"entails": [1], "ords": [1, 2],
+              "verdicts": {1: {"why": "the chunk describes the attack directly"}}}
+    assert diag_agentic.gate_reason(result, "what happened at pearl harbor",
+                                     "It was a surprise attack. #1") == "ok"
+
+
+def test_gate_reason_zero_entails():
+    result = {"entails": [], "ords": [1, 2], "verdicts": {}}
+    assert diag_agentic.gate_reason(result, "what happened at pearl harbor",
+                                     "No answer.") == "zero-entails"
+
+
+def test_gate_reason_superlative_pin_for_g9_style_row():
+    # entails exist but none carries a population-ranking superlative claim
+    result = {"entails": [1], "ords": [1, 2],
+              "verdicts": {1: {"why": "this hurricane caused major damage"}}}
+    assert diag_agentic.gate_reason(
+        result, "what was the deadliest hurricane on record",
+        "The deadliest was Hurricane X. #1") == "superlative"
 
 
 @pytest.mark.live_net
@@ -580,6 +602,21 @@ def test_no_movement_stop_does_not_fire_when_entails_increase():
     # every newly-seen ord entails -- entails strictly increases each iteration
     judge = fake_judge({1: "neutral", 2: "neutral", 3: "entails",
                          4: "entails", 5: "entails"}, [])
+
+    result = react.run(None, None, "q", walk_fn=walk, judge_fn=judge,
+                        propose_fn=always_insufficient, max_iters=3)
+    assert result["stop_reason"] != "no-movement"
+    assert result["stop_reason"] == "budget"
+
+
+def test_no_movement_stop_does_not_fire_while_ent_total_is_zero():
+    """A17(c) carve-out: a walk that has found NOTHING yet is the ordinary
+    zero-entail case (A6/A2), not stagnation -- it keeps spending budget on
+    purpose rather than stopping early just because entails stayed at 0."""
+    bnd = mk_bundle([1, 2, 3, 4], scores={1: 1.0, 2: 1.0, 3: 1.0, 4: 1.0})
+    ev = FakeEv(cid_of={1: "a", 2: "a", 3: "b", 4: "b"})
+    walk = fake_walk([(bnd, ev)] * 10)
+    judge = fake_judge({}, [])   # nothing ever entails
 
     result = react.run(None, None, "q", walk_fn=walk, judge_fn=judge,
                         propose_fn=always_insufficient, max_iters=3)

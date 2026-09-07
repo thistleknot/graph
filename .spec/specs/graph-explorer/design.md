@@ -2813,3 +2813,21 @@ than spend the remaining budget.
 (d) HONEST STOP SEMANTICS: stop_reason="budget" means the loop ran out of
 iterations, NOT that it judged the evidence sufficient. The UI and the gold
 lane SHALL not read budget as success.
+
+**A18 (superlative evidence must be UNHEDGED and CITED -- operator receipt,
+2026-09-07: the crown returned with 5 entails).** A16 stopped reflexive
+superlatives from exempting the gate, but count_population_superlatives ran
+over ALL entailing chunks and counted hedges. Live receipt: the premise
+"Rakoto Frah was one of the most famous Malagasy artists" exempted an answer
+crowning NOEL GALLAGHER, whose own cited chunk (#3594) says only "the height
+of his fame" (reflexive). Three defects in one line: hedged, wrong
+population, wrong subject.
+
+(a) HEDGED superlatives are not maxima and SHALL NOT count: "one of the
+most", "among the most", "some of the greatest", "one of the best".
+(b) superlative_entails SHALL be counted ONLY over chunks the ANSWER CITES
+(answer_ords INTERSECT entail_ords), never over the whole entailing set --
+evidence about a subject the answer does not crown cannot license the crown.
+(c) Consequence: an answer crowning X must cite a chunk that carries an
+unhedged population-superlative claim, or it is gated and the candidate set
+renders.

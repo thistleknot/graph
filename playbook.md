@@ -1347,11 +1347,16 @@ zero-entail path, and no diagnostic covered the base-answer path.
   _Files:_ (none -- verification only)
   _Verify:_ playwright screenshot of :8501
 
-- [OPEN] T79 Class naming: name = argmax(mass x distinctiveness) with the
+- [DONE] T79 Class naming: name = argmax(mass x distinctiveness) with the
   PPMI/df demotion band; class_id stays min(members) as the join key
   _Files:_ evidence.py, tests/test_evidence.py
   _Verify:_ python -m pytest tests/test_evidence.py -q + live spot-check that
   the song/album class no longer reads "later"
+  _Lessons:_ class_labels() SQL already existed unused (prior commit); wired it
+  into walk_entities/class_reference and extracted the ranking arithmetic into
+  a pure pick_class_label() for a DB-free test. Live: class 3502 (song/album/
+  became/later) scored album=35172 > song=32383 > later=13521 > became=13432,
+  so label -> "album", not "later".
 
 - [DONE] T80 A15: the gate becomes the loop trigger -- react fires whenever
   answer_gate would gate the base answer (0 entails OR superlative-unranked
@@ -1381,8 +1386,19 @@ Disjoint files, dispatched together.
   _Files:_ tools/diag_agentic.py, tests/test_react.py
   _Verify:_ PYTHONPATH=. python tools/diag_agentic.py mixed-full-dual
 
-- [OPEN] T79 Class naming: argmax(mass x ln(chunks/df)) -- the PPMI demotion
+- [DONE] T79 Class naming: argmax(mass x ln(chunks/df)) -- the PPMI demotion
   band -- replaces min(entity_id); class_id stays the join key
   _Files:_ evidence.py, tests/test_evidence.py
   _Verify:_ python -m pytest tests/test_evidence.py -q + live: the song/album
   class no longer reads "later"
+  _Lessons:_ see T79 above (same task listed twice in the ledger) -- 32/32
+  pytest, live label for class 3502 is "album".
+
+- [DONE] T83 A18: hedged superlatives never count; superlative evidence
+  recounted over CITED chunks only (evidence about Frah cannot license a
+  crown on Gallagher). Known-bad tests RED first, then green; 104 core +
+  81 render/react pass; diag 18/20 FAIL=[E3].
+  _Files:_ walker_core.py, walker_app.py, tests/test_walker_core.py
+  _Lessons:_ I verified the trace table screenshot and never read the hero in
+    the same shot -- the crown was visible in a screenshot I took and passed
+    over. Read the ANSWER, not just the instrument, on every live look.

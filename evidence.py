@@ -11,6 +11,7 @@ is independent of every spring layout.
 """
 from __future__ import annotations
 
+import math
 import urllib.error
 from collections import Counter
 from dataclasses import dataclass, field
@@ -325,8 +326,13 @@ def walk_entities(conn, run, ords) -> dict:
     E15 singleton rule: `class_id == entity_id` means unclassed/singleton --
     consumers must treat that as "no class", never as a class of one.
 
-    Spec: .spec/specs/graph-explorer/design.md 6.22 P5, 6.24 E15-E19 (E17 amendment)
-    Task: playbook.md T39, T72
+    `class_names` values come from `class_labels` (E15 amendment, design 6.24):
+    argmax(mass x distinctiveness) over the class's members, DISPLAY ONLY --
+    class_id itself stays min(members), the deterministic join key.
+
+    Spec: .spec/specs/graph-explorer/design.md 6.22 P5, 6.24 E15-E19 (E17, E15
+        amendment)
+    Task: playbook.md T39, T72, T79
     """
     ords = list(ords)
     if not ords:
@@ -334,10 +340,9 @@ def walk_entities(conn, run, ords) -> dict:
                 "class_of": {}, "class_names": {}}
     with conn.cursor() as cur:
         cur.execute("""
-            SELECT m.ord, m.entity_id, m.cnt, e.name, e.class_id, ec.name AS class_name
+            SELECT m.ord, m.entity_id, m.cnt, e.name, e.class_id
               FROM mentions m
               JOIN entities e  ON e.run_id = m.run_id AND e.entity_id = m.entity_id
-              LEFT JOIN entities ec ON ec.run_id = e.run_id AND ec.entity_id = e.class_id
              WHERE m.run_id = %s AND m.ord = ANY(%s::int[])""",
             (run.run_id, ords))
         rows = cur.fetchall()
@@ -346,14 +351,14 @@ def walk_entities(conn, run, ords) -> dict:
         names: dict = {}
         eids: set = set()
         class_of: dict = {}
-        class_names: dict = {}
+        class_ids: set = set()
         for r in rows:
             mentions.setdefault(r["ord"], {})[r["entity_id"]] = r["cnt"]
             names[r["entity_id"]] = r["name"]
             eids.add(r["entity_id"])
             class_of[r["entity_id"]] = r["class_id"]
             if r["class_id"] is not None:
-                class_names[r["class_id"]] = r["class_name"]
+                class_ids.add(r["class_id"])
 
         corpus: dict = {}
         if eids:
@@ -368,6 +373,9 @@ def walk_entities(conn, run, ords) -> dict:
         cur.execute("SELECT coalesce(sum(cnt), 0)::bigint AS total FROM mentions"
                     " WHERE run_id = %s", (run.run_id,))
         corpus_total = cur.fetchone()["total"]
+
+    all_labels = class_labels(conn, run) if class_ids else {}
+    class_names = {cid: all_labels.get(cid, names.get(cid, cid)) for cid in class_ids}
 
     return {"mentions": mentions, "names": names, "corpus": corpus,
             "corpus_total": corpus_total, "class_of": class_of,
@@ -406,24 +414,43 @@ def walk_relations(conn, run, entity_ids) -> list:
 
 
 CLASS_LABEL_SQL = """
-    WITH m AS (
-      SELECT e.class_id, e.name,
-             sum(mn.cnt)::bigint            AS mass,
-             count(DISTINCT mn.ord)::bigint AS df
-        FROM entities e
-        JOIN mentions mn ON mn.run_id = e.run_id AND mn.entity_id = e.entity_id
-       WHERE e.run_id = %s AND e.class_id IS NOT NULL
-       GROUP BY e.class_id, e.name),
-    n AS (SELECT count(DISTINCT ord)::numeric AS chunks FROM mentions WHERE run_id = %s),
-    rk AS (
-      SELECT m.class_id, m.name, m.mass, m.df,
-             m.mass * ln((SELECT chunks FROM n) / greatest(m.df, 1)) AS score,
-             row_number() OVER (PARTITION BY m.class_id
-                                ORDER BY m.mass * ln((SELECT chunks FROM n)
-                                                     / greatest(m.df, 1)) DESC,
-                                         m.mass DESC, m.name) AS rn
-        FROM m)
-    SELECT class_id, name FROM rk WHERE rn = 1"""
+    SELECT e.class_id, e.name,
+           sum(mn.cnt)::bigint            AS mass,
+           count(DISTINCT mn.ord)::bigint AS df,
+           (SELECT count(DISTINCT ord) FROM mentions WHERE run_id = %s) AS chunks
+      FROM entities e
+      JOIN mentions mn ON mn.run_id = e.run_id AND mn.entity_id = e.entity_id
+     WHERE e.run_id = %s AND e.class_id IS NOT NULL
+     GROUP BY e.class_id, e.name"""
+
+
+def class_label_score(mass, df, chunks) -> float:
+    """Pure scoring arithmetic for the E15 class-naming rule (design 6.24
+    amendment): mass x distinctiveness, where distinctiveness = ln(chunks/df)
+    demotes a term mentioned in nearly every chunk toward zero regardless of
+    how often it fires -- the operator's PPMI law (demotion filter, not a term
+    weight) expressed on document frequency. `greatest(df, 1)` guard avoids a
+    div-by-zero on an entity with zero recorded mentions.ord rows.
+
+    Spec: .spec/specs/graph-explorer/design.md 6.24 E15 amendment
+    Task: playbook.md T79
+    """
+    return mass * math.log(chunks / max(df, 1))
+
+
+def pick_class_label(candidates, chunks) -> str:
+    """argmax(class_label_score) over `candidates` ((name, mass, df) tuples for
+    ONE class), ties broken by mass desc then name asc for determinism -- the
+    same order the E15-amendment SQL's `ORDER BY score DESC, mass DESC, name`
+    picks rn=1 from.
+
+    Spec: .spec/specs/graph-explorer/design.md 6.24 E15 amendment
+    Task: playbook.md T79
+    """
+    def key(c):
+        name, mass, df = c
+        return (-class_label_score(mass, df, chunks), -mass, name)
+    return min(candidates, key=key)[0]
 
 
 def class_labels(conn, run) -> dict:
@@ -432,19 +459,23 @@ def class_labels(conn, run) -> dict:
     mass (which elects the function word -- live receipt: a song/album class
     named "later", whose mass 23360 beat song 16796).
 
-    distinctiveness = ln(chunks / df): a term mentioned in nearly every chunk
-    contributes ~0 no matter how often it fires, which is the operator's PPMI
-    law (PPMI demotes, it does not weight) expressed on document frequency.
-
     The label is DISPLAY ONLY. class_id stays min(members) -- the deterministic
-    join key (determinism boundary).
+    join key (determinism boundary). ONE round trip: mass/df per (class,
+    member) plus the run's chunk count, all in one query; ranking happens in
+    Python via `pick_class_label`.
 
     Spec: .spec/specs/graph-explorer/design.md 6.24 E15 amendment
     Task: playbook.md T79
     """
     with conn.cursor() as cur:
         cur.execute(CLASS_LABEL_SQL, (run.run_id, run.run_id))
-        return {r["class_id"]: r["name"] for r in cur.fetchall()}
+        rows = cur.fetchall()
+    groups: dict = {}
+    chunks = 0
+    for r in rows:
+        groups.setdefault(r["class_id"], []).append((r["name"], r["mass"], r["df"]))
+        chunks = r["chunks"]
+    return {cid: pick_class_label(members, chunks) for cid, members in groups.items()}
 
 
 def class_reference(conn, run, *, k_classes=10, k_members=6) -> dict:
@@ -460,9 +491,14 @@ def class_reference(conn, run, *, k_classes=10, k_members=6) -> dict:
     Singletons are dropped (HAVING count(*) > 1, E15: an unclassed entity/
     template is its own class and carries no information here).
 
-    Spec: .spec/specs/graph-explorer/design.md 6.24 E15-E19 (E17 amendment), P18
-    Task: playbook.md T72
+    `label` per entity class comes from `class_labels` (E15 amendment): argmax
+    (mass x distinctiveness) over the class's members, DISPLAY ONLY -- falls
+    back to the raw top-mass member's name if class_labels has no entry.
+
+    Spec: .spec/specs/graph-explorer/design.md 6.24 E15-E19 (E17, E15 amendment), P18
+    Task: playbook.md T72, T79
     """
+    labels = class_labels(conn, run)
     with conn.cursor() as cur:
         cur.execute("""
             WITH mass AS (
@@ -511,7 +547,7 @@ def class_reference(conn, run, *, k_classes=10, k_members=6) -> dict:
     entity_classes: dict = {}
     for r in ent_rows:
         c = entity_classes.setdefault(r["class_id"], {
-            "class_id": r["class_id"], "label": r["name"],
+            "class_id": r["class_id"], "label": labels.get(r["class_id"], r["name"]),
             "mass": r["mass"], "members": r["members"], "top": []})
         c["top"].append((r["name"], r["cnt"]))
 

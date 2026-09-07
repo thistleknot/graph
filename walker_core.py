@@ -270,10 +270,35 @@ def count_population_superlatives(texts) -> int:
     history and must not count as population-ranking evidence -- this is
     what A14(b)'s `superlative_entails` should have been counting all along.
 
-    Spec: .spec/specs/graph-explorer/design.md 6.23 A16(b)
-    Task: playbook.md T81
+    A18(a): HEDGED superlatives are not maxima and never count. "one of the
+    most famous Malagasy artists" ranks nothing -- it places its subject in an
+    unbounded set. Live receipt (2026-09-07): that exact premise exempted the
+    gate and let the answer crown a DIFFERENT musician.
+
+    Spec: .spec/specs/graph-explorer/design.md 6.23 A16(b), A18(a)
+    Task: playbook.md T81, T83
     """
-    return sum(1 for t in texts if is_superlative(t) and not is_reflexive_superlative(t))
+    return sum(1 for t in texts
+               if is_superlative(t)
+               and not is_reflexive_superlative(t)
+               and not is_hedged_superlative(t))
+
+
+HEDGES = ("one of the", "among the", "some of the", "one of its",
+          "one of his", "one of her", "one of their", "amongst the")
+
+
+def is_hedged_superlative(text: str) -> bool:
+    """A18(a): True when the superlative is hedged into set membership rather
+    than a maximum -- "one of the most famous X", "among the greatest Y".
+    Such a claim is compatible with any number of other members and so can
+    never establish that its subject leads a population.
+
+    Spec: .spec/specs/graph-explorer/design.md 6.23 A18(a)
+    Task: playbook.md T83
+    """
+    low = " ".join(str(text or "").lower().split())
+    return any(h in low for h in HEDGES)
 
 
 def cited_ords(text: str) -> list[int]:
@@ -297,7 +322,8 @@ def cited_ords(text: str) -> list[int]:
 def answer_gate(answer: str, entails: int, *, n_iters: int = 0,
                 n_chunks: int = 0, found_entails: int = 0,
                 prompt: str | None = None, entail_ords=(), answer_ords=(),
-                superlative_entails: int = 0) -> tuple[bool, str]:
+                superlative_entails: int = 0,
+                entail_texts: dict | None = None) -> tuple[bool, str]:
     """A6/A14: a confident claim over zero entailing chunks is a defect
     (A6, unchanged, takes precedence -- A14(d)); a confident claim that cites
     a chunk its own judge did not entail is a defect (A14(c)); a confident
@@ -353,6 +379,16 @@ def answer_gate(answer: str, entails: int, *, n_iters: int = 0,
                 f"until it is grounded only in what the judge accepted.")
         return True, text
 
+    # A18(b): when the caller supplies the entailing chunks' own text, the
+    # ranking evidence is recounted over ONLY the chunks this answer CITES.
+    # Evidence about a subject the answer does not crown cannot license the
+    # crown -- live receipt: "Rakoto Frah was one of the most famous Malagasy
+    # artists" (#8680, uncited) exempted an answer crowning Gallagher (#3594).
+    if entail_texts:
+        cited = set(answer_ords) & set(entail_ords)
+        superlative_entails = count_population_superlatives(
+            [entail_texts[o] for o in cited if o in entail_texts])
+
     if prompt is not None and is_superlative(prompt) and superlative_entails == 0:
         text = (f"The corpus can show what it holds about the candidate{'s' if entails != 1 else ''} "
                 f"named in the entailing evidence, but it cannot rank or crown a winner across "
@@ -368,7 +404,8 @@ def answer_gate(answer: str, entails: int, *, n_iters: int = 0,
 
 def needs_more_evidence(answer: str, entails: int, *, prompt: str | None = None,
                          entail_ords=(), answer_ords=(),
-                         superlative_entails: int = 0) -> bool:
+                         superlative_entails: int = 0,
+                         entail_texts: dict | None = None) -> bool:
     """A15: the loop's trigger and the gate's verdict are the SAME question --
     "is this answer insufficient" -- so they must consult the SAME logic
     rather than two definitions that can drift apart. Delegates to
@@ -387,6 +424,7 @@ def needs_more_evidence(answer: str, entails: int, *, prompt: str | None = None,
     Task: playbook.md T80
     """
     gated, _ = answer_gate(answer, entails, prompt=prompt, entail_ords=entail_ords,
+                           entail_texts=entail_texts,
                             answer_ords=answer_ords,
                             superlative_entails=superlative_entails)
     return gated
