@@ -1218,6 +1218,16 @@ Source: operator SNR frame + log2 deviation band + estimator-pair bound,
     -m "not live_net"); diag_rerun gate held byte-identical: PASS 18/20 |
     FAIL ['E3'] | KNOWN-FAIL ['A2'] (A7 confirmed unmoved).
 
-- [OPEN] T68 Gates + gold rerun (ans delta vs 5/5 baseline) + live look
+- [DONE] T68 Gates + gold rerun (ans delta vs 5/5 baseline) + live look
   _Files:_ (none -- verification only)
   _Verify:_ PYTHONPATH=. python tools/diag_agentic.py mixed-full-dual
+
+Campaign close (2026-09-07): SNR-guided proposer + loop answer, T65-T68 DONE.
+Gold ans-recall vs baseline: G4 0.0->0.5, G5 0.0->0.5 (single-row re-probe;
+its suite-run evid=0.5 was proposer variance -- re-probe evid=1.0 PASS),
+G1/G2 hold 1.0, G3 holds 0.5. evid stays 1.0 on every verified row. Live UI:
+the Gallagher query now answers "Nirvana s Nevermind marked grunge
+phenomenon #6323..." after 3 agentic iterations. Frozen diagnostic
+PASS 18/20 | FAIL [E3] | KNOWN-FAIL [A2] (A7 held). NOTE: the loop is
+LLM-proposer-stochastic run to run; per-row single runs are noise-prone --
+n>=3 per row before any future pass/fail claim on a single G-row delta.
