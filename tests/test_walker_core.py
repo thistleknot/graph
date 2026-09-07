@@ -1123,3 +1123,53 @@ def test_walk3d_html_loads_three_before_spritetext():
     assert walker_core.WALK3D_THREE_URL in h
     assert h.index(walker_core.WALK3D_THREE_URL) < h.index(walker_core.WALK3D_FG_URL)
     assert h.index(walker_core.WALK3D_THREE_URL) < h.index(walker_core.WALK3D_ST_URL)
+
+
+# ---------------------------------------------------------------- A14 gate
+# KNOWN-BAD FIRST: these tests are written against the live defect artifact
+# (operator screenshot, 2026-09-07) and MUST fail before T76 lands.
+
+GALLAGHER = ("Noel Gallagher is the most famous musician of the 1990's, as he "
+             "reached the height of his fame during the Britpop era (#3594) with "
+             "massive commercial success like 'What's the Story (Morning Glory)?' "
+             "(#7666).")
+
+
+def test_is_superlative_detects_the_live_prompt():
+    assert walker_core.is_superlative("who is the most famous musician of the 1990's?")
+    assert walker_core.is_superlative("what is the largest hurricane on record")
+    assert walker_core.is_superlative("who was the first person to fly")
+    assert not walker_core.is_superlative("how do tropical storms strengthen into hurricanes")
+    assert not walker_core.is_superlative("what damage did the hurricane cause")
+
+
+def test_superlative_prompt_with_entails_is_still_gated():
+    """A14(b): 2 entails about ONE candidate never establish a maximum over a
+    population. The live defect: entails=2, contradicts=2, answer crowned."""
+    gated, text = walker_core.answer_gate(
+        GALLAGHER, entails=2, prompt="who is the most famous musician of the 1990's?",
+        entail_ords=[3594, 7666], answer_ords=[3594, 7666],
+        superlative_entails=0, n_chunks=88)
+    assert gated, "a superlative claim with no ranking evidence must not stand"
+    assert "cannot rank" in text.lower() or "cannot crown" in text.lower()
+    assert "Noel Gallagher is the most famous" not in text
+
+
+def test_answer_citing_a_non_entailing_ord_is_gated():
+    """A14(c): the live answer cited #7666, which Reason marked insufficient.
+    That was rendered as a red note; it must gate."""
+    gated, text = walker_core.answer_gate(
+        "Nirvana defined the era. #6323 #9999", entails=1,
+        prompt="what defined the 1990s", entail_ords=[6323],
+        answer_ords=[6323, 9999], superlative_entails=0, n_chunks=88)
+    assert gated, "citing a non-entailing ord must gate, not annotate"
+
+
+def test_superlative_prompt_with_matching_superlative_evidence_passes():
+    """A14(b) is not a blanket ban: WHEN a chunk itself carries the ranking
+    claim, the answer may stand."""
+    gated, _ = walker_core.answer_gate(
+        "Nirvana was the best-selling act of the decade. #6323", entails=3,
+        prompt="who was the best selling act of the 1990s", entail_ords=[6323],
+        answer_ords=[6323], superlative_entails=2, n_chunks=88)
+    assert not gated
