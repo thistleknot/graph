@@ -2640,3 +2640,17 @@ idiom); no cardinality bound is added unless a measured stage overruns
 Article VII. Estimated: co-mention pairs ~ chunks x C(mentions-per-chunk, 2)
 ~ low millions; template similarity over ~20 templates x pair sets --
 minutes, not hours. The timings are the authority.
+
+**E17 amendment (partition counts -- operator, 2026-09-07: "we need to add
+entity and relation counts not just for louvain, but also my correlation
+sorted partitions").** Per-class/per-group counts are NOT a Louvain-only
+view. Every grouping the walker renders SHALL carry the same three counts --
+chunks, distinct entities mentioned, distinct relations whose src AND dst
+are mentioned in the group -- and they SHALL be computed by ONE function
+over a {group_id -> [ords]} mapping, so the numbers are commensurable
+across groupings. The three groupings that get them: (1) global Louvain
+cids, (2) relative (walk-local) louvain groups, (3) the CORRELATION-SORTED
+dendrite chains (correlation sorting.md) -- which today carry only chunk
+counts and salient terms. A chain's row reads e.g.
+"chain 1 . 36 chunks . 214 entities . 87 relations" beside its
+community make-up line (P12).

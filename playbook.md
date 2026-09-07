@@ -1279,9 +1279,11 @@ created however that would look like, my guess was co-occurrence analysis";
   a canonical few forms; verdict (b) PASSED-partial (the/w/in/a groups
   co-class sensibly, 301/11328 templates classed). Full suite: 15/15 passed.
 
-- [OPEN] T72 Surface: REFERENCE-zone panel "Classes" (top entities per class,
+- [WIP] T72 Surface: REFERENCE-zone panel "Classes" (top entities per class,
   top relations per class, factbook style); group digests annotate entities
-  with class; relations lines in digests become walk-local-scoped
+  with class; relations lines in digests become walk-local-scoped; ONE
+  counts fn (chunks/entities/relations) applied to global cids, relative
+  louvain AND the correlation-sorted dendrite chains (E17 amendment)
   _Files:_ evidence.py, walker_core.py, walker_app.py, tests/test_walker_core.py, tests/test_walker_render.py
   _Verify:_ python -m pytest tests/test_walker_core.py tests/test_walker_render.py -q && PYTHONPATH=. python tools/diag_rerun.py mixed-full-dual
 
