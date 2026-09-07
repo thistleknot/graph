@@ -2709,3 +2709,26 @@ diagnostic. A G-row class with entails > 0 at the base walk SHALL exist and
 SHALL assert the gate, and the gate SHALL be validated against the KNOWN-BAD
 artifact (this Gallagher answer) BEFORE the fix -- a check that cannot fail
 is not a check.
+
+**E15 amendment (class naming -- operator, 2026-09-07: "entity names should
+be based on the most common collapsed term in an npmi set?").** Today the
+class representative is `min(members)` -- the lowest entity_id, an
+insertion-order artifact with no semantic content (live receipt: a class of
+song/album/became was named "later"). Naming by MASS alone does not fix it:
+in that same class the mass order is later 23360 > song 16796 > became 15965
+> album 15124, so frequency still elects the function word. The rule is the
+operator's own PPMI law (PPMI is a demotion filter, not a term weight):
+the class NAME SHALL be the member maximizing mass x distinctiveness, where
+distinctiveness demotes members whose corpus-wide df puts them in the
+ubiquitous band -- so "song" names that class, not "later". class_id (the
+join key) stays min(members): deterministic and stable. The NAME is display
+only and never a join key (determinism boundary).
+
+**A14 addendum (external corroboration, operator 2026-09-07).** An
+independent model asked the same prompt answered: Gallagher is regionally
+dominant (UK/Europe, Knebworth) but not globally most famous, naming Mariah
+Carey, Cobain, Tupac, the Spice Girls as the population a ranking would have
+to consider. This is exactly A14(b)'s case: the corpus holds evidence ABOUT a
+candidate and no evidence RANKING the population, so the honest render is
+the candidate set. A superlative answer that looks locally supported is a
+regional artifact of which chunks were walked.

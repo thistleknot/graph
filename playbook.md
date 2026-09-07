@@ -1340,3 +1340,9 @@ zero-entail path, and no diagnostic covered the base-answer path.
 - [OPEN] T78 Live look: the musician query must NOT crown; screenshot
   _Files:_ (none -- verification only)
   _Verify:_ playwright screenshot of :8501
+
+- [OPEN] T79 Class naming: name = argmax(mass x distinctiveness) with the
+  PPMI/df demotion band; class_id stays min(members) as the join key
+  _Files:_ evidence.py, tests/test_evidence.py
+  _Verify:_ python -m pytest tests/test_evidence.py -q + live spot-check that
+  the song/album class no longer reads "later"
