@@ -497,6 +497,192 @@ def test_group_digest_empty_group_renders_dashes():
     assert lines[3] == "relations: -"
 
 
+# ---- classes (T72, design 6.24 E15-E19)
+
+def test_group_counts_same_fn_serves_all_three_groupings():
+    # 6 ords, 4 entities; A/B/C/D mentioned across ords 1..6
+    ents = {"mentions": {
+        1: {"A": 2}, 2: {"A": 1, "B": 3}, 3: {"B": 1}, 4: {"C": 4},
+        5: {"C": 1, "D": 2}, 6: {"D": 1},
+    }}
+    rels = [
+        {"src": "A", "dst": "B", "template": "t1"},
+        {"src": "A", "dst": "B", "template": "t2"},
+        {"src": "C", "dst": "D", "template": "t3"},
+        {"src": "B", "dst": "Z", "template": "t4"},   # dst outside the walk
+    ]
+    # global cids: {1,2,3} -> cid 0, {4,5,6} -> cid 1
+    global_groups = {0: [1, 2, 3], 1: [4, 5, 6]}
+    # relative louvain output, same member sets, different gids
+    rel_groups = {5: [1, 2, 3], 9: [4, 5, 6]}
+    # dendrite chains, same member sets, 1-based chain numbers
+    chains = {1: [1, 2, 3], 2: [4, 5, 6]}
+
+    g_counts = walker_core.group_counts(global_groups, ents, rels)
+    r_counts = walker_core.group_counts(rel_groups, ents, rels)
+    c_counts = walker_core.group_counts(chains, ents, rels)
+
+    assert set(g_counts) == {0, 1}
+    assert set(r_counts) == {5, 9}
+    assert set(c_counts) == {1, 2}
+
+    # commensurability: identical member sets -> identical numbers regardless
+    # of which grouping/gid produced them.
+    assert g_counts[0] == r_counts[5] == c_counts[1]
+    assert g_counts[1] == r_counts[9] == c_counts[2]
+    assert g_counts[0] == {"chunks": 3, "entities": 2, "relations": 2}
+    assert g_counts[1] == {"chunks": 3, "entities": 2, "relations": 1}
+
+
+def test_group_counts_relations_need_both_endpoints_and_count_rows():
+    ents = {"mentions": {1: {"A": 1, "B": 1}}}
+    rels = [
+        {"src": "A", "dst": "B", "template": "t1"},
+        {"src": "A", "dst": "B", "template": "t2"},   # same pair, 2nd template
+        {"src": "A", "dst": "Z", "template": "t3"},   # dst unmentioned
+    ]
+    out = walker_core.group_counts({0: [1]}, ents, rels)
+    assert out[0]["relations"] == 2
+
+
+def test_group_counts_empty_group_is_three_zeros():
+    out = walker_core.group_counts({0: []}, {"mentions": {}}, [])
+    assert out[0] == {"chunks": 0, "entities": 0, "relations": 0}
+
+
+def test_group_classes_rows_carry_counts_from_group_counts():
+    groups = {1: 0, 2: 0, 3: 1}
+    ents = {"mentions": {1: {"A": 3}, 2: {"A": 3}, 3: {"B": 5}},
+            "names": {"A": "Alpha", "B": "Beta"},
+            "corpus": {"A": 6, "B": 5}, "corpus_total": 20}
+    rels = [{"src": "A", "dst": "B", "template": "t", "connector": "of", "n": 1,
+             "llr": 1.0, "npmi": 0.1, "example_ord": 1,
+             "src_name": "A", "dst_name": "B"}]
+    rows = walker_core.group_classes(groups, ents, rels, sal={}, ndw={})
+    # rebuild the same by_group shape group_classes uses internally
+    bg = {}
+    for o, gid in groups.items():
+        bg.setdefault(gid, []).append(o)
+    expected = walker_core.group_counts(bg, ents, rels)
+    for row in rows:
+        assert row["counts"] == expected[row["gid"]]
+
+
+def test_group_digest_header_carries_entity_and_relation_counts():
+    gc = _gc(gid=0, members=[1, 2, 3], size=3, counts={"chunks": 3, "entities": 214, "relations": 87})
+    ents = {"mentions": {}, "names": {}, "corpus": {}, "corpus_total": 0}
+    out = walker_core.group_digest(gc, ents)
+    assert out.splitlines()[0] == "g0 . 3 chunks . 214 entities . 87 relations"
+
+
+def test_group_digest_header_unchanged_without_counts():
+    gc = _gc(gid=0, members=[1, 2, 3], size=3)
+    ents = {"mentions": {}, "names": {}, "corpus": {}, "corpus_total": 0}
+    out = walker_core.group_digest(gc, ents)
+    assert out.splitlines()[0] == "g0 . 3 chunks"
+
+
+def test_group_digest_entity_line_annotates_non_singleton_class():
+    entities = [
+        {"entity_id": "A", "name": "Alpha", "cnt": 8, "lift": 1.0,
+         "group_share": 1.0, "corpus_share": 1.0},
+        {"entity_id": "B", "name": "Beta", "cnt": 5, "lift": 3.0,
+         "group_share": 0.1, "corpus_share": 0.3},
+    ]
+    gc = _gc(entities=entities)
+    ents = {"mentions": {}, "names": {"A": "Alpha", "B": "Beta"},
+            "corpus": {"A": 8, "B": 50}, "corpus_total": 100,
+            "class_of": {"A": "A", "B": 99}, "class_names": {99: "UnitedStates"}}
+    out = walker_core.group_digest(gc, ents)
+    line = out.splitlines()[2]
+    assert line.count("~") == 1
+    assert "Beta 5 x3.0 ~UnitedStates" in line
+    assert "Alpha 8 ~" not in line   # A's class_id == entity_id -> singleton
+
+
+def test_group_digest_relations_lead_with_walk_local_pairs():
+    import re
+    relations = [{"template": "of", "connector": "of", "n": 527581, "pairs": 3,
+                  "top": [("second", "world_war", 5.0)]}]
+    gc = _gc(relations=relations)
+    ents = {"mentions": {}, "names": {}, "corpus": {}, "corpus_total": 0}
+    out = walker_core.group_digest(gc, ents, width=300)
+    line = out.splitlines()[3]
+    m = re.search(r"pairs=(\d+) corpus_n=(\d+)", line)
+    assert m is not None
+    assert m.group(1) == "3" and m.group(2) == "527581"
+    assert line.index("pairs=") < line.index("corpus_n=")
+
+
+def test_class_digest_header_and_member_lines():
+    cref = {
+        "entity_classes": [
+            {"class_id": 12, "label": "united_states", "mass": 12045, "members": 34,
+             "top": [("united_states", 8801), ("u_s", 2140)]},
+            {"class_id": 5, "label": "france", "mass": 900, "members": 2,
+             "top": [("france", 800), ("french_republic", 100)]},
+        ],
+        "relation_classes": [
+            {"rel_class": "gen", "mass": 51204, "templates": 6,
+             "top": [("of", 21003), ("of_the", 18800)]},
+            {"rel_class": "loc", "mass": 300, "templates": 2,
+             "top": [("in", 200), ("at", 100)]},
+        ],
+    }
+    out = walker_core.class_digest(cref)
+    lines = out.splitlines()
+    assert lines[0] == "classes . 2 entity . 2 relation"
+    assert lines[1].startswith("E12 united_states . 34 members . mass 12045: ")
+    assert "united_states 8801" in lines[1]
+    assert lines[3].startswith("R gen . 6 templates . n 51204: ")
+    assert "of 21003" in lines[3]
+
+
+def test_class_digest_truncates_with_more_count():
+    top = [(f"member{i}", 100 - i) for i in range(40)]
+    cref = {"entity_classes": [{"class_id": 1, "label": "member0", "mass": 1000,
+                                "members": 40, "top": top}],
+            "relation_classes": []}
+    out = walker_core.class_digest(cref, width=110)
+    ent_line = out.splitlines()[1]
+    assert len(ent_line) <= 110
+    assert "+ " in ent_line and ent_line.endswith("more")
+
+
+def test_class_digest_empty_reference_renders_dashes():
+    out = walker_core.class_digest({"entity_classes": [], "relation_classes": []})
+    lines = out.splitlines()
+    assert lines[0] == "classes . 0 entity . 0 relation"
+    assert lines[1] == "-"
+    assert lines[2] == "-"
+    assert out != ""
+
+
+def test_class_digest_card_is_byte_identical_and_escapes():
+    import html as _html
+    import re
+    cref = {"entity_classes": [{"class_id": 1, "label": "<b>&evil</b>", "mass": 10,
+                                "members": 2, "top": [("<b>&evil</b>", 5)]}],
+            "relation_classes": []}
+    txt = walker_core.class_digest(cref)
+    card = walker_core.digest_card(txt, "#4C78A8")
+    assert "<script>" not in card
+    body = re.search(r"<pre[^>]*>(.*)</pre>", card, re.S).group(1)
+    assert _html.unescape(body.replace("<br>", "\n")) == txt
+
+
+def test_partition_rows_counts_columns_optional():
+    ds = {"chunks": {"chains": [[1, 2]]}, "sal": {1: {"top": ["a"]}, 2: {"top": []}}}
+    src_of = {1: "wiki", 2: "wiki"}
+    rows_plain = walker_core.partition_rows(ds, src_of)
+    assert set(rows_plain[0]) == {"chain", "chunks", "sources",
+                                  "salient terms (carried by N members)"}
+    counts = {1: {"chunks": 2, "entities": 5, "relations": 3}}
+    rows_counted = walker_core.partition_rows(ds, src_of, counts=counts)
+    assert rows_counted[0]["entities"] == 5
+    assert rows_counted[0]["relations"] == 3
+
+
 def test_dedup_groups_equal_member_sets_render_one_row():
     rel_rows = [_gc(gid=0, members=[1, 2, 3], size=3)]
     glob_rows = [_gc(gid=6, members=[1, 2, 3], size=3)]

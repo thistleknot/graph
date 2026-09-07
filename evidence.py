@@ -318,19 +318,26 @@ def walk_entities(conn, run, ords) -> dict:
     """ONE round trip for both the group numerator and the corpus denominator.
 
     Guarantee: {"mentions": {ord: {entity_id: cnt}}, "names": {entity_id: name},
-    "corpus": {entity_id: total_cnt}, "corpus_total": int}.
+    "corpus": {entity_id: total_cnt}, "corpus_total": int,
+    "class_of": {entity_id: class_id_or_None},
+    "class_names": {class_id: name} (non-NULL class_id only)}.
 
-    Spec: .spec/specs/graph-explorer/design.md 6.22 P5
-    Task: playbook.md T39
+    E15 singleton rule: `class_id == entity_id` means unclassed/singleton --
+    consumers must treat that as "no class", never as a class of one.
+
+    Spec: .spec/specs/graph-explorer/design.md 6.22 P5, 6.24 E15-E19 (E17 amendment)
+    Task: playbook.md T39, T72
     """
     ords = list(ords)
     if not ords:
-        return {"mentions": {}, "names": {}, "corpus": {}, "corpus_total": 0}
+        return {"mentions": {}, "names": {}, "corpus": {}, "corpus_total": 0,
+                "class_of": {}, "class_names": {}}
     with conn.cursor() as cur:
         cur.execute("""
-            SELECT m.ord, m.entity_id, m.cnt, e.name
+            SELECT m.ord, m.entity_id, m.cnt, e.name, e.class_id, ec.name AS class_name
               FROM mentions m
-              JOIN entities e ON e.run_id = m.run_id AND e.entity_id = m.entity_id
+              JOIN entities e  ON e.run_id = m.run_id AND e.entity_id = m.entity_id
+              LEFT JOIN entities ec ON ec.run_id = e.run_id AND ec.entity_id = e.class_id
              WHERE m.run_id = %s AND m.ord = ANY(%s::int[])""",
             (run.run_id, ords))
         rows = cur.fetchall()
@@ -338,10 +345,15 @@ def walk_entities(conn, run, ords) -> dict:
         mentions: dict = {}
         names: dict = {}
         eids: set = set()
+        class_of: dict = {}
+        class_names: dict = {}
         for r in rows:
             mentions.setdefault(r["ord"], {})[r["entity_id"]] = r["cnt"]
             names[r["entity_id"]] = r["name"]
             eids.add(r["entity_id"])
+            class_of[r["entity_id"]] = r["class_id"]
+            if r["class_id"] is not None:
+                class_names[r["class_id"]] = r["class_name"]
 
         corpus: dict = {}
         if eids:
@@ -358,17 +370,20 @@ def walk_entities(conn, run, ords) -> dict:
         corpus_total = cur.fetchone()["total"]
 
     return {"mentions": mentions, "names": names, "corpus": corpus,
-            "corpus_total": corpus_total}
+            "corpus_total": corpus_total, "class_of": class_of,
+            "class_names": class_names}
 
 
 def walk_relations(conn, run, entity_ids) -> list:
     """Relation templates scoped to the walk (P5): both endpoints must be
     among `entity_ids` (the entities mentioned in the walked chunks). Fetched
     once per (run, prompt) per P7; per-GROUP narrowing is pure and happens in
-    walker_core.group_relations.
+    walker_core.group_relations. Each row carries `rel_class` (None when the
+    template has no relation_classes row -- a template with no class row is
+    its own singleton, E15/E17).
 
-    Spec: .spec/specs/graph-explorer/design.md 6.22 P5/P7
-    Task: playbook.md T39
+    Spec: .spec/specs/graph-explorer/design.md 6.22 P5/P7, 6.24 E15-E19 (E17 amendment)
+    Task: playbook.md T39, T72
     """
     entity_ids = sorted(entity_ids)
     if not entity_ids:
@@ -376,15 +391,101 @@ def walk_relations(conn, run, entity_ids) -> list:
     with conn.cursor() as cur:
         cur.execute("""
             SELECT r.src, r.dst, r.template, r.connector, r.n, r.llr, r.npmi,
-                   r.example_ord, es.name AS src_name, ed.name AS dst_name
+                   r.example_ord, es.name AS src_name, ed.name AS dst_name,
+                   rc.rel_class
               FROM relations r
               JOIN entities es ON es.run_id = r.run_id AND es.entity_id = r.src
               JOIN entities ed ON ed.run_id = r.run_id AND ed.entity_id = r.dst
+              LEFT JOIN relation_classes rc
+                     ON rc.run_id = r.run_id AND rc.template = r.template
              WHERE r.run_id = %s
                AND r.src = ANY(%s::int[]) AND r.dst = ANY(%s::int[])
              ORDER BY r.llr DESC, r.src, r.dst, r.template""",
             (run.run_id, entity_ids, entity_ids))
         return cur.fetchall()
+
+
+def class_reference(conn, run, *, k_classes=10, k_members=6) -> dict:
+    """P18 REFERENCE: the run's top entity/relation classes by mention/n mass,
+    RUN-scoped and prompt-independent -- unlike walk_entities/walk_relations,
+    which are cached per (run, prompt, ords). Called ONLY through the
+    walker's cached `classes_for(run_id)` wrapper (P7); never hook this into
+    analysis_inputs.
+
+    Require: a run whose entity/relation class passes have run.
+    Guarantee: {"entity_classes": [...], "relation_classes": [...]}, each list
+    empty (never a raise, never a partial key) when nothing is classed.
+    Singletons are dropped (HAVING count(*) > 1, E15: an unclassed entity/
+    template is its own class and carries no information here).
+
+    Spec: .spec/specs/graph-explorer/design.md 6.24 E15-E19 (E17 amendment), P18
+    Task: playbook.md T72
+    """
+    with conn.cursor() as cur:
+        cur.execute("""
+            WITH mass AS (
+              SELECT e.class_id, e.entity_id, e.name,
+                     coalesce(sum(m.cnt), 0)::bigint AS cnt
+                FROM entities e
+                LEFT JOIN mentions m ON m.run_id = e.run_id AND m.entity_id = e.entity_id
+               WHERE e.run_id = %s AND e.class_id IS NOT NULL
+               GROUP BY e.class_id, e.entity_id, e.name),
+            cls AS (
+              SELECT class_id, sum(cnt) AS mass, count(*)::int AS members
+                FROM mass GROUP BY class_id HAVING count(*) > 1
+               ORDER BY mass DESC, class_id LIMIT %s),
+            rk AS (
+              SELECT m.*, row_number() OVER (PARTITION BY m.class_id
+                                             ORDER BY m.cnt DESC, m.name) AS rn
+                FROM mass m JOIN cls c ON c.class_id = m.class_id)
+            SELECT rk.class_id, c.mass, c.members, rk.entity_id, rk.name, rk.cnt
+              FROM rk JOIN cls c ON c.class_id = rk.class_id
+             WHERE rk.rn <= %s
+             ORDER BY c.mass DESC, c.class_id, rk.rn""",
+            (run.run_id, k_classes, k_members))
+        ent_rows = cur.fetchall()
+
+        cur.execute("""
+            WITH tmass AS (
+              SELECT rc.rel_class, r.template, sum(r.n)::bigint AS n, count(*)::int AS pairs
+                FROM relations r
+                JOIN relation_classes rc ON rc.run_id = r.run_id AND rc.template = r.template
+               WHERE r.run_id = %s GROUP BY rc.rel_class, r.template),
+            cls AS (
+              SELECT rel_class, sum(n) AS mass, count(*)::int AS templates
+                FROM tmass GROUP BY rel_class HAVING count(*) > 1
+               ORDER BY mass DESC, rel_class LIMIT %s),
+            rk AS (
+              SELECT t.*, row_number() OVER (PARTITION BY t.rel_class
+                                             ORDER BY t.n DESC, t.template) AS rn
+                FROM tmass t JOIN cls c ON c.rel_class = t.rel_class)
+            SELECT rk.rel_class, c.mass, c.templates, rk.template, rk.n, rk.pairs
+              FROM rk JOIN cls c ON c.rel_class = rk.rel_class
+             WHERE rk.rn <= %s
+             ORDER BY c.mass DESC, c.rel_class, rk.rn""",
+            (run.run_id, k_classes, k_members))
+        rel_rows = cur.fetchall()
+
+    entity_classes: dict = {}
+    for r in ent_rows:
+        c = entity_classes.setdefault(r["class_id"], {
+            "class_id": r["class_id"], "label": r["name"],
+            "mass": r["mass"], "members": r["members"], "top": []})
+        c["top"].append((r["name"], r["cnt"]))
+
+    relation_classes: dict = {}
+    for r in rel_rows:
+        c = relation_classes.setdefault(r["rel_class"], {
+            "rel_class": r["rel_class"], "mass": r["mass"],
+            "templates": r["templates"], "top": []})
+        c["top"].append((r["template"], r["n"]))
+
+    return {
+        "entity_classes": sorted(entity_classes.values(),
+                                 key=lambda c: (-c["mass"], c["class_id"])),
+        "relation_classes": sorted(relation_classes.values(),
+                                   key=lambda c: (-c["mass"], c["rel_class"])),
+    }
 
 
 def analysis_inputs(conn, run, ords) -> dict:

@@ -516,6 +516,15 @@ def analysis_for(run_id: str, q: str, _ords=None):
 
 
 @st.cache_data(show_spinner=False, max_entries=8)
+def classes_for(run_id: str):
+    """P18 REFERENCE: entity/relation classes are RUN-level and
+    prompt-independent, so the cache key is the run alone -- unlike
+    analysis_for, which is keyed per (run, prompt, ords).
+    Spec: design.md 6.24 E15-E17 · Task: playbook.md T72"""
+    return evidence.class_reference(conn, run)
+
+
+@st.cache_data(show_spinner=False, max_entries=8)
 def walk_umap_for(run_id: str, q: str, _ords=None):
     """P16(i): the UMAP projection of the walked chunks, once per (run, prompt).
     None on sparse-only runs or when any walked chunk lacks an embedding."""
@@ -966,7 +975,9 @@ with tab_analysis:
                     if ds is None:
                         st.info("Walk too small (or no stored embeddings) for partitions.")
                     else:
-                        _rows = walker_core.partition_rows(ds, src_of_all)
+                        _chain_groups = {i + 1: ch for i, ch in enumerate(ds["chunks"]["chains"])}
+                        _ccounts = walker_core.group_counts(_chain_groups, ai["ents"], ai["rels"])
+                        _rows = walker_core.partition_rows(ds, src_of_all, counts=_ccounts)
                         st.dataframe(_rows, use_container_width=True, hide_index=True)
                         # ---- P12: each chain's own global-community make-up
                         _clines = walker_core.chain_communities(ds["chunks"]["chains"], cid_of)
@@ -975,12 +986,15 @@ with tab_analysis:
                             _tok = (_line.split(" ") or ["c?"])[0].split(":")[0]
                             _cid = int(_tok[1:]) if _tok[1:].isdigit() else None
                             _c = cid_color(_cid)
+                            _cc = _ccounts.get(_row["chain"], {})
                             st.markdown(
                                 f'<div style="background:{rgba(_c, 0.10)};'
                                 f'border:1px solid {walker_core.BORDER};'
                                 f'border-left:4px solid {_c};border-radius:4px;'
                                 f'padding:.25rem .6rem;margin:.2rem 0;font-size:.85rem">'
                                 f'chain {html.escape(str(_row["chain"]))} · '
+                                f'{_cc.get("chunks", 0)} chunks · {_cc.get("entities", 0)} entities · '
+                                f'{_cc.get("relations", 0)} relations · '
                                 f'<code>{html.escape(_line)}</code></div>',
                                 unsafe_allow_html=True)
                         _tchains = ds["terms"]["chains"]
@@ -1041,6 +1055,19 @@ with tab_analysis:
                           "edges": r["edges"],
                           "avg strength": round(r["avg_strength"], 3)} for r in _qrows],
                         use_container_width=True, hide_index=True, height=300)
+
+                    st.markdown("#### Classes")
+                    st.caption("Unsupervised classes over the whole run — entities grouped by "
+                               "co-mention NPMI (Louvain), relation templates grouped by shared "
+                               "entity-pair populations (DIRT). Run-level, not walk-scoped.")
+                    _cref = classes_for(run.run_id)
+                    if not _cref["entity_classes"] and not _cref["relation_classes"]:
+                        st.info("No classes for this run yet. Build with "
+                                "`python entities.py <label>` and `python relations.py <label>`.")
+                    else:
+                        st.markdown(walker_core.digest_card(walker_core.class_digest(_cref),
+                                                            walker_core.PRIMARY),
+                                    unsafe_allow_html=True)
 
             # ---- P18 WALK TRACE: diagnostic, not evidence -- last, always collapsed
             with st.expander(

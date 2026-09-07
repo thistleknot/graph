@@ -303,10 +303,47 @@ def test_panels_render_digests_and_chain_communities():
         codes = [c.value for c in at.get("code")]
     assert not [c for c in codes if "terms(dwpc):" in c], \
         "P14(e) supersedes P11's st.code: digests are cards now"
-    assert re.search(r"chain \d+ · <code>c", md), "P12/P14(d): no tinted chain row"
+    # T72 (E17 amendment): the tinted chain row now carries chunk/entity/
+    # relation counts between the chain id and the <code> term list.
+    assert re.search(r"chain \d+ · \d+ chunks · \d+ entities · \d+ relations · <code>c", md), \
+        "P12/P14(d) + E17 amendment: no tinted chain row with counts"
     assert "relative (this walk only)" in md, \
         "P14(a) reversed + P18: the LH/RH louvain pair now lives in its own sub-tab"
     assert re.search(r"height:3px", md), "P15(c): no card top accent bar"
+    # E18: relation digest items lead with the walk-local pair count.
+    assert re.search(r"pairs=\d+ corpus_n=\d+", md), \
+        "E18: relation items missing pairs= lead"
+
+
+def test_classes_card_renders_a_class_line():
+    """The Classes panel must degrade, not raise, on an unclassed run: either
+    a rendered E<id> class line, or the "no classes yet" info line."""
+    import re
+    from streamlit.testing.v1 import AppTest
+    q = "jury trial grand jury investigation"
+    rr = {"ok": True, "backend": "test", "answer": "A #11.", "briefs": [{}], "briefs_text": "b",
+          "hypotheses": [], "hypothesis": "", "why": "", "foreign": [], "stages": {},
+          "self_contradicting": [], "supported_ids": [11, 12], "cited": [11],
+          "premises": [{"text": "p", "ids": [11, 12], "verdict": "supports", "why": ""}],
+          "shown": [11, 12, 13], "entailed": [12, 13], "contradicts": [],
+          "coverage": 1.0, "evidence": "",
+          "verdicts": [{"ord": 11, "verdict": "neutral", "why": "about lunch counters"},
+                       {"ord": 12, "verdict": "entails", "why": "yes"},
+                       {"ord": 13, "verdict": "entails", "why": "yes"}]}
+    try:
+        at = AppTest.from_file("walker_app.py", default_timeout=240)
+        at.session_state["assess"] = (q, rr)
+        at.run()
+        at.text_input("q").set_value(q).run()
+    except Exception as e:                                # pragma: no cover
+        pytest.skip(f"app could not start (no db?): {e}")
+    errs = [e.value for e in at.exception]
+    assert not errs, f"Analysis tab raised: {errs}"
+    md = " ".join(m.value for m in at.markdown)
+    info = " ".join(i.value for i in at.info)
+    assert re.search(r"E\d+ .*? \. \d+ members \. mass \d+", md) or \
+        "No classes for this run yet" in info
+    assert not at.exception
 
 
 def test_stat_row_renders_four_tiles():
@@ -579,6 +616,31 @@ def test_walk_trace_is_last_and_collapsed():
     assert "expanded=not has_answer" not in src
     assert "has_answer" not in src, "dead flag left behind"
     assert "expanded=False" in src[i_trace:i_trace + 700]
+
+
+# ------------------------- 6.24 classes panel (T72)
+
+def test_classes_panel_lands_in_the_reference_zone():
+    """The Classes panel is the last thing in Zone 3 REFERENCE, beneath the
+    community map and the inter-community links table."""
+    src = _src()
+    assert src.find('subheader("Community map")') < src.find('#### Classes')
+    assert src.find("st.columns([1.4, 1])") < src.find('#### Classes')
+    assert src.find("Strongest inter-community links") < src.find('#### Classes')
+
+
+def test_classes_panel_uses_the_cached_helper_not_inline_sql():
+    """P7/6.21(c): no inline SQL for classes in walker_app -- it goes through
+    the cached classes_for() wrapper over evidence.class_reference. The
+    result dict's keys (entity_classes/relation_classes) are read as plain
+    dict access, never as SQL -- so no SELECT/JOIN in this file ever mentions
+    relation_classes or a class_id column."""
+    src = _src()
+    assert "def classes_for(" in src
+    assert "evidence.class_reference" in src
+    assert "class_id" not in src, "walker_app never touches the column directly"
+    assert "JOIN relation_classes" not in src
+    assert "FROM relation_classes" not in src
 
 
 # ------------------------- 6.23 agentic retrieval (T62)

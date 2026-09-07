@@ -229,11 +229,20 @@ def src_of_map(conn, run, ords) -> dict:
     return {o: gt.source_of(gt.node(conn, run, o)) for o in ords}
 
 
-def partition_rows(ds: dict, src_of: dict) -> list[dict]:
+def partition_rows(ds: dict, src_of: dict, *, counts=None) -> list[dict]:
     """One row per dendrite CHUNK chain: size, source mix, and the chain
     members' own BM25-salient vocabulary ranked by how many members carry it
     (top 12; 'term(n)' when n > 1). Pure: `ds` is dendrite_state's output,
-    `src_of` comes from src_of_map. No DB, no st."""
+    `src_of` comes from src_of_map. No DB, no st.
+
+    `counts`, when given, is `group_counts` output keyed by the SAME 1-based
+    chain number this function already assigns (E17 amendment, grouping 3):
+    each row gains "entities"/"relations" columns right after "chunks". When
+    `counts` is None the output is byte-identical to before T72.
+
+    Spec: .spec/specs/graph-explorer/design.md 6.22, 6.24 E17 amendment
+    Task: playbook.md T39, T72
+    """
     sal = ds["sal"]
     rows = []
     for ci, chain in enumerate(ds["chunks"]["chains"]):
@@ -243,14 +252,18 @@ def partition_rows(ds: dict, src_of: dict) -> list[dict]:
             for t in (sal.get(o, {}).get("top") or []):
                 tc[t] += 1
             mix[src_of.get(o) or "?"] += 1
-        rows.append({
+        row = {
             "chain": ci + 1,
             "chunks": len(chain),
-            "sources": " ".join(f"{k}:{v}" for k, v in mix.most_common()),
-            "salient terms (carried by N members)":
-                ", ".join(f"{t}({n})" if n > 1 else t
-                          for t, n in tc.most_common(12)),
-        })
+        }
+        if counts is not None:
+            cc = counts.get(ci + 1, {})
+            row["entities"] = cc.get("entities", 0)
+            row["relations"] = cc.get("relations", 0)
+        row["sources"] = " ".join(f"{k}:{v}" for k, v in mix.most_common())
+        row["salient terms (carried by N members)"] = \
+            ", ".join(f"{t}({n})" if n > 1 else t for t, n in tc.most_common(12))
+        rows.append(row)
     return rows
 
 
@@ -398,9 +411,13 @@ def group_relations(members, ents, rels, k=12) -> list:
     are BOTH mentioned in this group's chunks. Counting is per
     (template, connector): `n` sums the corpus-level co-occurrence count,
     `pairs` counts distinct entity pairs that qualified inside the group.
+    E18 ranking half: rows lead with walk-local mass (`pairs`), corpus-wide
+    `n` demoted to the tie-break -- the scoping half of E18 is already this
+    function's job (only rows whose src AND dst are both mentioned in the
+    group qualify, and `top` is drawn from exactly those rows).
 
-    Spec: .spec/specs/graph-explorer/design.md 6.22 P5
-    Task: playbook.md T39
+    Spec: .spec/specs/graph-explorer/design.md 6.22 P5, 6.24 E18
+    Task: playbook.md T39, T72
     """
     mentions = ents["mentions"]
     present = {eid for o in members for eid in mentions.get(o, {})}
@@ -420,8 +437,37 @@ def group_relations(members, ents, rels, k=12) -> list:
         top = sorted(a["top"], key=lambda t: -t[2])[:3]
         rows.append({"template": template, "connector": connector, "n": a["n"],
                      "pairs": len(a["pairs"]), "top": top})
-    rows.sort(key=lambda r: (-r["n"], -r["pairs"], r["template"], r["connector"]))
+    rows.sort(key=lambda r: (-r["pairs"], -r["n"], r["template"], r["connector"]))
     return rows if k is None else rows[:k]
+
+
+def group_counts(groups, ents, rels) -> dict:
+    """E17 amendment: the ONE counts function. `groups` is {group_id: [ords]}
+    -- global cids, relative louvain groups, and the correlation-sorted
+    dendrite chains all reduce to that shape, so the three numbers are
+    commensurable across every grouping the walker renders. Pure, DB-free.
+
+    - "chunks" = len(members) (member list as given; caller owns dedup).
+    - "entities" = count of DISTINCT entity ids mentioned in the group's chunks.
+    - "relations" = count of DISTINCT (src, dst, template) relation ROWS whose
+      src AND dst are both in that entity set. A different grain from
+      `group_relations`, which aggregates by (template, connector); this
+      counts rows.
+
+    Guarantee: {gid: {"chunks": int, "entities": int, "relations": int}} with
+    a key for EVERY gid in `groups` -- an empty member list gives three zeros.
+
+    Spec: .spec/specs/graph-explorer/design.md 6.24 E17 amendment
+    Task: playbook.md T72
+    """
+    mentions = ents.get("mentions", {})
+    out: dict = {}
+    for gid, members in groups.items():
+        present = {eid for o in members for eid in mentions.get(o, {})}
+        n_rel = sum(1 for r in rels if r["src"] in present and r["dst"] in present)
+        out[gid] = {"chunks": len(members), "entities": len(present),
+                    "relations": n_rel}
+    return out
 
 
 def group_classes(groups, ents, rels, sal, ndw, *, floor=2, k=12) -> list:
@@ -430,14 +476,18 @@ def group_classes(groups, ents, rels, sal, ndw, *, floor=2, k=12) -> list:
     Evidence.cid_of restricted to the walked chunks for the global panel --
     same shape, so ONE function serves both panels of P4). `sal` degrades to
     {} when ev.dendrite is None -- terms come back empty, entities/relations
-    still populate, never a raise.
+    still populate, never a raise. Each row carries "counts" from
+    `group_counts` (E17 amendment) -- the three commensurable numbers, never
+    recomputed a second, divergent way.
 
-    Spec: .spec/specs/graph-explorer/design.md 6.22 P4/P5
-    Task: playbook.md T39
+    Spec: .spec/specs/graph-explorer/design.md 6.22 P4/P5, 6.24 E17 amendment
+    Task: playbook.md T39, T72
     """
     by_group: dict = {}
     for o, gid in groups.items():
         by_group.setdefault(gid, []).append(o)
+
+    counts = group_counts(by_group, ents, rels)
 
     rows = []
     for gid, members in by_group.items():
@@ -449,6 +499,7 @@ def group_classes(groups, ents, rels, sal, ndw, *, floor=2, k=12) -> list:
             "terms": rank_group_terms(members, sal, ndw, k=k),
             "entities": group_entities(members, ents, floor=floor, k=k),
             "relations": group_relations(members, ents, rels, k=k),
+            "counts": counts[gid],
         })
     rows.sort(key=lambda r: (-r["size"], r["gid"]))
     return rows
@@ -522,11 +573,27 @@ def group_digest(gc, ents, src_of=None, *, prefix="g", marker=None, width=110,
     header, terms(dwpc), entities(mentions), relations. Pure/deterministic --
     same inputs produce a byte-identical string, so the UI can diff runs.
 
-    Spec: .spec/specs/graph-explorer/design.md 6.22 P10/P11
-    Task: playbook.md T43
+    Header (E17 amendment): when `gc.get("counts")` is present, the two extra
+    counts land right after chunks, before the source mix -- old callers with
+    no "counts" key keep their exact string.
+
+    Entity items (E15): a classed, non-singleton entity gets a trailing
+    " ~<class label>" -- `class_id == entity_id` is the singleton rule, not a
+    real class, and is never annotated.
+
+    Relations (E18): walk-local `pairs` leads, corpus-wide `n` demotes to a
+    `corpus_n=` suffix -- the scoping half of E18 already lives in
+    `group_relations` (only rows whose src AND dst are both mentioned in the
+    group qualify, and `top` is drawn from exactly those rows).
+
+    Spec: .spec/specs/graph-explorer/design.md 6.22 P10/P11, 6.24 E15/E17/E18
+    Task: playbook.md T43, T72
     """
     members = gc.get("members") or []
     header = f"{prefix}{gc['gid']} . {gc['size']} chunks"
+    counts = gc.get("counts")
+    if counts is not None:
+        header += f" . {counts.get('entities', 0)} entities . {counts.get('relations', 0)} relations"
     if src_of is not None:
         mix = Counter(src_of.get(o) or "?" for o in members)
         mix_str = " ".join(f"{name}:{cnt}" for name, cnt in
@@ -547,6 +614,8 @@ def group_digest(gc, ents, src_of=None, *, prefix="g", marker=None, width=110,
         return round((row.get("group_share") or 0) * total)
 
     names = ents.get("names", {})
+    class_of = ents.get("class_of") or {}
+    class_names = ents.get("class_names") or {}
     ent_items = []
     for row in sorted(gc.get("entities") or [],
                        key=lambda e: (-e["cnt"], e.get("name") or e["entity_id"])):
@@ -556,20 +625,60 @@ def group_digest(gc, ents, src_of=None, *, prefix="g", marker=None, width=110,
         item = f"{name} {row['cnt']}"
         if corpus_cnt > row["cnt"]:
             item += f" x{row['lift']:.1f}"
+        cls = class_of.get(eid)
+        if cls is not None and cls != eid:                     # E15 singleton rule
+            item += " ~" + str(class_names.get(cls, cls))
         ent_items.append(item)
     ent_line = _pack(ent_items, width, prefix="entities(mentions): ")
 
     rel_items = []
     for r in gc.get("relations") or []:
         top = r.get("top") or []
+        pairs = r.get("pairs", 0)
         if top:
             a, b, _llr = top[0]
-            rel_items.append(f"{a} -[{r['template']}]-> {b} corpus_n={r['n']}")
+            rel_items.append(f"{a} -[{r['template']}]-> {b} pairs={pairs} corpus_n={r['n']}")
         else:
-            rel_items.append(f"-[{r['template']}]-> corpus_n={r['n']}")
+            rel_items.append(f"-[{r['template']}]-> pairs={pairs} corpus_n={r['n']}")
     rel_line = _pack(rel_items, width, prefix="relations: ", max_items=max_pairs)
 
     return "\n".join([header, terms_line, ent_line, rel_line])
+
+
+def class_digest(cref, *, width=110, k_ent=None, k_rel=None) -> str:
+    """Render `evidence.class_reference` output as a TOON-style digest for the
+    P18 REFERENCE Classes panel: one header line, one line per entity class,
+    one line per relation class. Pure, deterministic, byte-identical for
+    identical input -- rendered through `digest_card`, which owns escaping
+    and `<br>` (P11).
+
+    Both lists empty -> header plus one dash line per side, never "".
+
+    Spec: .spec/specs/graph-explorer/design.md 6.24 E15-E19 (E17 amendment), P18
+    Task: playbook.md T72
+    """
+    entity_classes = cref.get("entity_classes") or []
+    relation_classes = cref.get("relation_classes") or []
+
+    lines = [f"classes . {len(entity_classes)} entity . {len(relation_classes)} relation"]
+
+    if entity_classes:
+        for c in entity_classes:
+            prefix = f"E{c['class_id']} {c['label']} . {c['members']} members . mass {c['mass']}: "
+            items = [f"{name} {cnt}" for name, cnt in (c.get("top") or [])]
+            lines.append(_pack(items, width, prefix=prefix, max_items=k_ent))
+    else:
+        lines.append(_pack([], width))
+
+    if relation_classes:
+        for c in relation_classes:
+            prefix = f"R {c['rel_class']} . {c['templates']} templates . n {c['mass']}: "
+            items = [f"{template} {n}" for template, n in (c.get("top") or [])]
+            lines.append(_pack(items, width, prefix=prefix, max_items=k_rel))
+    else:
+        lines.append(_pack([], width))
+
+    return "\n".join(lines)
 
 
 def digest_card(text: str, color: str, *, alpha: float = 0.10, badge=None,
