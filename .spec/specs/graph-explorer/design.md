@@ -2654,3 +2654,19 @@ dendrite chains (correlation sorting.md) -- which today carry only chunk
 counts and salient terms. A chain's row reads e.g.
 "chain 1 . 36 chunks . 214 entities . 87 relations" beside its
 community make-up line (P12).
+
+
+**E16/E15 attributions (operator asked for the matching papers, 2026-09-07).**
+NPMI as used for entity co-mention edges and relation plausibility:
+Bouma 2009, Normalized (Pointwise) Mutual Information in Collocation
+Extraction (GSCL); ancestor Church & Hanks 1990. G2 gate: Dunning 1993.
+Louvain: Blondel et al. 2008. Pattern-similarity bet: Lin & Pantel 2001
+(DIRT). The PARSER-FREE method we actually implement is closer to Hasegawa,
+Sekine & Grishman 2004, Discovering Relations among Named Entities from
+Large Corpora (ACL) -- surface context between entity pairs, clustered by
+cosine, no dependency parse and no POS assumption. Operator constraint
+driving this: domain corpora carry part numbers/SKUs/codes that no tagger
+resolves as nouns, and spaCy is not called on the deterministic path.
+Term-inventory lineage for the same reason: Frantzi & Ananiadou C-value/
+NC-value; TopMine; AutoPhrase. Full write-up:
+"C:/Users/user/Documents/wiki/data science/llm/DIRT relation extraction.md".
