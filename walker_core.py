@@ -211,7 +211,10 @@ def is_superlative(prompt: str) -> bool:
 # determiner ("the biggest band") says nothing about scope by itself.
 _REFLEXIVE_POSSESSIVES = {"his", "her", "its", "their"}
 _REFLEXIVE_HEAD_NOUNS = {"peak", "height", "prime", "high"}
-_REFLEXIVE_WINDOW = 4
+_REFLEXIVE_WINDOW = 4   # ARBITRARY: chosen, not derived. Best practice is a
+                        # window calibrated on held-out data (6.26 T3(b),
+                        # gold-lane); ReVerb's POS-pattern constraint (Fader et
+                        # al. 2011) is unavailable parser-free (6.24).
 _REFLEXIVE_IDIOMS = (
     "height of", "peak of", "career high", "personal best", "to date",
     "of his career", "of her career", "of their career", "of its career",
@@ -533,7 +536,8 @@ def partition_rows(ds: dict, src_of: dict, *, counts=None) -> list[dict]:
 
 # ---------- analysis view (T39, design 6.22) ----------
 
-LOUVAIN_SEED = 7   # repo convention: chunkgraph.py:732, graph3d.py:168
+LOUVAIN_SEED = 7   # CONVENTION: reproducibility only; any fixed value works.
+                    # repo convention: chunkgraph.py:732, graph3d.py:168
 
 
 def node_dwpc(pathways: dict) -> dict:

@@ -21,9 +21,16 @@ import sampler
 
 # --- A3/A4 constants ---------------------------------------------------------
 
-MAX_ITERS = 3                 # A4: iterations BEYOND the base walk
-PROPOSE_TIMEOUT = 60.0
-PROPOSE_MAX_TOKENS = 700
+MAX_ITERS = 3                 # ARBITRARY: chosen, not derived. Best practice is a
+                               # budget calibrated on held-out task difficulty
+                               # (6.26 T3(b), gold-lane). A4: iterations BEYOND
+                               # the base walk
+PROPOSE_TIMEOUT = 60.0         # COST-BOUND: a measured performance cap, not a
+                               # quality threshold -- wall-clock budget on the
+                               # propose call.
+PROPOSE_MAX_TOKENS = 700       # COST-BOUND: a measured performance cap, not a
+                               # quality threshold -- token/cost budget on the
+                               # propose call.
 ACTIONS = ("WIDEN", "REANCHOR", "PIVOT", "DEEPEN")   # A3
 LADDER = ("REANCHOR", "DEEPEN", "WIDEN")             # A12: narrowing before
                                                       # amplification -- the

@@ -17,13 +17,13 @@ E10 Relations v0 SHALL be built from node.body verbatim -- the one store that
 
 E11 Candidates SHALL be ordered pairs of entity occurrences within ONE
     sentence whose intervening surface span is at most MAX_CONNECTOR_TOKENS
-    (= 4) tokens -- one constant, serving as both connector bound and
-    pair-distance cap. Entity occurrences SHALL be anchored by greedy
-    longest-match of the run's stored tf vocabulary over the sentence's
-    gt-eligible projection (losslessly reconstructing fit-time Phraser bigram
-    merges, which merged over the stopworded stream), and SHALL aggregate over
-    canonical_id, falling back to entity_id where resolution has not run --
-    never an error.
+    (= 5, amended 6.26 T87 -- was 4) tokens -- one constant, serving as both
+    connector bound and pair-distance cap. Entity occurrences SHALL be
+    anchored by greedy longest-match of the run's stored tf vocabulary over
+    the sentence's gt-eligible projection (losslessly reconstructing fit-time
+    Phraser bigram merges, which merged over the stopworded stream), and
+    SHALL aggregate over canonical_id, falling back to entity_id where
+    resolution has not run -- never an error.
 
 E12 X's Y and Y of X SHALL normalize to ONE direction-normalized genitive row
     (src=X, dst=Y, template='GEN'). For every other template, direction SHALL
@@ -97,6 +97,26 @@ E19 assign_rel_classes SHALL print per-stage wall-clock timings on EVERY
     build (read / similarity / partition / write), and NO cardinality bound
     SHALL be added without a measured stage exceeding Article VII's budget --
     E14's law, restated for the class pass.
+
+E11 amendment (6.26 T87, 2026-09-08): MAX_CONNECTOR_TOKENS moved 4 -> 5.
+    Two measurements were taken and both are recorded here as the basis.
+    (1) The stored relations' own span distribution is CENSORED by the very
+    constant under test -- span==5 and span==6 are exactly 0 because the old
+    MAX_CONNECTOR_TOKENS=4 truncated at build time -- so the stored table
+    cannot be used to derive its own window. (2) The UNCENSORED inter-entity
+    gap distribution, measured over 1,568,471 pairs from 400 chunks with the
+    cap raised to 12, is FLAT: gap 0..8 hold 8.9/10.0/10.4/9.4/8.8/8.3/7.8/
+    7.3/6.8 percent, mean 5.22, sdev 3.61, median 5, estimator-pair band
+    9.45. A flat distribution has no elbow -- it measures sentence geometry,
+    not relation quality -- so a band derived from it would be meaningless
+    and would only admit noise. Given that derivation failed, the constant
+    is tagged CONVENTION rather than DERIVED, citing the +-5 collocation
+    context window (Church & Hanks 1990, Word Association Norms, Mutual
+    Information, and Lexicography, Computational Linguistics 16(1)), the
+    same window word2vec inherited. ReVerb's POS-pattern constraint on the
+    relation phrase (Fader et al. 2011) is the alternative best practice but
+    remains unavailable since 6.24 bars a tagger. The gold lane
+    (tools/diag_agentic.py) is the validation for this move, per 6.26 T3(b).
 """
 from __future__ import annotations
 
@@ -117,17 +137,48 @@ from stoplist import _STOP
 import config
 
 DSN = config.DSN
-MAX_CONNECTOR_TOKENS = 4   # E11: connector bound AND pair-distance cap, one knob
-MIN_REL_SUPPORT = 3        # E13
-G2_GATE = 10.83            # E13: W17's gate, one significance ruler
-MIN_SENT_TOKENS = 3        # E10: fragment floor
-MAX_PHRASE_TOKENS = 4      # E11: longest-match window; see anchor()
+MAX_CONNECTOR_TOKENS = 5   # CONVENTION: best practice is the +-5 collocation context
+                           # window (Church & Hanks 1990, Word Association Norms,
+                           # Mutual Information, and Lexicography, Computational
+                           # Linguistics 16(1)), the same window word2vec inherited.
+                           # ReVerb's POS-pattern constraint on the relation phrase
+                           # (Fader et al. 2011) is the alternative best practice but
+                           # is unavailable here since 6.24 bars a tagger. E11:
+                           # connector bound AND pair-distance cap, one knob. Moved
+                           # 4 -> 5 (6.26 T87, E11 amendment) -- see the module
+                           # docstring's E11 amendment note for the measurements
+                           # behind the move; the gold lane is the validation.
+MIN_REL_SUPPORT = 3        # ARBITRARY: chosen, not derived. Best practice is a
+                           # support floor calibrated on held-out data -- ReVerb
+                           # (Fader et al. 2011) requires >= 20 distinct argument
+                           # pairs. Replace via 6.26 T3(b), gold-lane calibration.
+                           # E13
+G2_GATE = 10.83            # DERIVED: chi-square critical value, 1 df, p<0.001
+                           # (Dunning 1993, gt.llr). E13: W17's gate, one
+                           # significance ruler.
+MIN_SENT_TOKENS = 3        # ARBITRARY: chosen, not derived. Best practice would be
+                           # a floor set by parse validity (e.g. a minimum verb-
+                           # bearing span) -- unavailable parser-free (6.24). Replace
+                           # via 6.26 T3(b), gold-lane calibration. E10: fragment
+                           # floor.
+MAX_PHRASE_TOKENS = 4      # ARBITRARY: chosen, not derived. Best practice is
+                           # ReVerb's POS-pattern constraint (Fader et al. 2011) on
+                           # the phrase's longest match, unavailable parser-free
+                           # (6.24). Replace via 6.26 T3(b), gold-lane calibration.
+                           # E11: longest-match window; see anchor()
 POSS = "'s"                # E10: the clitic marker's surface form
-REL_CLASS_MIN_SHARED = 3   # E16 shared-pair floor. Same ruler as E15's
-                           # CLASS_MIN_JOINT / E13's MIN_REL_SUPPORT -- three
-                           # co-occurrences is this project's one support floor;
-                           # no new knob invented for a new pass.
-REL_CLASS_SIM = 0.10       # E16 similarity threshold on set cosine. Basis: pair-set
+REL_CLASS_MIN_SHARED = 3   # ARBITRARY: chosen, not derived. Best practice is a
+                           # support floor calibrated on held-out data (as above).
+                           # Replace via 6.26 T3(b), gold-lane calibration. E16
+                           # shared-pair floor. Same ruler as E15's CLASS_MIN_JOINT
+                           # / E13's MIN_REL_SUPPORT -- three co-occurrences is this
+                           # project's one support floor; no new knob invented for
+                           # a new pass.
+REL_CLASS_SIM = 0.10       # ARBITRARY: chosen, not derived. Best practice is the
+                           # same estimator-pair band the CHUNK stage already uses,
+                           # computed on the observed cosine distribution (6.26
+                           # T3(a)); that census is the named replacement. E16
+                           # similarity threshold on set cosine. Basis: pair-set
                            # sizes span ~4 orders of magnitude ('' ~9.7e4 pairs vs a
                            # long template's handful), so any threshold above ~0.2
                            # can only ever join same-size templates. Provisional

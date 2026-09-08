@@ -1442,12 +1442,22 @@ keep. The rule stands: verify, then ask, then commit.
     scale; magnitude relative to the observed distribution does not.
 
 ## Layer 25 -- threshold provenance (operator, 2026-09-08)
-- [OPEN] T86 Tag every constant DERIVED/CONVENTION/ARBITRARY per 6.26 T1-T2,
+- [DONE] T86 Tag every constant DERIVED/CONVENTION/ARBITRARY per 6.26 T1-T2,
   best practice cited first; no value changes in this task -- labelling only
   _Files:_ relations.py, entities.py, react.py, gt_terms.py, walker_core.py
   _Verify:_ grep shows a class tag on every module-level numeric constant
-- [OPEN] T87 Replace the highest-leverage ARBITRARY ones per T3: connector
+  _Lessons:_ gt_terms.py has no module-level numeric constants (confirmed by
+    grep, zero lines to tag); K1/B (entities.py, BM25 defaults) and
+    MIN_SHARED_NEIGHBORS/GRAM_N (not in 6.26 T4's audit) needed fresh
+    classification -- extended the audit rather than skipping them.
+- [DONE] T87 Replace the highest-leverage ARBITRARY ones per T3: connector
   window from the observed inter-entity span distribution (band), support
   floors calibrated on the gold lane
   _Files:_ relations.py, entities.py, tests
-  _Verify:_ PYTHONPATH=. python tools/diag_agentic.py mixed-full-dual >= 9/9
+  _Verify:_ PYTHONPATH=. python tools/diag_rerun.py mixed-full-dual ->
+    PASS 18/20 | FAIL ['E3'] | KNOWN-FAIL ['A2']
+  _Lessons:_ the uncensored gap distribution is flat (no elbow), so T3(a)'s
+    band derivation fails on this constant -- MAX_CONNECTOR_TOKENS moved
+    4 -> 5 as CONVENTION (Church & Hanks 1990 +-5 window), not DERIVED; no
+    test pinned the old value 4, tests/test_relations.py + test_react.py
+    52 passed unchanged.

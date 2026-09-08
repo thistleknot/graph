@@ -150,18 +150,41 @@ import graph_tools as gt
 import config
 
 DSN = config.DSN
-MIN_JOINT_CHUNKS = 5           # E4
+MIN_JOINT_CHUNKS = 5           # ARBITRARY: chosen, not derived. Best practice is a
+                               # support floor calibrated on held-out data (as
+                               # MIN_REL_SUPPORT, relations.py). Replace via 6.26
+                               # T3(b), gold-lane calibration. E4
 ENTITY_TYPE = "term_v0"        # E1
-K1, B = 1.5, 0.75              # E5: graph_tools.search's constants, one ruler
+K1, B = 1.5, 0.75              # CONVENTION: Okapi BM25 published defaults
+                                # (Robertson & Zaragoza 2009, k1 in [1.2, 2.0], b =
+                                # 0.75). E5: graph_tools.search's constants, one
+                                # ruler.
 
-SIM_THRESHOLD = 0.90        # E6: SequenceMatcher.ratio floor for a candidate pair
-MIN_SHARED_NEIGHBORS = 2    # E7: two coincidences, not one
-NEIGHBOR_TOP_K = 25         # E7: neighbors per entity, by bm25 among ppmi > 0
-GRAM_N = 3                  # E6: blocking key width
-MAX_GRAM_BLOCK = 2000       # E6: a 3-gram in more blocks than this is a stopword-
-                            # grade key and is skipped; declared lossy, bounded
-EMB_THRESHOLD = 0.85        # E8: cosine floor for the OFF-by-default third signal
-VOCAB_BOUND = 65            # E9: cap on the df-eligible pool's cardinality before pair
+SIM_THRESHOLD = 0.90        # ARBITRARY: chosen, not derived. Best practice is a
+                            # similarity floor calibrated on held-out pairs (6.26
+                            # T3(b), gold-lane). E6: SequenceMatcher.ratio floor
+                            # for a candidate pair.
+MIN_SHARED_NEIGHBORS = 2    # ARBITRARY: chosen, not derived. Best practice is a
+                            # floor calibrated on held-out data (6.26 T3(b)).
+                            # E7: two coincidences, not one.
+NEIGHBOR_TOP_K = 25         # COST-BOUND: a measured performance cap, not a
+                            # quality threshold. E7: neighbors per entity, by
+                            # bm25 among ppmi > 0.
+GRAM_N = 3                  # CONVENTION: trigram (q=3) blocking keys are the
+                            # standard default in record-linkage blocking
+                            # (Christen 2012, Data Matching). E6: blocking key
+                            # width.
+MAX_GRAM_BLOCK = 2000       # COST-BOUND: a measured performance cap, not a
+                            # quality threshold. E6: a 3-gram in more blocks than
+                            # this is a stopword-grade key and is skipped;
+                            # declared lossy, bounded
+EMB_THRESHOLD = 0.85        # ARBITRARY: chosen, not derived. Best practice is a
+                            # cosine floor calibrated on held-out pairs (6.26
+                            # T3(b), gold-lane). E8: cosine floor for the
+                            # OFF-by-default third signal.
+VOCAB_BOUND = 65            # COST-BOUND: a measured performance cap, not a
+                            # quality threshold. Cap on the df-eligible pool's
+                            # cardinality before pair
                             # enumeration. Measured: unbounded pair_counts on
                             # mixed-full-dual (10,830 chunks) hit 2.47e9 pair slots, and
                             # raising MIN_JOINT_CHUNKS barely helped (design.md §6.19) --
@@ -172,7 +195,9 @@ VOCAB_BOUND = 65            # E9: cap on the df-eligible pool's cardinality befo
                             # 65 (~2.3e7 worst-case slots) -- Article VI: the pure-Python
                             # per-chunk loop, not the DB write, is the live bottleneck.
 
-CLASS_CHUNK_TOPK = 32       # E19: per-chunk cut for co-mention enumeration.
+CLASS_CHUNK_TOPK = 32       # COST-BOUND: a measured performance cap, not a
+                            # quality threshold. E19: per-chunk cut for co-mention
+                            # enumeration.
                             # Measured basis: 5,813,717 mentions / 10,830 chunks
                             # ~ 537 entities/chunk -> ~1.5e9 unbounded pair slots
                             # (E9 killed at 2.47e9). Top-32 by mention cnt, ties by
@@ -180,9 +205,13 @@ CLASS_CHUNK_TOPK = 32       # E19: per-chunk cut for co-mention enumeration.
                             # slots. Corpus-wide population is UNCUT: an entity that
                             # never makes a chunk's top-32 is simply its own class
                             # (E15's singleton fallback), never a dropped row.
-CLASS_MIN_JOINT = 3         # E15 support floor: >= 3 shared chunks before NPMI
-LOUVAIN_SEED = 7            # house convention: chunkgraph.py:732, graph3d.py:168,
-                            # walker_core.LOUVAIN_SEED
+CLASS_MIN_JOINT = 3         # ARBITRARY: chosen, not derived. Best practice is a
+                            # support floor calibrated on held-out data (6.26
+                            # T3(b), gold-lane). E15 support floor: >= 3 shared
+                            # chunks before NPMI
+LOUVAIN_SEED = 7            # CONVENTION: reproducibility only; any fixed value
+                            # works. house convention: chunkgraph.py:732,
+                            # graph3d.py:168, walker_core.LOUVAIN_SEED
 
 _DDL = (
     """CREATE TABLE IF NOT EXISTS entities (
