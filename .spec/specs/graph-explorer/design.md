@@ -2855,3 +2855,14 @@ than detecting a floor). Measured on the same walk: band r >= 0.947, 35 of
 Significance is retained as a NECESSARY condition; the band is the
 sufficient one. alpha stays a parameter; the band is not tunable by hand --
 it is derived from the data every call.
+
+**W23 amendment (Fisher z -- 2026-09-07, same day, measured).** The first
+implementation banded on r directly and OVERSHOT: correlations are bounded
+at 1, so on a tight high-r distribution mean+sdev exceeded the maximum
+possible value (live hurricane walk: band = 1.041) and every chunk fell out
+as a singleton -- the opposite failure to the snake. The band SHALL be
+computed on the Fisher z scale, z = arctanh(r), which is unbounded, taking
+the LOWER of (mean + sdev, median + 1.4826*MAD) and mapping the threshold
+back with tanh. Measured after: hurricane walk band r >= 0.970 -> 5 threads
+(top 33/9/3/2/2); musician walk band r >= 0.841 -> 6 threads (32/9/9/4/3/2).
+The band adapts to each walk's own distribution and cannot saturate.

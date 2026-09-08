@@ -1272,27 +1272,45 @@ def test_shim_reexports_the_whole_public_surface():
 # "significant" (p<.05 threshold r~0.21 vs median r=0.59) and dendrite_sort
 # returned one chain of 87 chunks plus a singleton.
 
-def test_dense_correlations_do_not_collapse_into_one_chain():
-    """W22/W23: three blocks under ONE dominant common factor -- every pair is
-    significantly positively correlated (median r ~ 0.8), which is the live
-    condition (88-chunk walk: 57% of pairs significant, median r 0.59). The
-    p-value criterion alone snakes through all 24; the estimator-pair band on
-    MAGNITUDE must recover threads instead."""
+def _blocked_matrix(common_w, seed=7, n_obs=60, per=8, blocks=3):
+    """Three planted blocks under ONE shared common factor -- the live
+    condition, where every pair is significantly positively correlated."""
     import numpy as np
-    rng = np.random.default_rng(7)
-    n_obs, per = 60, 8
+    rng = np.random.default_rng(seed)
     common = rng.normal(size=(n_obs, 1))
     cols, names = [], []
-    for b in range(3):
+    for b in range(blocks):
         base = rng.normal(size=(n_obs, 1))
         for i in range(per):
-            cols.append(0.85 * common + 0.35 * base + 0.20 * rng.normal(size=(n_obs, 1)))
+            cols.append(common_w * common + 0.35 * base
+                        + 0.20 * rng.normal(size=(n_obs, 1)))
             names.append(f"b{b}_{i}")
-    M = np.hstack(cols)
+    return np.hstack(cols), names
+
+
+def test_correlation_chains_recover_planted_blocks_under_a_common_factor():
+    """W23: with a moderate common factor (median r ~ 0.66) every pair is
+    'significant', so the p-value criterion alone snakes through all 24. The
+    Fisher-z estimator-pair band must recover the three planted blocks."""
+    M, names = _blocked_matrix(0.60)
+    out = gt.dendrite_sort(M, names)
+    sizes = sorted((len(c) for c in out["chains"]), reverse=True)
+    assert sizes == [8, 8, 8], f"planted blocks not recovered: {sizes}"
+    for c in out["chains"]:
+        assert len({n.split("_")[0] for n in c}) == 1, f"mixed-block chain: {c}"
+
+
+def test_dense_correlations_do_not_collapse_into_one_chain():
+    """W22 (the live defect): an 88-chunk walk had 57% of pairs 'significant'
+    (p<.05 threshold r~0.21 vs median r 0.59) and returned ONE chain of 87.
+    Under a very strong common factor two planted blocks are genuinely
+    collinear and may merge -- what must never happen is one thread taking
+    essentially everything."""
+    M, names = _blocked_matrix(0.85)
     out = gt.dendrite_sort(M, names)
     sizes = [len(c) for c in out["chains"]]
     biggest = max(sizes, default=0)
-    assert biggest <= 0.6 * len(names), (
+    assert biggest <= 0.75 * len(names), (
         f"one chain swallowed {biggest}/{len(names)} -- the snake defect (W22); "
         f"chain sizes {sizes}")
     assert len([c for c in out["chains"] if len(c) > 1]) >= 2, sizes

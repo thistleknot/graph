@@ -285,9 +285,18 @@ def dendrite_sort(M, names, alpha: float = 0.05, min_support: int = 0):
     # significance alone rather than inventing a band from nothing.
     _pos = R[R > 0]
     if _pos.size >= 3:
-        _med = float(np.median(_pos))
-        _mad = float(np.median(np.abs(_pos - _med)))
-        _band = max(float(_pos.mean() + _pos.std()), _med + 1.4826 * _mad)
+        # The band is computed on the FISHER Z scale (arctanh), never on r.
+        # Correlations are bounded at 1, so an additive band on a tight,
+        # high-r distribution overshoots the maximum possible value: measured
+        # on a live hurricane walk, mean+sdev gave band=1.041 -- no pair can
+        # clear it, and every chunk fell out as a singleton (the opposite
+        # failure to the snake). z = arctanh(r) is unbounded, so mean+-sdev
+        # is meaningful there; tanh maps the threshold back.
+        _z = np.arctanh(np.clip(_pos, -0.999999, 0.999999))
+        _zmed = float(np.median(_z))
+        _zmad = float(np.median(np.abs(_z - _zmed)))
+        _band = float(np.tanh(min(float(_z.mean() + _z.std()),
+                                  _zmed + 1.4826 * _zmad)))
         sig &= (R >= _band)
         np.fill_diagonal(sig, False)
 
