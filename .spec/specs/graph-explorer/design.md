@@ -2866,3 +2866,50 @@ the LOWER of (mean + sdev, median + 1.4826*MAD) and mapping the threshold
 back with tanh. Measured after: hurricane walk band r >= 0.970 -> 5 threads
 (top 33/9/3/2/2); musician walk band r >= 0.841 -> 6 threads (32/9/9/4/3/2).
 The band adapts to each walk's own distribution and cannot saturate.
+
+### 6.26 Threshold provenance: lead with the basis (operator, 2026-09-08)
+
+Operator, reading the relations write-up: "arbitrary thresholds stood out to
+me, like the 4 token separator. What is best practice is what we should be
+leading with as qualifier."
+
+**T1 (every threshold declares its class, first).** A numeric constant in
+this repo SHALL be annotated with one of three tags BEFORE its value is
+justified in prose:
+
+    DERIVED   -- computed from the data or from a stated distribution:
+                 G2_GATE = 10.83 (chi-square, 1 df, p<0.001); 1.4826 (MAD ->
+                 sigma consistency); Box-Cox / Yeo-Johnson fits; k-sigma
+                 cuts; the Fisher-z estimator-pair band (6.25 W23).
+    CONVENTION -- a field default, CITED: alpha = 0.05; context window +-5
+                 tokens (Church & Hanks 1990, inherited by word2vec);
+                 LOUVAIN_SEED (reproducibility only, any fixed value).
+    ARBITRARY  -- chosen by the author. SHALL say so in those words, and
+                 SHALL name what would replace it.
+
+**T2 (best practice leads).** Where a published practice exists, the
+docstring states it FIRST and then says what we do and why it differs.
+Example, MAX_CONNECTOR_TOKENS: best practice is either the cited +-5
+collocation window or ReVerb's POS-pattern constraint on the relation phrase
+(Fader et al. 2011) -- unavailable to us, since the parser-free rule (6.24)
+bars a tagger. Our 4 is ARBITRARY and its replacement is named in T3.
+
+**T3 (the standing replacement rule).** An ARBITRARY threshold SHALL be
+replaced, when the work is scheduled, by one of:
+  (a) the same estimator-pair band the repo already uses, computed on the
+      observed distribution (the CHUNK stage derives chunk size this way --
+      the precedent is in-house);
+  (b) calibration against the gold lane (tools/diag_agentic.py), which makes
+      the number measured rather than picked;
+  (c) an explicitly cited literature default, e.g. ReVerb's >= 20 distinct
+      argument pairs for a relation-phrase support floor.
+Until replaced it stays tagged ARBITRARY. A guessed number wearing derived
+language is the defect this section exists to prevent.
+
+**T4 (current audit, 2026-09-08).** DERIVED: G2_GATE, 1.4826 bands, Fisher-z
+band, k-sigma, Box-Cox. CONVENTION: alpha=0.05, LOUVAIN_SEED=7.
+ARBITRARY: MAX_CONNECTOR_TOKENS=4, MAX_PHRASE_TOKENS=4, _REFLEXIVE_WINDOW=4,
+MIN_REL_SUPPORT=3, CLASS_MIN_JOINT=3, REL_CLASS_MIN_SHARED=3, MIN_JOINT_
+CHUNKS=5, MIN_SENT_TOKENS=3, REL_CLASS_SIM=0.10, SIM_THRESHOLD=0.90,
+EMB_THRESHOLD=0.85, MAX_ITERS=3. COST-BOUND (measured, not principled):
+VOCAB_BOUND=65, CLASS_CHUNK_TOPK=32, MAX_GRAM_BLOCK=2000, NEIGHBOR_TOP_K=25.

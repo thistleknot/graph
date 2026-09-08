@@ -1440,3 +1440,14 @@ keep. The rule stands: verify, then ask, then commit.
     57%% of pairs were eligible hops. Band fix -> live chunk chains
     [10,5,4,4,2,2,2,2] + singletons, 8 threads. Significance saturates at
     scale; magnitude relative to the observed distribution does not.
+
+## Layer 25 -- threshold provenance (operator, 2026-09-08)
+- [OPEN] T86 Tag every constant DERIVED/CONVENTION/ARBITRARY per 6.26 T1-T2,
+  best practice cited first; no value changes in this task -- labelling only
+  _Files:_ relations.py, entities.py, react.py, gt_terms.py, walker_core.py
+  _Verify:_ grep shows a class tag on every module-level numeric constant
+- [OPEN] T87 Replace the highest-leverage ARBITRARY ones per T3: connector
+  window from the observed inter-entity span distribution (band), support
+  floors calibrated on the gold lane
+  _Files:_ relations.py, entities.py, tests
+  _Verify:_ PYTHONPATH=. python tools/diag_agentic.py mixed-full-dual >= 9/9
