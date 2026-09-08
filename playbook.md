@@ -1424,3 +1424,12 @@ keep. The rule stands: verify, then ask, then commit.
     the fix: gate=superlative, passed=True. The regression pin now scans
     tools/diag_agentic.py too, not just walker_app.py -- a pin that only
     covers the app cannot see a defect living in the measuring device.
+
+## Layer 24 -- sequential (correlation sorting actually partitions)
+- [OPEN] T85 W22/W23: dendrite_sort hops require the estimator-pair band
+  (r >= max(mean+sdev, median+1.4826*MAD) over positive r), significance
+  retained as necessary-not-sufficient; known-bad test first (a dense matrix
+  must NOT yield one snake)
+  _Files:_ gt_terms.py, tests/test_graph_tools.py or tests/test_gt_terms.py
+  _Verify:_ pytest the gt tests -q && live: the musician walk yields >1
+  non-trivial chunk chain

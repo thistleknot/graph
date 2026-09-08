@@ -2831,3 +2831,27 @@ evidence about a subject the answer does not crown cannot license the crown.
 (c) Consequence: an answer crowning X must cite a chunk that carries an
 unhedged population-superlative claim, or it is gated and the candidate set
 renders.
+
+### 6.25 Correlation sorting: chain on magnitude, not significance (2026-09-07)
+
+Operator, repeatedly: "where are the correlation sorted partitions?" They
+rendered all along (Partitions panel, dendrite sort) but were DEGENERATE --
+one chain holding 87 of 88 chunks plus singletons, which reads as nothing.
+
+**W22 (the measurement).** dendrite_sort grows a chain by hopping to the
+strongest SIGNIFICANT unassigned partner. Significance saturates at these
+sizes: measured on a live 88-chunk walk, the p<0.05 threshold is r ~ 0.21
+while the median positive correlation is 0.590 -- so 2181 of 3828 pairs
+(57.0%) qualify as a hop and the chain snakes through everything. The term
+plane escapes this only because its matrix is sparse.
+
+**W23 (the rule).** A hop SHALL require MAGNITUDE relative to the observed
+distribution, not merely p < alpha: r >= max(mean + sdev, median +
+1.4826*MAD) over the positive correlations -- the same estimator-pair band
+the NORMAL stage and A12's dilution detector use (operator: "the lower of
+the two" there; here the UPPER, because we are selecting strong links rather
+than detecting a floor). Measured on the same walk: band r >= 0.947, 35 of
+3828 pairs (0.9%) -- chains break into threads instead of one snake.
+Significance is retained as a NECESSARY condition; the band is the
+sufficient one. alpha stays a parameter; the band is not tunable by hand --
+it is derived from the data every call.
