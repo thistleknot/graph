@@ -1264,3 +1264,35 @@ def test_shim_reexports_the_whole_public_surface():
                 continue                      # imported helper (dataclass, stoplist._STOP, ...)
             assert getattr(gt, name, None) is obj, f"{mod.__name__}.{name} not re-exported"
     assert gt.search is gt_sql.search and gt.llr is gt_terms.llr and gt.ppr is gt_metrics.ppr
+
+
+# ---------------------------------------------- W22/W23 correlation sorting
+# KNOWN-BAD FIRST: a densely-correlated matrix must NOT collapse into one
+# snake. Live receipt (2026-09-07): an 88-chunk walk had 57% of all pairs
+# "significant" (p<.05 threshold r~0.21 vs median r=0.59) and dendrite_sort
+# returned one chain of 87 chunks plus a singleton.
+
+def test_dense_correlations_do_not_collapse_into_one_chain():
+    """W22/W23: three blocks under ONE dominant common factor -- every pair is
+    significantly positively correlated (median r ~ 0.8), which is the live
+    condition (88-chunk walk: 57% of pairs significant, median r 0.59). The
+    p-value criterion alone snakes through all 24; the estimator-pair band on
+    MAGNITUDE must recover threads instead."""
+    import numpy as np
+    rng = np.random.default_rng(7)
+    n_obs, per = 60, 8
+    common = rng.normal(size=(n_obs, 1))
+    cols, names = [], []
+    for b in range(3):
+        base = rng.normal(size=(n_obs, 1))
+        for i in range(per):
+            cols.append(0.85 * common + 0.35 * base + 0.20 * rng.normal(size=(n_obs, 1)))
+            names.append(f"b{b}_{i}")
+    M = np.hstack(cols)
+    out = gt.dendrite_sort(M, names)
+    sizes = [len(c) for c in out["chains"]]
+    biggest = max(sizes, default=0)
+    assert biggest <= 0.6 * len(names), (
+        f"one chain swallowed {biggest}/{len(names)} -- the snake defect (W22); "
+        f"chain sizes {sizes}")
+    assert len([c for c in out["chains"] if len(c) > 1]) >= 2, sizes
