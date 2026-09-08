@@ -272,6 +272,25 @@ def dendrite_sort(M, names, alpha: float = 0.05, min_support: int = 0):
     sig = (p < alpha) & (R > 0)                       # chains ride positive links
     np.fill_diagonal(sig, False)
 
+    # W23: significance is NECESSARY, not sufficient. At these sizes p<alpha
+    # saturates -- measured on an 88-chunk walk, the p<.05 threshold is
+    # r ~ 0.21 while the MEDIAN positive correlation is 0.59, so 57% of all
+    # pairs qualified as a hop and the chain snaked through 87 of 88. A hop
+    # must also clear the estimator-pair band on MAGNITUDE, derived from the
+    # observed positive correlations (never hand-tuned):
+    #     r >= max(mean + sdev, median + 1.4826*MAD)
+    # the same ruler the NORMAL stage and A12's dilution detector use. On
+    # that walk the band is 0.947 and 0.9% of pairs clear it -- threads, not
+    # a snake. Degenerate case (fewer than 3 positive links) leaves `sig` as
+    # significance alone rather than inventing a band from nothing.
+    _pos = R[R > 0]
+    if _pos.size >= 3:
+        _med = float(np.median(_pos))
+        _mad = float(np.median(np.abs(_pos - _med)))
+        _band = max(float(_pos.mean() + _pos.std()), _med + 1.4826 * _mad)
+        sig &= (R >= _band)
+        np.fill_diagonal(sig, False)
+
     def mean_sig(j, pool):
         vals = [R[j, k] for k in pool if k != j and sig[j, k]]
         return float(np.mean(vals)) if vals else 0.0

@@ -1426,10 +1426,17 @@ keep. The rule stands: verify, then ask, then commit.
     covers the app cannot see a defect living in the measuring device.
 
 ## Layer 24 -- sequential (correlation sorting actually partitions)
-- [OPEN] T85 W22/W23: dendrite_sort hops require the estimator-pair band
+- [DONE] T85 W22/W23: dendrite_sort hops require the estimator-pair band
   (r >= max(mean+sdev, median+1.4826*MAD) over positive r), significance
   retained as necessary-not-sufficient; known-bad test first (a dense matrix
   must NOT yield one snake)
   _Files:_ gt_terms.py, tests/test_graph_tools.py or tests/test_gt_terms.py
   _Verify:_ pytest the gt tests -q && live: the musician walk yields >1
   non-trivial chunk chain
+
+  _Lessons:_ the partitions were never missing -- they rendered as ONE chain
+    of 87/88, which reads as nothing. Root cause measured, not guessed:
+    p<0.05 at n=88 means r>=0.21 while the median positive r was 0.59, so
+    57%% of pairs were eligible hops. Band fix -> live chunk chains
+    [10,5,4,4,2,2,2,2] + singletons, 8 threads. Significance saturates at
+    scale; magnitude relative to the observed distribution does not.
