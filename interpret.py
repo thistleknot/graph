@@ -69,6 +69,20 @@ I12 Structural evidence is computed, never model-derived: the numbers block
 I13 Reason and Judge are ONE serialized call when judge=True: a single JSON
     reply carries the four reason sections plus one verdict per shown chunk,
     each channel checked exactly as it is when it runs alone.
+I14 An EMPTY answer is NOT an answer, whatever the verdicts say. answer() SHALL
+    NOT return ok=True with a blank `answer`: a backend that judged the chunks
+    and then said nothing SHALL be recorded in `errors` and the next backend
+    tried, exactly as the coverage==0 case already is. The prior code repaired
+    an empty answer ONLY when something entailed (_followup_answer), so the one
+    case that most needs a second attempt -- entailed NOTHING and said nothing --
+    was the one case it skipped, and the caller got ok=True with answer="".
+    Measured on ab-section, same prompt, 7 runs: 4 answered "Nirvana ..."
+    (entailed=5 cited=5 coverage=1.00, 4,633 chars of reply); 3 returned an
+    empty answer (entailed=0 cited=0 coverage=1.00, 3,962 chars of reply). The
+    judge had evaluated every shown chunk in BOTH cases -- coverage was 1.00
+    either way -- so this is not a retrieval failure and must not be reported as
+    a successful answer. Downstream this made gold recall score an empty answer
+    identically to a wrong one, conflating "found nothing" with "got it wrong".
 I7  WHERE RERANK_MODEL names a cached ColBERT checkpoint and pylate imports,
     chunks SHALL be reranked by MaxSim against the prompt and clipped to
     RERANK_TOP before rendering. Otherwise the stage is a no-op and says so.
@@ -521,6 +535,18 @@ def answer(conn, run, bundle, terms: dict, concept: dict,
             # every ord it named is foreign, or it named none: not an answer.
             errors.append(f"{name}: judged 0 of {len(ords)} shown chunks "
                           f"({len(verdict['foreign'])} foreign ids)")
+            continue
+        if not parsed["answer"].strip() and not verdict["entailed"]:          # I14
+            # Judged every chunk, entailed none, said nothing. That is not an
+            # answer -- treat it like coverage==0 above and let the next backend
+            # try, rather than returning ok=True with answer="". The verdicts
+            # ARE kept: they are the evidence for WHY there is no answer, and
+            # dropping them would leave the caller unable to tell this apart
+            # from a transport failure (Article XI).
+            out.update(parsed); out.update(verdict)
+            out["text"] = text
+            errors.append(f"{name}: entailed 0 of {len(ords)} judged chunks and "
+                          f"returned an empty answer ({len(text)} chars of reply)")
             continue
         out.update(parsed); out.update(verdict)
         out["backend"], out["text"], out["ok"] = name, text, True

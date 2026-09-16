@@ -182,6 +182,28 @@ def test_assess_mirror_returns_error_string(monkeypatch):
     assert err == "connection refused"
 
 
+def test_assess_mirror_raising_never_takes_down_the_answer(monkeypatch):
+    """KNOWN-BAD: assess() documents the mirror as BEST-EFFORT and promises to
+    RETURN mirror_error-or-None -- but evidence.mirror_walk RAISES (export_neo4j
+    validates that every walked ordinal exists in the mirror). The exception
+    escaped assess(), escaped assess_for(), and walker_app turned it into the
+    ANSWER: the ab-section run, never exported to neo4j, rendered
+    'Stopped: anchors: matched 1 of 4; first expected id 19865' in place of its
+    retrieval result. The old tests only ever made mirror_walk RETURN a string."""
+    ev = _ev()
+    rr = {"ok": True, "hypotheses": ["kept"]}
+    monkeypatch.setattr(walker_core.interpret, "reason", lambda *a, **k: rr)
+
+    def raising_mirror(*a, **k):
+        raise ValueError("anchors: matched 1 of 4; first expected id 19865")
+
+    monkeypatch.setattr(walker_core.evidence, "mirror_walk", raising_mirror)
+    out_rr, err = walker_core.assess(None, None, "bundle", ev, None, "q")
+    assert out_rr is rr                       # the answer SURVIVES
+    assert "anchors: matched 1 of 4" in err   # the mirror failure is reported, not raised
+    assert err.startswith("ValueError:")
+
+
 def test_assess_neo4j_mirror_env_zero_skips_mirror(monkeypatch):
     ev = _ev()
     monkeypatch.setenv("NEO4J_MIRROR", "0")

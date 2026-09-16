@@ -196,14 +196,56 @@ def test_zero_coverage_reply_is_not_an_answer_and_falls_through(live, walk, monk
     assert "judged 0 of" in res["fallback_reason"] and "13 foreign" in res["fallback_reason"]
 
 
+def test_empty_answer_with_zero_entails_is_not_an_answer(live, walk, monkeypatch):
+    """I14 KNOWN-BAD: a backend that judged every chunk, entailed NOTHING and
+    returned an empty answer used to be reported ok=True with answer="". The
+    existing empty-answer repair (_followup_answer) is gated on entailed being
+    non-empty, so the one case that most needed a second attempt was skipped.
+    Measured on ab-section, same prompt, 7 runs: 4 answered "Nirvana ..."
+    (entailed=5 coverage=1.00); 3 returned empty (entailed=0 coverage=1.00)."""
+    conn, run = live
+    monkeypatch.setattr(interpret, "OLLAMA_MAX_CHARS", 10**9)
+    b, terms, concept = walk
+    monkeypatch.setattr(interpret, "_via_openrouter", lambda s, u, t: (json.dumps(
+        {"verdicts": [{"ord": o, "verdict": "neutral", "why": "n"} for o in b.sampled[:4]],
+         "answer": "   "}), "openrouter:fake"))
+    monkeypatch.setattr(interpret, "_via_ollama", lambda s, u, t: (json.dumps(
+        {"verdicts": [{"ord": b.sampled[0], "verdict": "entails", "why": "y"}],
+         "answer": f"#{b.sampled[0]}"}), "ollama:fake"))
+    res = interpret.answer(conn, run, b, terms, concept, use_rerank=False)
+    assert res["ok"] and res["backend"] == "ollama:fake"     # fell through, did not stop
+    assert "entailed 0 of" in res["fallback_reason"]
+    assert "empty answer" in res["fallback_reason"]
+
+
+def test_empty_answer_with_zero_entails_keeps_the_verdicts(live, walk, monkeypatch):
+    """I14 + Article XI: refusing to call it an answer must NOT discard the
+    verdicts -- they are the evidence for WHY there is no answer, and without
+    them the caller cannot tell this from a transport failure."""
+    conn, run = live
+    monkeypatch.setattr(interpret, "OLLAMA_MAX_CHARS", 10**9)
+    b, terms, concept = walk
+    reply = json.dumps(
+        {"verdicts": [{"ord": o, "verdict": "neutral", "why": "n"} for o in b.sampled[:3]],
+         "answer": ""})
+    monkeypatch.setattr(interpret, "_via_openrouter", lambda s, u, t: (reply, "openrouter:fake"))
+    monkeypatch.setattr(interpret, "_via_ollama", lambda s, u, t: (reply, "ollama:fake"))
+    res = interpret.answer(conn, run, b, terms, concept, use_rerank=False)
+    assert res["ok"] is False                       # nobody answered
+    assert "empty answer" in (res["error"] or "")
+    assert len(res["verdicts"]) == 3                # but the judging SURVIVES
+    assert res["entailed"] == []
+    assert res["text"] == reply                     # and the raw reply is kept
+
+
 def test_unparseable_first_backend_falls_through(live, walk, monkeypatch):
     conn, run = live
     monkeypatch.setattr(interpret, "OLLAMA_MAX_CHARS", 10**9)   # exercise the fallback path
     b, terms, concept = walk
     monkeypatch.setattr(interpret, "_via_openrouter", lambda s, u, t: ("prose, no json", "openrouter:fake"))
     monkeypatch.setattr(interpret, "_via_ollama", lambda s, u, t: (
-        json.dumps({"verdicts": [{"ord": b.sampled[1], "verdict": "neutral", "why": ""}],
-                    "answer": ""}), "ollama:fake"))
+        json.dumps({"verdicts": [{"ord": b.sampled[1], "verdict": "entails", "why": "y"}],
+                    "answer": f"#{b.sampled[1]}"}), "ollama:fake"))
     res = interpret.answer(conn, run, b, terms, concept, use_rerank=False)
     assert res["ok"] and res["backend"] == "ollama:fake"
     assert "not the JSON object" in res["fallback_reason"]
@@ -230,8 +272,15 @@ def test_live_openrouter_judges_the_shown_chunks(live, walk):
     conn, run = live
     b, terms, concept = walk
     res = interpret.answer(conn, run, b, terms, concept)
-    assert res["ok"], res["error"]
-    assert res["backend"].startswith("openrouter:")
+    # I14: an empty answer is NOT an answer. This row measured entailed=0 of 80
+    # on the live model with the ollama fallback skipped on size, so ok=False is
+    # the CORRECT report there -- the old assert passed only because an empty
+    # answer used to be flagged ok=True. The judging assertions below are the
+    # actual subject of this test and hold either way.
+    if not res["ok"]:
+        assert "empty answer" in (res["error"] or ""), res["error"]
+    else:
+        assert res["backend"].startswith("openrouter:")
     assert res["foreign"] == [], f"model named ords outside the bundle: {res['foreign']}"
     assert res["coverage"] >= 0.5, f"judged only {res['coverage']:.0%} of shown chunks"
     assert res["verdicts"], "no verdicts"

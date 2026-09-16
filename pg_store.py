@@ -18,6 +18,7 @@ import os
 
 import numpy as np
 import psycopg
+from psycopg.rows import tuple_row as _tuple_row
 from psycopg.types.json import Jsonb
 
 import config
@@ -183,7 +184,10 @@ def node_titles(conn, run_id: str, ords: list[int] | None = None) -> dict[int, s
     if ords is not None:
         sql += " AND ord = ANY(%s)"
         params.append(list(ords))
-    with conn.cursor() as cur:
+    # The caller's connection sets the row factory (gt_sql.connect uses dict_row),
+    # so pin tuple rows on OUR cursor -- positional access on a dict row raises
+    # KeyError: 1. Latent until the first run that actually carried titles.
+    with conn.cursor(row_factory=_tuple_row) as cur:
         cur.execute(sql, params)
         return {r[0]: r[1] for r in cur.fetchall() if r[1]}
 

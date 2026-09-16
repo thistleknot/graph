@@ -507,6 +507,24 @@ def test_save_tolerates_graph_without_title_attr(db):
             conn.execute("DELETE FROM graph_run WHERE label = %s", (label,))
 
 
+def test_node_titles_survives_a_dict_row_connection(db):
+    """KNOWN-BAD: node_titles indexed rows positionally while every real consumer
+    hands it a dict_row connection (gt_sql.connect sets it), so r[1] was a KEY
+    lookup -> KeyError: 1. It stayed latent because the only run in play carried
+    no titles, so the query returned zero rows and the comprehension never ran.
+    The first run that actually carried titles failed all 9 gold rows at once."""
+    from psycopg.rows import dict_row
+    label = LABEL + "_dictrow"
+    run = pg_store.save(FakeGraph(titles=["Nevermind"] * 2 + [None] * 10), label, dsn=db)
+    try:
+        with psycopg.connect(db, row_factory=dict_row) as conn:
+            assert pg_store.node_titles(conn, run) == {0: "Nevermind", 1: "Nevermind"}
+            assert pg_store.node_titles(conn, run, [1]) == {1: "Nevermind"}
+    finally:
+        with psycopg.connect(db, autocommit=True) as c:
+            c.execute("DELETE FROM graph_run WHERE label = %s", (label,))
+
+
 def test_node_titles_returns_only_titled_ords(db):
     """Spec: .spec/specs/graph-explorer/design.md sec 6.15 R22 · Task: playbook.md T6"""
     label = LABEL + "_reader"

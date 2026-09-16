@@ -835,7 +835,17 @@ def assess(conn, run, bundle, ev, ds, q, *, embed=None) -> tuple[dict, str | Non
                           judge=True, pw=ev.pathways, digest=ev.digest)
     err = None
     if os.environ.get("NEO4J_MIRROR", "1") != "0":
-        err = evidence.mirror_walk(bundle, ev, ds, prompt=q)
+        # The mirror is BEST-EFFORT and this function's contract is to RETURN
+        # its error, never to raise it. mirror_walk() raises (export_neo4j
+        # validates that every walked ordinal exists in the mirror), so an
+        # un-mirrored run took the whole answer down with it: the walker showed
+        # "Stopped: anchors: matched 1 of 4; first expected id 19865" IN PLACE OF
+        # the answer for ab-section, which was never exported to neo4j. The
+        # retrieval result was fine; only the optional mirror was missing.
+        try:
+            err = evidence.mirror_walk(bundle, ev, ds, prompt=q)
+        except Exception as e:                                   # noqa: BLE001
+            err = f"{type(e).__name__}: {e}"
     return rr, err
 
 
