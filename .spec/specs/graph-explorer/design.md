@@ -2997,8 +2997,17 @@ Consequences, all measured on the ab-document / ab-section pair (identical
 
 | arm | body p50 | shown to the judge | fraction of the unit |
 |---|---|---|---|
-| ab-section | 1,816 | 1,500 | **83%** |
-| ab-document | 13,720 | 1,500 | **11%** |
+| ab-section | 1,816 | 645 | **36%** |
+| ab-document | 13,720 | 645 | **4.7%** |
+
+**CORRECTION (same day).** The table above originally read 1,500 chars / 83% /
+11%, computed at 50 units. The walks this system actually performs return ~90
+units, so `per_doc = 60000/90 = 645` and MAX_CHUNK_CHARS never binds at the
+default EVIDENCE_TOTAL_CHARS -- the TOTAL is what binds. The direction is
+unchanged (section shows ~7x more of its own unit) but every absolute figure in
+the first version was quoted from a unit count the system does not use. C2 below
+is likewise only true once n_units falls under 40, where the 1,500 cap starts to
+bind.
 
 C1. Section chunking is the only configuration in which the judge sees
     substantially the WHOLE retrieved unit. This is the mechanism behind R23,
@@ -3024,3 +3033,51 @@ C5. The live axis is therefore (MAX_CHUNK_CHARS x n_units) against a fixed
     EVIDENCE_TOTAL_CHARS, on ONE corpus and ONE chunker, so the cap is the only
     thing moving. Until that is swept, "chunk size does not affect answers" is
     NOT TESTED, not disproven.
+
+## 6.29 The deterministic evidence lane (T95)
+
+**The gold lane cannot compare two configurations.** Measured on ab-document,
+two identical n=3 runs of the SAME arm on the SAME corpus:
+
+```
+run 1   G1 0.333  G2 0.833  G4 0.500  G6 0.667  G7 0.167  G8 0.833  -> 0.556
+run 2   G1 0.167  G2 0.333  G4 0.500  G6 0.333  G7 0.167  G8 1.000  -> 0.417
+```
+
+The 6-row mean moved **0.139** between repeats. The effect under test -- section
+vs document chunking -- measured **0.083**. The comparator's own noise exceeds
+the difference it is asked to resolve, so no sample count settles it: a broken
+instrument, not a tie (rules/085-partition-variance).
+
+E1. `tools/diag_evidence.py` measures the pipeline UP TO the model call, which is
+    entirely deterministic: seeded walk (`sampler.ef_evidence`, seed=0) plus
+    `interpret.render_bundle`, which I3 already guarantees is "same bundle ->
+    same string". The question it asks: **does the gold term appear in the
+    evidence text handed to the judge?** Zero model calls, zero variance.
+
+E2. It BOUNDS the gold lane from below rather than replacing it. Evidence that
+    never contained the gold cannot yield an answer naming it, so a failure here
+    is upstream of the model and attributable without argument. An answer can
+    still be wrong from good evidence; that remains the gold lane's job.
+
+E3. Measured, first run, identical corpus:
+
+```
+ab-document   GOLD SURVIVAL 14/18 = 0.778
+ab-section    GOLD SURVIVAL 14/18 = 0.778
+```
+
+    **Identical.** The arms trade exactly one row (section loses G3's "battle of
+    midway", gains G5's "babe ruth"). Chunking does not change what reaches the
+    judge on these rows -- the answer three agentic A/Bs could not produce, from
+    one deterministic run.
+
+E4. **G1 scores 0/2 in BOTH arms**: the 1990s-musician evidence never contains
+    "kurt cobain" or "nirvana". The base walk fails that row everywhere. The
+    Nirvana answers observed 4 times in 7 came from the AGENTIC loop's extra
+    iterations, not the base walk -- so for that row the loop is doing the
+    retrieval the walk did not.
+
+E5. The section arm renders 33-56k chars against the document arm's 52-65k, so it
+    leaves the EVIDENCE_TOTAL_CHARS budget unspent. That headroom, not the
+    chunker, is the next axis to move.
