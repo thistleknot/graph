@@ -139,6 +139,44 @@ R22 WHEN a document carries a parsed title, every chunk of that document SHALL c
    `title` key SHALL BE ABSENT rather than present and null or empty, and consumers
    SHALL degrade to displaying `doc_id` rather than fail. Title is display and
    selection metadata only: it SHALL NOT weight, quota, or filter retrieval.
+R23 The SECTION -- not the document -- SHALL be the unit that chunk size is fitted
+   on, and a document SHALL be cut only at paragraph boundaries. Supersedes R17/R19's
+   document-level fit, which left 96% of documents unchunked (400 of 10,371 split;
+   wiki p50 13,702 chars, max 94,630) because a band fitted on document lengths
+   measures "large for this corpus", not "small enough to read": half the corpus sits
+   above its own median by construction.
+   (a) SEPARATOR DETECTION, per source, measured never assumed. A blank line that is
+       adjacent to a heading line is heading furniture, not a paragraph break. WHERE
+       blank lines occur between two body blocks the separator is the blank line;
+       otherwise it is the single newline. Measured: brown 30.3 body-blanks/doc -> blank;
+       wiki 17.3 heading-adjacent blanks/doc and 0.0 body-blanks -> single newline;
+       quotes 0.0/0.0 -> single newline, one paragraph, never splits. Assuming the blank
+       line universally is the defect this guard exists to prevent: it collapses every
+       wikitext section into one block, which then reports a CONSTANT paragraph count
+       (Box-Cox lam=-96066, m=hi=1) and falsely licenses a character ruler that would
+       cut mid-sentence.
+   (b) SECTIONS are the runs of paragraphs between heading lines. A heading is a line
+       that is only heading markup; for wikitext that is ' = = X = = ', whose equals
+       signs are SPACE-SEPARATED, so a `=+[^=]+=+` pattern matches only the top-level
+       title and reports 1 heading/doc instead of the true 8.6.
+   (c) The band is fitted per source on PARAGRAPH COUNTS per section (zero-paragraph
+       sections excluded), Box-Cox, m = median, d = MAD in transformed space,
+       hi = m + 2d, overlap = m - inv(m_bc - d), all inverted to natural scale.
+       Measured: brown m=27 hi=65 overlap=11 (1.0 sections/doc, no headings);
+       wiki m=3 hi=8 overlap=1 (8.6 sections/doc); quotes constant 1, inert.
+   (d) L1 parents are built by merging consecutive sections up to m paragraphs and
+       splitting any section over hi into windows of m paragraphs stepping (m - overlap).
+       Windows overlap by `overlap` PARAGRAPHS and the overlap SHALL be trimmed on merge
+       (reduce_overlaps step 6). Every boundary is a paragraph boundary; no window ever
+       begins or ends inside a sentence. Measured L1: brown 575 (p50 12,072 chars),
+       wiki 73,458 (p50 1,692, p95 4,399), quotes 2,508 unchanged.
+   (e) THREE TIERS with parent ids: L0 document, L1 the (d) parent, L2 a recursive
+       537/215-character window inside L1 cutting at paragraph then sentence then word
+       boundaries. Retrieval anchors at L2 and expands L2 -> L1 -> L0, capped at L0, so
+       a whole document is returned only when a document is what fits.
+   (f) CONSERVATION: concatenating a document's L1 parents in order SHALL reproduce
+       every source paragraph, in order, with no paragraph lost and none duplicated
+       except inside a declared overlap window.
 R6 WHEN both estimators (median/1.4826*MAD vs mean/std) diverge > DIV_WARN in
    BC space, fit() SHALL record a warning in self.diagnostics.
 
@@ -181,6 +219,177 @@ def _paras(doc):
         lines = [l.strip() for l in p.split("\n") if l.strip()]
         if lines:
             out.append(lines)
+    return out
+
+
+_HDR = re.compile(r"^[ \t]*(?:=[ \t]*)+[^=\n]+?(?:[ \t]*=)+[ \t]*$")
+
+
+def _is_heading(line):
+    """R23(b). A heading is a line that is ONLY heading markup. wikitext writes
+    ' = = X = = ' with SPACE-SEPARATED equals, so a `=+[^=]+=+` pattern matches
+    the title line alone and undercounts headings 8.6x (1/doc vs the true 8.6)."""
+    return bool(_HDR.match(line))
+
+
+def detect_separator(docs):
+    """R23(a). -> True when the BLANK LINE is this source's paragraph separator,
+    False when the SINGLE NEWLINE is. A blank line adjacent to a heading is
+    heading furniture and does not count. Measured: brown 30.3 body-blanks/doc
+    -> True; wiki 17.3 heading-adjacent and 0.0 body-blanks -> False.
+
+    Assuming the blank line universally is the defect this exists to prevent: it
+    collapses every wikitext section into one block, the paragraph count then
+    reports CONSTANT (Box-Cox lam=-96066, m=hi=1), and that falsely licenses a
+    character ruler which cuts mid-sentence."""
+    per_doc = []
+    for doc in docs:
+        body_blanks = 0
+        lines = doc.split("\n")
+        for i, ln in enumerate(lines):
+            if ln.strip():
+                continue
+            prev = next((lines[j] for j in range(i - 1, -1, -1) if lines[j].strip()), "")
+            nxt = next((lines[j] for j in range(i + 1, len(lines)) if lines[j].strip()), "")
+            if not prev or not nxt:
+                continue                                    # leading/trailing whitespace
+            if not (_is_heading(prev) or _is_heading(nxt)):
+                body_blanks += 1
+        per_doc.append(body_blanks)
+    return bool(per_doc) and float(np.median(per_doc)) > 0
+
+
+def sections(doc, blank_sep):
+    """R23(b). -> [[paragraph, ...], ...], one list per heading-delimited section.
+    Heading lines are dropped; zero-paragraph sections are dropped (the operator's
+    'exclude 0' rule -- an empty section would drag the median toward 1)."""
+    if blank_sep:
+        units = [b.strip() for b in re.split(r"\n[ \t]*\n", doc)]
+    else:
+        units = [l.strip() for l in doc.split("\n")]
+    out, cur = [], []
+    for u in units:
+        if not u:
+            continue
+        if _is_heading(u):
+            if cur:
+                out.append(cur)
+            cur = []
+        else:
+            cur.append(u)
+    if cur:
+        out.append(cur)
+    return out
+
+
+def derive_section_params(docs):
+    """R23(c). Fit the band on PARAGRAPH COUNTS per section, one fit per source.
+    Guarantee: {blank_sep, m, hi, overlap, lam, n_sections, sec_per_doc} -- every
+    number a measured quantity of `docs`. A constant count (quotes: always 1)
+    yields m == hi and overlap 0, making the split rule inert rather than
+    crashing Box-Cox on a zero-variance sample."""
+    blank_sep = detect_separator(docs)
+    secs = [sec for d in docs for sec in sections(d, blank_sep)]
+    counts = [len(sec) for sec in secs if sec]
+    if not counts:
+        return {"blank_sep": blank_sep, "m": 1, "hi": 1, "overlap": 0, "lam": None,
+                "n_sections": 0, "sec_per_doc": 0.0}
+    m, hi, lam = _bc_center(counts)
+    x = np.asarray([c for c in counts if c > 0], float)
+    overlap = 0
+    if lam is not None and len(x) >= 8 and np.ptp(x) > 0:
+        bc, _ = stats.boxcox(x)
+        mb, db = float(np.median(bc)), float(stats.median_abs_deviation(bc))
+
+        def inv(y):
+            return float(np.exp(y)) if abs(lam) < 1e-9 else float(max(y * lam + 1, 1e-9) ** (1 / lam))
+        overlap = max(0, int(round(inv(mb) - inv(mb - db))))
+    overlap = min(overlap, max(0, m - 1))                   # a step of 0 would never advance
+    return {"blank_sep": blank_sep, "m": m, "hi": hi, "overlap": overlap, "lam": lam,
+            "n_sections": len(counts), "sec_per_doc": len(counts) / max(1, len(docs))}
+
+
+def derive_section_params_by_source(docs, sources=None):
+    """R23(c). R19's grouping law applied to R23's estimator: one fit per source,
+    never pooled -- a 1-paragraph quote and an 8-section article must not be
+    judged by the same band."""
+    if sources is None:
+        sources = ["default"] * len(docs)
+    assert len(sources) == len(docs)
+    groups = {}
+    for i, s in enumerate(sources):
+        groups.setdefault(s, []).append(i)
+    return {src: derive_section_params([docs[i] for i in idxs]) for src, idxs in groups.items()}
+
+
+def _trim_overlap(prev, nxt):
+    """reduce_overlaps step 6. Drop the longest prefix of `nxt` that is already a
+    suffix of `prev`, compared as whole paragraphs. Returns the trimmed `nxt`."""
+    for k in range(min(len(prev), len(nxt)), 0, -1):
+        if prev[-k:] == nxt[:k]:
+            return nxt[k:]
+    return nxt
+
+
+def build_l1(doc, params):
+    """R23(d). -> [[paragraph, ...], ...], the L1 parents of ONE document.
+    Merge consecutive sections up to `m` paragraphs; split any section over `hi`
+    into windows of `m` paragraphs stepping (m - overlap). Every boundary is a
+    paragraph boundary, so no window begins or ends inside a sentence."""
+    m, hi, ov = params["m"], params["hi"], params["overlap"]
+    step = max(1, m - ov)
+    out, buf = [], []
+    for sec in sections(doc, params["blank_sep"]):
+        if len(sec) > hi:
+            if buf:
+                out.append(buf)
+                buf = []
+            i = 0
+            while i < len(sec):
+                out.append(sec[i:i + m])
+                if i + m >= len(sec):
+                    break
+                i += step
+            continue
+        if not buf:
+            buf = list(sec)
+        elif len(buf) + len(sec) <= m:
+            buf = buf + _trim_overlap(buf, sec)
+        else:
+            out.append(buf)
+            buf = list(sec)
+    if buf:
+        out.append(buf)
+    return out
+
+
+def build_l2(text, chunk_len=537, overlap=215):
+    """R23(e). The 'small' of small-to-big: recursive windows inside ONE L1 parent,
+    cutting at paragraph, then sentence, then word boundaries -- never inside a
+    word. 537/215 characters, operator-specified (~3-5 sentences)."""
+    text = text.strip()
+    if not text:
+        return []
+    if len(text) <= chunk_len:
+        return [text]
+    out, i = [], 0
+    while i < len(text):
+        window = text[i:i + chunk_len]
+        if i + chunk_len < len(text):
+            for pat in ("\n\n", "\n", ". ", " "):
+                cut = window.rfind(pat)
+                if cut > chunk_len // 2:
+                    window = window[:cut + len(pat)]
+                    break
+        w = window.strip()
+        if w:
+            out.append(w)
+        if i + len(window) >= len(text):
+            break
+        nxt = i + max(1, len(window) - overlap)
+        while 0 < nxt < len(text) and not text[nxt - 1].isspace():
+            nxt += 1                                        # start on a word boundary
+        i = max(nxt, i + 1)
     return out
 
 

@@ -22,6 +22,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+import chunkgraph
 
 from chunkgraph import ChunkGraph, _chunk, _paras, derive_chunk_params, derive_chunk_params_by_source, MIN_BLOCK_PAIRS
 
@@ -437,3 +438,173 @@ def test_merge_phrases_single_model_matches_per_doc_rebuild():
            for t in toks]
     assert merged == old
     assert cg.diagnostics["phrases"]["mode"] == "npmi"
+
+# ------------------------------------------------- R23 section-anchored chunking
+
+WIKI_DOC = (
+    "= Stanley Kubrick =\n"
+    "\n"
+    "Kubrick was an American film director and photographer .\n"
+    "He grew up in the Bronx and attended Taft High School .\n"
+    "\n"
+    "= = Early life = =\n"
+    "\n"
+    "His father taught him chess at the age of twelve .\n"
+    "At thirteen he was given a Graflex camera .\n"
+    "He befriended a neighbour who shared his passion .\n"
+    "The darkroom became a fixture of his adolescence .\n"
+    "\n"
+    "= = = Photography = = =\n"
+    "\n"
+    "Look magazine bought his first photograph .\n"
+)
+
+BROWN_DOC = (
+    "The Fulton County Grand Jury said Friday an investigation produced no evidence .\n"
+    "\n"
+    "The jury further said in term-end presentments that the Committee deserves praise .\n"
+    "\n"
+    "The September-October term jury had been charged by Judge Pye to investigate .\n"
+)
+
+
+class TestR23Separator:
+    def test_wiki_blank_lines_only_wrap_headings(self):
+        """R23(a). Every blank line in WIKI_DOC touches a heading, so the
+        separator must be the single newline -- not the blank line."""
+        assert chunkgraph.detect_separator([WIKI_DOC]) is False
+
+    def test_brown_blank_lines_separate_bodies(self):
+        """R23(a). Brown has no headings, so its blanks are body separators."""
+        assert chunkgraph.detect_separator([BROWN_DOC]) is True
+
+    def test_spaced_equals_heading_is_recognised(self):
+        """R23(b). ' = = X = = ' must match; a =+[^=]+=+ pattern does not."""
+        assert chunkgraph._is_heading("= = Early life = =")
+        assert chunkgraph._is_heading("= = = Photography = = =")
+        assert chunkgraph._is_heading("= Stanley Kubrick =")
+        assert not chunkgraph._is_heading("He grew up in the Bronx = maybe =")
+
+    def test_stray_body_blanks_do_not_flip_the_source(self):
+        """KNOWN-BAD, caught on the live corpus, not by a fixture: an existence
+        test ('any document has a body-blank') flipped all 7,822 wiki documents
+        to blank-separated because of a handful of strays, collapsing the fit to
+        m=hi=1. The test is the MEDIAN over documents."""
+        corpus = [WIKI_DOC] * 200 + [WIKI_DOC.replace(
+            "He grew up in the Bronx and attended Taft High School .\n",
+            "He grew up in the Bronx and attended Taft High School .\n\nStray .\n")] * 5
+        assert chunkgraph.detect_separator(corpus) is False
+        assert chunkgraph.derive_section_params(corpus)["m"] > 1
+
+    def test_blank_assumption_would_collapse_the_sections(self):
+        """The known-bad this guard exists to stop: assuming the blank line is
+        the separator reports 1 paragraph per section for wikitext, which is the
+        constant that falsely licensed a character ruler."""
+        wrong = chunkgraph.sections(WIKI_DOC, blank_sep=True)
+        right = chunkgraph.sections(WIKI_DOC, blank_sep=False)
+        assert [len(s) for s in wrong] == [1, 1, 1]
+        assert [len(s) for s in right] == [2, 4, 1]
+
+
+class TestR23Sections:
+    def test_sections_split_on_headings_and_drop_them(self):
+        secs = chunkgraph.sections(WIKI_DOC, blank_sep=False)
+        assert len(secs) == 3
+        assert secs[1][0] == "His father taught him chess at the age of twelve ."
+        assert all(not chunkgraph._is_heading(p) for sec in secs for p in sec)
+
+    def test_zero_paragraph_sections_are_excluded(self):
+        doc = "= A =\n= B =\nonly body line\n"
+        assert chunkgraph.sections(doc, blank_sep=False) == [["only body line"]]
+
+    def test_headingless_doc_is_one_section(self):
+        secs = chunkgraph.sections(BROWN_DOC, blank_sep=True)
+        assert len(secs) == 1 and len(secs[0]) == 3
+
+
+class TestR23Params:
+    def test_fit_is_on_paragraph_counts_and_reports_the_band(self):
+        docs = [WIKI_DOC] * 12
+        p = chunkgraph.derive_section_params(docs)
+        assert p["blank_sep"] is False
+        assert p["n_sections"] == 36
+        assert p["sec_per_doc"] == 3.0
+        assert p["m"] >= 1 and p["hi"] >= p["m"]
+        assert 0 <= p["overlap"] < max(1, p["m"])
+
+    def test_constant_counts_make_the_split_rule_inert(self):
+        """quotes: always one paragraph. m == hi, overlap 0, no Box-Cox crash."""
+        p = chunkgraph.derive_section_params(["a single quote line"] * 20)
+        assert (p["m"], p["hi"], p["overlap"]) == (1, 1, 0)
+        assert p["lam"] is None
+
+    def test_sources_are_fitted_separately_never_pooled(self):
+        docs = [WIKI_DOC] * 10 + ["one liner"] * 10
+        srcs = ["wiki"] * 10 + ["quotes"] * 10
+        got = chunkgraph.derive_section_params_by_source(docs, srcs)
+        assert set(got) == {"wiki", "quotes"}
+        assert got["quotes"]["m"] == 1
+        assert got["wiki"]["blank_sep"] is False
+        assert got["wiki"]["sec_per_doc"] == 3.0
+
+
+class TestR23Parents:
+    P = {"blank_sep": False, "m": 3, "hi": 8, "overlap": 1}
+
+    def test_small_sections_merge_up_to_m(self):
+        parents = chunkgraph.build_l1(WIKI_DOC, self.P)
+        assert [len(p) for p in parents] == [2, 4, 1]
+        assert parents[0][0].startswith("Kubrick was an American")
+
+    def test_oversize_section_splits_into_overlapping_windows(self):
+        doc = "= H =\n" + "".join("para %d\n" % i for i in range(10))
+        parents = chunkgraph.build_l1(doc, self.P)
+        assert len(parents) > 1
+        assert all(len(p) <= self.P["m"] for p in parents)
+        assert parents[0][-1] == parents[1][0]          # one paragraph of overlap
+
+    def test_every_boundary_is_a_paragraph_boundary(self):
+        """The operator's objection: a character ruler cuts mid-sentence."""
+        doc = "= H =\n" + "".join("Sentence number %d ends here .\n" % i for i in range(12))
+        source = [p for sec in chunkgraph.sections(doc, False) for p in sec]
+        for parent in chunkgraph.build_l1(doc, self.P):
+            for para in parent:
+                assert para in source
+
+    def test_conservation_every_paragraph_survives_in_order(self):
+        """R23(f). Concatenating parents reproduces every source paragraph, in
+        order, none lost -- duplicates only inside a declared overlap window."""
+        for doc, sep in ((WIKI_DOC, False), (BROWN_DOC, True)):
+            p = dict(self.P, blank_sep=sep)
+            source = [x for sec in chunkgraph.sections(doc, sep) for x in sec]
+            flat = [x for parent in chunkgraph.build_l1(doc, p) for x in parent]
+            deduped, seen = [], None
+            for x in flat:
+                if x != seen:
+                    deduped.append(x)
+                seen = x
+            assert [x for x in deduped if x in source] == source
+
+    def test_merge_trims_a_repeated_paragraph(self):
+        assert chunkgraph._trim_overlap(["a", "b", "c"], ["b", "c", "d"]) == ["d"]
+        assert chunkgraph._trim_overlap(["a"], ["b"]) == ["b"]
+
+
+class TestR23SmallWindows:
+    def test_short_text_is_one_window(self):
+        assert chunkgraph.build_l2("short text .") == ["short text ."]
+
+    def test_windows_respect_length_and_never_split_a_word(self):
+        text = " ".join("word%03d" % i for i in range(400))
+        out = chunkgraph.build_l2(text, chunk_len=537, overlap=215)
+        assert len(out) > 1
+        assert all(len(w) <= 537 for w in out)
+        vocab = set(text.split())
+        assert all(tok in vocab for w in out for tok in w.split())
+
+    def test_windows_overlap_and_cover_the_whole_text(self):
+        text = ". ".join("sentence number %d" % i for i in range(120)) + " ."
+        out = chunkgraph.build_l2(text, chunk_len=537, overlap=215)
+        assert "sentence number 0" in out[0]
+        assert "sentence number 119" in out[-1]
+        assert len(out) >= 2

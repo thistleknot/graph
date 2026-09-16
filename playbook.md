@@ -1470,11 +1470,20 @@ Source: operator, 2026-09-16. Root cause of the judge's 3/163 entail rate:
   _Files:_ .spec/specs/graph-explorer/design.md
   _Verify:_ grep -c "C[1-5]" .spec/specs/graph-explorer/design.md
 
-- [OPEN] T90 chunker.py: per-source paragraph fit (headers excluded), L0/L1/L2
+- [DONE] T90 chunkgraph.py R23: per-source paragraph fit (headers excluded), L0/L1/L2
   with parent ids, recursive 537/215 splitter, reduce_overlaps de-overlap;
   DB-free tests incl. reconstruct-the-source property test
-  _Files:_ chunker.py, tests/test_chunker.py
-  _Verify:_ python -m pytest tests/test_chunker.py -q
+  _Files:_ chunkgraph.py, tests/test_chunk.py
+  _Verify:_ python -m pytest tests/test_chunk.py -q
+  _Lessons:_ landed INSIDE chunkgraph.py (extends _paras/_bc_center/_chunk), not a new
+    chunker.py -- a parallel chunking implementation would be the sprawl the rules forbid.
+    Two defects the synthetic fixtures could not catch, both found on the live corpus:
+    (1) wikitext paragraphs are separated by a SINGLE newline, so the incumbent's
+    re.split on blank lines reported one block per section and a CONSTANT paragraph count
+    (lam=-96066, m=hi=1) that falsely licensed a character ruler; (2) an existence test
+    for body-blanks flipped all 7,822 wiki docs to blank-separated on a handful of
+    strays -- it must be the MEDIAN over documents. Both are now pinned as known-bads.
+    Also widened a stale test_react pin ('no-movement' stop, from this session's A17).
 
 - [OPEN] T91 Schema + ingest: node gains tier + parent_ord; ingest writes all
   three tiers; new run label mixed-full-3tier (C5: never supersede)

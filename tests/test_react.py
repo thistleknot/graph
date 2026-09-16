@@ -393,7 +393,7 @@ def test_react_live_smoke():
     run_ = require_run(conn, "mixed-full-dual")
     result = react.run(conn, run_, "most famous musician of the 1990s")
     assert len(result["iterations"]) >= 1
-    assert result["stop_reason"] in ("sufficient", "budget", "no-op action")
+    assert result["stop_reason"] in ("sufficient", "budget", "no-op action", "no-movement")
 
 
 # ---------------------------------------- A3/A5 amendments (fixed-point guard)
