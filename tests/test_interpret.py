@@ -196,6 +196,42 @@ def test_zero_coverage_reply_is_not_an_answer_and_falls_through(live, walk, monk
     assert "judged 0 of" in res["fallback_reason"] and "13 foreign" in res["fallback_reason"]
 
 
+def test_split_paragraphs_refines_when_blocks_exceed_the_budget():
+    """I15 KNOWN-BAD, third instance of the blank-line assumption (after
+    chunkgraph _paras and detect_separator): a body whose paragraphs are
+    separated by SINGLE newlines splits into one blank-line block, so excerpt()
+    cannot select within it and just returns the opening n_chars. Measured on
+    ab-section: 6,747-char body -> 1 block. After: 4-7 blocks."""
+    body = "\n".join("Paragraph number %d says something about grunge ." % i for i in range(8))
+    assert len(interpret._split_paragraphs(body, 10**6)) == 1     # one big block, budget huge
+    finer = interpret._split_paragraphs(body, 50)                 # budget smaller than the block
+    assert len(finer) == 8
+    assert finer[0].startswith("Paragraph number 0")
+
+
+def test_split_paragraphs_leaves_real_paragraphs_alone():
+    """The refinement must not fire when blank-line blocks are already small
+    enough to choose between -- ab-document bodies split into 23-45 blocks with
+    a median under the budget and were measured UNCHANGED by this fix."""
+    body = "\n\n".join("Short para %d ." % i for i in range(6))
+    assert len(interpret._split_paragraphs(body, 1500)) == 6
+
+
+def test_split_paragraphs_empty_body():
+    assert interpret._split_paragraphs("", 1500) == []
+    assert interpret._split_paragraphs(None, 1500) == []
+
+
+def test_excerpt_can_select_a_relevant_single_newline_paragraph():
+    """The consequence that matters: with single-newline paragraphs, excerpt can
+    now reach the paragraph that answers rather than the opening one."""
+    body = ("Nirvana formed in Aberdeen Washington in 1987 .\n"
+            + "\n".join("Filler sentence %d about tour dates ." % i for i in range(40))
+            + "\nKurt Cobain was the band 's lead singer and most famous musician .")
+    ex = interpret.excerpt(body, "who is the most famous musician", n_chars=200)
+    assert "kurt cobain" in ex.lower(), ex
+
+
 def test_empty_answer_with_zero_entails_is_not_an_answer(live, walk, monkeypatch):
     """I14 KNOWN-BAD: a backend that judged every chunk, entailed NOTHING and
     returned an empty answer used to be reported ok=True with answer="". The

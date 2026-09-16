@@ -83,6 +83,17 @@ I14 An EMPTY answer is NOT an answer, whatever the verdicts say. answer() SHALL
     either way -- so this is not a retrieval failure and must not be reported as
     a successful answer. Downstream this made gold recall score an empty answer
     identically to a wrong one, conflating "found nothing" with "got it wrong".
+I15 excerpt() SHALL split `body` at a granularity it can actually SELECT from.
+    Blank-line splitting alone is wrong wherever the paragraph separator is the
+    single newline (chunkgraph R23(a)); when every blank-line block exceeds the
+    per-chunk budget, none can be chosen and the excerpt degenerates to a
+    fragment of the first block. WHERE the median block is >= the budget, the
+    body SHALL be re-split on single newlines. Measured before the fix: a
+    41,907-char ab-document body -> 29 blocks -> 500 chars returned (1.2% of the
+    document) with the gold term present in the body and ABSENT from the
+    excerpt; a 6,747-char ab-section body -> 1 block -> no selection possible,
+    opening 1,500 chars returned. This is the same blank-line assumption that
+    R23(a) exists to correct, in a third place.
 I7  WHERE RERANK_MODEL names a cached ColBERT checkpoint and pylate imports,
     chunks SHALL be reranked by MaxSim against the prompt and clipped to
     RERANK_TOP before rendering. Otherwise the stage is a no-op and says so.
@@ -184,6 +195,34 @@ def chunk_label(row, titles: dict | None = None) -> str:
     return t if isinstance(t, str) and t else row["doc_id"]
 
 
+def _split_paragraphs(body: str, n_chars: int) -> list[str]:
+    """I15. Paragraphs of `body`, at a granularity excerpt() can actually SELECT
+    from. Splitting on blank lines alone is wrong for any source whose paragraph
+    separator is the single newline (wikitext: blank lines only wrap headings --
+    chunkgraph R23(a)). When the blank-line blocks are all bigger than the
+    budget, NONE of them can be chosen and the excerpt degenerates to a fragment
+    of whichever block came first.
+
+    Measured on ab-document before this fix: a 41,907-char body split into 29
+    blocks; excerpt returned 500 chars -- 1.2% of the document -- and the gold
+    term "kurt cobain", present in the body, was NOT in the excerpt. On
+    ab-section a 6,747-char body split into ONE block, so excerpt could not
+    select within it at all and just took the opening 1,500 chars.
+
+    The test is self-correcting and needs no corpus statistics: if the median
+    blank-line block is at least as large as the whole budget, re-split on
+    single newlines so there are units small enough to choose between."""
+    blocks = [p.strip() for p in re.split(r"\n\s*\n", body or "") if p.strip()]
+    if not blocks:
+        return []
+    med = sorted(len(b) for b in blocks)[len(blocks) // 2]
+    if med >= n_chars:
+        finer = [p.strip() for p in (body or "").split("\n") if p.strip()]
+        if len(finer) > len(blocks):
+            return finer
+    return blocks
+
+
 def excerpt(body: str, query: str, n_chars: int = MAX_CHUNK_CHARS, embed=None) -> str:
     """I8. The paragraphs of `body` most relevant to the prompt, in SOURCE order,
     within n_chars. Relevance = lexical (distinct prompt terms, then hits)
@@ -196,7 +235,7 @@ def excerpt(body: str, query: str, n_chars: int = MAX_CHUNK_CHARS, embed=None) -
     document judged ENTAILS. With no hit and no embed, the opening is
     returned -- the case a reader should distrust. Deterministic."""
     qt = set(gt.tokenize(query))
-    paras = [p.strip() for p in re.split(r"\n\s*\n", body or "") if p.strip()]
+    paras = _split_paragraphs(body, n_chars)                                   # I15
     if not paras:
         return ""
     lex = []
