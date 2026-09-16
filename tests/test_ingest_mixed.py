@@ -223,7 +223,7 @@ def test_main_stride_args_reach_only_their_own_loader(monkeypatch, stubbed):
 def test_main_sparse_only_wiring_when_model_dir_unset(monkeypatch, stubbed):
     monkeypatch.delenv("CHUNKGRAPH_MODEL_DIR", raising=False)
     ingest_mixed.main([])
-    assert stubbed["cg"].init_kwargs == {"embed_fn": None}
+    assert stubbed["cg"].init_kwargs == {"embed_fn": None, "chunk_mode": "document"}
 
 
 def test_main_fit_forward_seam_passes_sources(monkeypatch, fake_hf, fake_brown):

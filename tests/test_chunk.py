@@ -608,3 +608,57 @@ class TestR23SmallWindows:
         assert "sentence number 0" in out[0]
         assert "sentence number 119" in out[-1]
         assert len(out) >= 2
+
+
+# --------------------------------------------------- R24 Box-Cox lambda sampling
+
+class TestR24LambdaSampling:
+    def test_small_vector_is_fitted_whole(self):
+        """At or under BC_FIT_SAMPLE nothing changes -- same lambda as scipy."""
+        from scipy import stats as _st
+        rng = np.random.default_rng(3)
+        x = rng.gamma(2.0, 1.0, 5000) + 0.5
+        cg = chunkgraph.ChunkGraph(embed_fn=None)
+        y, lam, kurt = cg._bc(x)
+        _, lam_ref = _st.boxcox(x - x.min() + 1e-3)
+        assert abs(lam - lam_ref) < 1e-9
+        assert y.shape == x.shape
+
+    def test_large_vector_uses_the_sample_and_transforms_everything(self):
+        rng = np.random.default_rng(4)
+        x = rng.gamma(2.0, 1.0, chunkgraph.BC_FIT_SAMPLE + 50_000) + 0.5
+        cg = chunkgraph.ChunkGraph(embed_fn=None)
+        y, lam, kurt = cg._bc(x)
+        assert y.shape == x.shape          # every value transformed, not just the sample
+        assert np.isfinite(y).all()
+        assert lam is not None
+
+    def test_sampled_lambda_matches_the_full_fit(self):
+        """R24's whole claim: the SE falls as 1/sqrt(N), so a 200k sample pins
+        lambda. Pinned loosely (0.02) -- the guard's measured delta was 0.0013."""
+        from scipy import stats as _st
+        rng = np.random.default_rng(5)
+        x = rng.gamma(2.0, 1.0, chunkgraph.BC_FIT_SAMPLE * 2) + 0.5
+        cg = chunkgraph.ChunkGraph(embed_fn=None)
+        _, lam_sampled, _ = cg._bc(x)
+        lam_full = _st.boxcox_normmax(x - x.min() + 1e-3)
+        assert abs(lam_sampled - lam_full) < 0.02
+
+    def test_the_seed_makes_it_deterministic(self):
+        """Determinism is carried by the SEED once the fit stops reading every
+        pair -- two fits of the same vector must agree exactly."""
+        rng = np.random.default_rng(6)
+        x = rng.gamma(2.0, 1.0, chunkgraph.BC_FIT_SAMPLE + 10_000) + 0.5
+        cg = chunkgraph.ChunkGraph(embed_fn=None)
+        _, lam1, _ = cg._bc(x)
+        _, lam2, _ = cg._bc(x)
+        assert lam1 == lam2
+
+    def test_params_record_the_sampling_so_a_run_is_reproducible(self):
+        cg = chunkgraph.ChunkGraph(embed_fn=None)
+        assert cg.bc_fit_sample == chunkgraph.BC_FIT_SAMPLE
+        assert cg.bc_fit_seed == chunkgraph.BC_FIT_SEED
+        import pg_store
+        assert "bc_fit_sample" in pg_store._PARAM_ATTRS
+        assert "bc_fit_seed" in pg_store._PARAM_ATTRS
+        assert "chunk_mode" in pg_store._PARAM_ATTRS

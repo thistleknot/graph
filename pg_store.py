@@ -25,7 +25,8 @@ import config
 DSN = config.DSN
 
 # Params worth reproducing a run from; mirrors ChunkGraph.__init__.
-_PARAM_ATTRS = ("k_sigma", "M", "H", "K", "LAM", "EPS", "phrases", "chunk_params")   # R17
+_PARAM_ATTRS = ("k_sigma", "M", "H", "K", "LAM", "EPS", "phrases", "chunk_params",
+                "chunk_mode", "bc_fit_sample", "bc_fit_seed")           # R17, R23, R24
 
 
 def _hash(text: str) -> bytes:

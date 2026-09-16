@@ -173,6 +173,10 @@ def build_argparser():
                    help="always include the wiki article with this exact title, "
                         "matched against the parsed article head (repeatable; "
                         "stride-proof anchors)")
+    p.add_argument("--chunk-mode", choices=("document", "section"), default="document",
+                   help="document = R17/R19 (one node per document unless over its "
+                        "source's hi); section = R23 (heading-anchored, fitted on "
+                        "paragraph counts per section)")
     return p
 
 
@@ -214,7 +218,9 @@ def main(argv=None):
 
     model_dir = os.environ.get("CHUNKGRAPH_MODEL_DIR")   # R5: absent -> sparse-only
     print(f"dense : {model_dir or 'DISABLED (sparse-only, R5)'}")
-    cg = ChunkGraph(model_dir=model_dir) if model_dir else ChunkGraph(embed_fn=None)
+    print(f"chunk : {args.chunk_mode} ({'R23 section-anchored' if args.chunk_mode == 'section' else 'R17 document'})")
+    cg = (ChunkGraph(model_dir=model_dir, chunk_mode=args.chunk_mode) if model_dir
+          else ChunkGraph(embed_fn=None, chunk_mode=args.chunk_mode))
     _ckpt("fit:start", f"docs={len(docs)} dense={'on' if model_dir else 'off'}")
     _fit(cg, docs, doc_ids, sources, titles=titles)
     _ckpt("fit:done", f"n={cg.n}")

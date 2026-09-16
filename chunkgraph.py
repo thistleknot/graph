@@ -170,13 +170,33 @@ R23 The SECTION -- not the document -- SHALL be the unit that chunk size is fitt
        (reduce_overlaps step 6). Every boundary is a paragraph boundary; no window ever
        begins or ends inside a sentence. Measured L1: brown 575 (p50 12,072 chars),
        wiki 73,458 (p50 1,692, p95 4,399), quotes 2,508 unchanged.
-   (e) THREE TIERS with parent ids: L0 document, L1 the (d) parent, L2 a recursive
+   (e) TIERS. L0 is the document and its pointer is the EXISTING doc_id (R8) --
+       no second field; a parallel `parent_doc` would be the same list under another
+       name. L1 is the (d) parent and is the ONLY tier that gets edges: putting all
+       tiers in the graph is 640k nodes and 410e9 pairs, 3,500x the pair work, when
+       small-to-big only needs a dereference. L2 is a recursive
        537/215-character window inside L1 cutting at paragraph then sentence then word
-       boundaries. Retrieval anchors at L2 and expands L2 -> L1 -> L0, capped at L0, so
+       boundaries. L2 is DEFERRED: with L1 at p50 1,690 chars the anchor is already
+       small, and adding it would move two things at once. Retrieval anchors at L1 and
+       dereferences to L0 by doc_id, capped at L0, so
        a whole document is returned only when a document is what fits.
    (f) CONSERVATION: concatenating a document's L1 parents in order SHALL reproduce
        every source paragraph, in order, with no paragraph lost and none duplicated
        except inside a declared overlap window.
+R24 The Box-Cox lambda SHALL be estimated on a fixed-size seeded SUBSAMPLE of the
+   pair vector (BC_FIT_SAMPLE, BC_FIT_SEED) and then applied to every value.
+   `stats.boxcox(x)` runs a Brent MLE whose every likelihood evaluation does a
+   logsumexp over the WHOLE vector; with the pair count quadratic in n, NORMAL is
+   O(n^2) with a ~400-evaluation constant. Profiled at n=2,129: 65.0s of a 72.0s
+   fit() sits in boxcox_normmax -- 90% of the build. A FIXED sample makes the
+   estimate O(1) in the pair count: 14 calls go from ~23h to ~6s at 76.5k nodes.
+   Lambda is a distributional parameter and its SE falls as 1/sqrt(N), so this
+   costs almost nothing: measured on 2,187,160 real pairs, 200k gives
+   lambda=+0.884570 vs +0.883297 full, max |z_full - z_sample| = 9.18e-03, and 274
+   of 34,793 k-sigma survivors flip (0.8%) -- all pairs already within a hair of
+   the threshold. Determinism is preserved by the SEED, not by reading every pair:
+   BC_FIT_SAMPLE and BC_FIT_SEED SHALL be recorded in run params so any run is
+   reproducible. A vector at or under BC_FIT_SAMPLE is fitted whole, unchanged.
 R6 WHEN both estimators (median/1.4826*MAD vs mean/std) diverge > DIV_WARN in
    BC space, fit() SHALL record a warning in self.diagnostics.
 
@@ -207,6 +227,16 @@ from scipy import stats
 DISC_M, KURT_OK, DIV_WARN, KNN = 25, 0.5, 0.15, 2   # MINK dropped with the R4 gate
 SIM_FLOOR, BLOCK = 0.02, 512   # R10: in-loop threshold, block rows
 MIN_BLOCK_PAIRS = 20     # R21: below this a block inherits the pooled fit
+BC_FIT_SAMPLE = 200_000  # DERIVED (R24): the Box-Cox lambda MLE's standard error falls
+                         # as 1/sqrt(N). Measured on 2,187,160 real pairs: lambda from a
+                         # 200k sample = +0.884570 vs +0.883297 full (d=+0.0013, seed
+                         # sd 8.29e-04); max |z_full - z_sample| = 9.18e-03 and 274 of
+                         # 34,793 k-sigma survivors flip (0.8%, all within a hair of the
+                         # cut). 20k already gives d=-0.0006 but seed sd 4.76e-03, so 200k
+                         # is the knee where seed-to-seed noise stops mattering.
+BC_FIT_SEED = 0          # CONVENTION: reproducibility only; any fixed value works. The
+                         # seed is what keeps construction deterministic (the product
+                         # commitment) once the fit stops reading every pair.
 from stoplist import _STOP                     # R18: one stoplist, no heavy imports
 
 def _tok(text):
@@ -528,9 +558,12 @@ class ChunkGraph:
 
     def __init__(self, embed_fn=None, model_dir=None, k_sigma=2.0,
                  query_terms=20, hops=2, k_expand=6, lam_div=8.0, eps=0.15,
-                 phrases=True, vocab=None):
+                 phrases=True, vocab=None, chunk_mode="document"):
         if embed_fn is None and model_dir is not None:
             embed_fn = default_embed_fn(model_dir)
+        assert chunk_mode in ("document", "section")
+        self.chunk_mode = chunk_mode                                # R23
+        self.bc_fit_sample, self.bc_fit_seed = BC_FIT_SAMPLE, BC_FIT_SEED   # R24
         self.embed_fn = embed_fn                                    # R5
         self.k_sigma, self.M = k_sigma, query_terms
         self.H, self.K, self.LAM, self.EPS = hops, k_expand, lam_div, eps
@@ -554,12 +587,19 @@ class ChunkGraph:
         assert len(sources) == len(docs)
         titles = [None] * len(docs) if titles is None else list(titles)         # R22
         assert len(titles) == len(docs)
-        self.chunk_params = derive_chunk_params_by_source(docs, sources)         # R19
+        section_mode = getattr(self, "chunk_mode", "document") == "section"      # R23
+        if section_mode:
+            self.chunk_params = derive_section_params_by_source(docs, sources)   # R23(c)
+        else:
+            self.chunk_params = derive_chunk_params_by_source(docs, sources)     # R19
         self.diagnostics["chunk"] = {s: dict(p) for s, p in self.chunk_params.items()}
         self.chunks, self.doc_id, self.source, self.title = [], [], [], []
         for did, d, src, ttl in zip(doc_ids, docs, sources, titles):
-            cp = {k: self.chunk_params[src][k] for k in ("m", "hi", "unit")}
-            cs = _chunk(d, **cp)
+            if section_mode:
+                cs = ["\n".join(par) for par in build_l1(d, self.chunk_params[src])]
+            else:
+                cp = {k: self.chunk_params[src][k] for k in ("m", "hi", "unit")}
+                cs = _chunk(d, **cp)
             self.chunks += cs; self.doc_id += [did]*len(cs)
             self.source += [src if labelled else None] * len(cs)                # R20
             t = ttl if isinstance(ttl, str) and ttl.strip() else None
@@ -641,8 +681,19 @@ class ChunkGraph:
 
     # ---------- NORMAL + EDGES + FUSE ----------
     def _bc(self, x):
+        """R24: lambda is estimated on a fixed-size SEEDED SUBSAMPLE, then applied
+        to every value. The transform is O(n); the MLE is a Brent search whose each
+        evaluation does a logsumexp over the WHOLE vector, so fitting on all pairs
+        makes NORMAL O(n^2) with a ~400x constant -- 90% of fit() and ~23h at 76.5k
+        nodes. A fixed sample makes it O(1) in the pair count."""
         try:
-            y, lam = stats.boxcox(x - x.min() + 1e-3)
+            xs = x - x.min() + 1e-3
+            if len(xs) > BC_FIT_SAMPLE:
+                s = np.random.default_rng(BC_FIT_SEED).choice(xs, BC_FIT_SAMPLE, replace=False)
+                lam = float(stats.boxcox_normmax(s))
+                y = stats.boxcox(xs, lmbda=lam)
+            else:
+                y, lam = stats.boxcox(xs)
             return y, lam, stats.kurtosis(y)
         except Exception:
             return None, None, None                                 # R3
