@@ -2979,3 +2979,48 @@ frozen 20-row do-no-harm set and the 9-row gold lane -- both calibrated on
 a NEW label and be measured against the old run row-for-row on the gold lane
 before either is called better. Superseding the run the gates are calibrated
 against would destroy the only baseline that can judge the change.
+
+## 6.28 The per-unit cap, not the chunk size, is what the judge sees (T94)
+
+**Measured, 2026-09-16.** `interpret.render_bundle` computes
+`per_doc = max(300, min(MAX_CHUNK_CHARS, EVIDENCE_TOTAL_CHARS / n_units))`, and
+`MAX_CHUNK_CHARS = 1500` is a HARD cap that binds at every unit count:
+
+```
+EVIDENCE_TOTAL_CHARS = 60000   MAX_CHUNK_CHARS = 1500   ANCHOR_MULT = 4
+  50 units ->  1200 chars each (capped at 1500)
+   8 units ->  7500 chars each (capped at 1500)   <- the cap still binds
+```
+
+Consequences, all measured on the ab-document / ab-section pair (identical
+3,379-document corpus, chunker the only difference):
+
+| arm | body p50 | shown to the judge | fraction of the unit |
+|---|---|---|---|
+| ab-section | 1,816 | 1,500 | **83%** |
+| ab-document | 13,720 | 1,500 | **11%** |
+
+C1. Section chunking is the only configuration in which the judge sees
+    substantially the WHOLE retrieved unit. This is the mechanism behind R23,
+    stated in the terms that actually reach the model.
+
+C2. **Retrieving fewer units buys no additional context per unit.** The cap
+    binds at 8 units exactly as it does at 50. Any design that reduces the unit
+    count to "give each one more room" is inert until the cap moves.
+
+C3. **Small-to-big expansion is INERT under the current cap.** Expanding a
+    matched chunk to its parent document yields more text, which `per_doc` then
+    clips straight back to 1,500 chars. R23(e)'s L0 dereference must therefore
+    raise the per-unit cap for an expanded unit, traded against fewer units under
+    the same EVIDENCE_TOTAL_CHARS -- otherwise it is a no-op that looks like a
+    feature. This was caught before implementation, by arithmetic, not after.
+
+C4. This retro-explains the flat chunking A/B (0.556 vs 0.472, p=0.5): both arms
+    were pinned at 1,500 chars per unit, so the only thing the chunker changed
+    was WHICH 1,500 characters the judge saw -- never how much. The variable
+    under test barely reached the instrument.
+
+C5. The live axis is therefore (MAX_CHUNK_CHARS x n_units) against a fixed
+    EVIDENCE_TOTAL_CHARS, on ONE corpus and ONE chunker, so the cap is the only
+    thing moving. Until that is swept, "chunk size does not affect answers" is
+    NOT TESTED, not disproven.
