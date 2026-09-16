@@ -672,7 +672,10 @@ with tab_analysis:
                 # with answer_gate() below, instead of a bare `_entails == 0`
                 # that let a 3-entail superlative slip past the loop entirely.
                 _ans_ords = walker_core.cited_ords(rr["answer"]) if rr.get("ok") else []
-                _why_map = ({v["ord"]: v.get("why", "") for v in rr.get("verdicts") or []}
+                _why_map = (walker_core.gate_texts(          # A18(d): why + BODY
+                                rr.get("verdicts") or [],
+                                {o: (gt.node(conn, run, o) or {}).get("body", "")
+                                 for o in (rr.get("entailed") or [])})
                             if rr.get("ok") else {})
                 _sup_entails = (walker_core.count_population_superlatives(
                                     [_why_map.get(o, "") for o in rr["entailed"]])
@@ -735,8 +738,10 @@ with tab_analysis:
                                     # candidate set renders from what the loop found,
                                     # not just the base walk.
                                     _acc_entails = _loop_entails
-                                    _acc_why = {o: v.get("why", "")
-                                                for o, v in (rx.get("verdicts") or {}).items()}
+                                    _acc_why = walker_core.gate_texts(   # A18(d)
+                                        rx.get("verdicts") or {},
+                                        {o: (gt.node(conn, run, o) or {}).get("body", "")
+                                         for o in _loop_entails})
                                     _acc_ans_ords = walker_core.cited_ords(_loop_ans["answer"])
                                     _acc_sup = walker_core.count_population_superlatives(
                                         [_acc_why.get(o, "") for o in _acc_entails])

@@ -2913,3 +2913,69 @@ MIN_REL_SUPPORT=3, CLASS_MIN_JOINT=3, REL_CLASS_MIN_SHARED=3, MIN_JOINT_
 CHUNKS=5, MIN_SENT_TOKENS=3, REL_CLASS_SIM=0.10, SIM_THRESHOLD=0.90,
 EMB_THRESHOLD=0.85, MAX_ITERS=3. COST-BOUND (measured, not principled):
 VOCAB_BOUND=65, CLASS_CHUNK_TOPK=32, MAX_GRAM_BLOCK=2000, NEIGHBOR_TOP_K=25.
+
+### 6.27 Three-tier chunking and small-to-big retrieval (operator, 2026-09-16)
+
+Operator: "You're not chunking the texts and doing a small-to-big retrieval
+process. That's your issue." Measured, and it holds:
+
+    docs that SPLIT into >1 node: 400 of 10,371 (3.9%)
+    nodes over 8,000 chars:     6,393 of 10,830 (59.0%)
+    wiki node chars: p50 13,702 | p95 42,281 | max 94,630
+
+R19's per-source Box-Cox split exists but fires on 3.9% of documents, so a
+"chunk" is a whole Wikipedia article. Every downstream symptom follows:
+the judge entails 3 of 163 walked nodes because it is asked whether a 30k-char
+article entails a prompt; the Michael Jackson sentence that answers G1 is
+0.3% of #7198's body; DEREF has no "small" to expand from, since chunk IS
+document.
+
+**C1 (three tiers).** Ingest SHALL persist three levels, each row carrying its
+parent:
+
+    L0  DOCUMENT   the source document, pre-split ONLY if it exceeds its
+                   source's doc-level Box-Cox hi; a split piece is an L0 in
+                   its own right (retrieval never returns more than one).
+    L1  PARAGRAPH  pseudo-paragraphs: split on blank lines, falling back to
+                   single newlines when a document has none (quotes: 2,508 of
+                   2,508 docs have no blank line). Bare headers (^=+[^=]+=+$)
+                   and blocks under 40 chars are EXCLUDED from the fit -- they
+                   carry no content and drag the median down (reduce_overlaps
+                   step 2). Blocks are merged up to `m` and split above `hi`.
+    L2  WINDOW     recursive character splitter inside L1. len 537, overlap
+                   215 (operator-specified; ~3-5 sentences, below every
+                   source's m, so L2 is small in every corpus).
+
+**C2 (sizing is fitted per source, never global).** Box-Cox the paragraph
+char-lengths per source, m = median and d = MAD in Box-Cox space, hi = m + 2d,
+both inverted to natural scale. MEASURED 2026-09-16, headers excluded:
+
+    source   blocks    lambda      m       hi
+    wiki     74,279   +0.391   1,469    4,000
+    brown    15,023   +0.013     296      893
+    quotes    2,405   -0.595     101      331
+
+A global fit would have used m=91, hi=245 -- wiki's 44-char header noise
+dragging brown and quotes off their own scales. One fit per source, as R19
+already does for documents.
+
+**C3 (de-overlap on merge, reduce_overlaps step 6).** L2's 215-char overlap
+preserves a thought that straddles a boundary; it MUST NOT survive into
+stored or re-assembled text. When L2 children are merged back up, or L1
+blocks are accumulated, the longest suffix of chunk i that is a prefix of
+chunk i+1 SHALL be trimmed, so a concatenation reconstructs the source with
+no duplicated span.
+
+**C4 (small-to-big retrieval).** Anchors and edges are computed at L2 -- the
+small unit is what gets matched. Expansion walks UP: L2 -> its L1 parent ->
+its L0 parent, and STOPS at L0. Retrieval never returns more than one
+document's worth of text, and never returns a whole document when a split
+piece suffices. The judge and the answer stage see L1 context around an L2
+hit, not an encyclopedia article.
+
+**C5 (a new run, not a supersede).** Rechunking changes node identity, so the
+frozen 20-row do-no-harm set and the 9-row gold lane -- both calibrated on
+`mixed-full-dual` -- do not transfer. The rechunked corpus SHALL ingest under
+a NEW label and be measured against the old run row-for-row on the gold lane
+before either is called better. Superseding the run the gates are calibrated
+against would destroy the only baseline that can judge the change.

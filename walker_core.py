@@ -156,6 +156,17 @@ _SUPERLATIVE_MARKERS = {
     "longest", "highest", "fastest", "leading",
 }
 _SUPERLATIVE_AGGREGATE_PHRASES = ("how many", "total number", "in total")
+# A18(d): RANK-POSITION idioms. A chart position IS a population ranking --
+# "replaced Michael Jackson at number one on the Billboard 200" ranks its
+# subject above every other act, yet carries no word from the marker set.
+# Live receipt (2026-09-16): chunk #7198 held exactly that claim, was judged
+# entailing and cited, and still scored ranking-evidence 0, so the gate
+# refused an answer the corpus supported.
+_RANK_POSITION_PHRASES = (
+    "number one", "number 1", "no. 1", "#1", "topped the chart",
+    "topped the billboard", "chart-topping", "at the top of the chart",
+    "best-selling", "best selling", "of all time", "record holder",
+)
 # "-est" morphology false positives: ordinary words that happen to end in
 # "-est" but carry no comparative/superlative sense. "latest" is the
 # borderline case -- it reads as RECENCY ("the latest album"), not a ranking
@@ -183,7 +194,7 @@ def is_superlative(prompt: str) -> bool:
     Task: playbook.md T76
     """
     text = (prompt or "").lower()
-    for phrase in _SUPERLATIVE_AGGREGATE_PHRASES:
+    for phrase in _SUPERLATIVE_AGGREGATE_PHRASES + _RANK_POSITION_PHRASES:
         if phrase in text:
             return True
     for tok in text.split():
@@ -403,6 +414,46 @@ def answer_gate(answer: str, entails: int, *, n_iters: int = 0,
         return True, text
 
     return False, answer
+
+
+def gate_texts(verdicts, bodies, *, body_chars: int | None = None) -> dict:
+    """A18(d): build the {ord: text} map the gate reads, as the judge's `why`
+    PLUS the chunk's own body.
+
+    The `why` alone is a terse paraphrase that routinely drops the very claim
+    the gate is looking for. Live receipt (2026-09-16, G1 attribution probe):
+    chunk #7198's body carries "Nevermind replaced Michael Jackson's Dangerous
+    at number one on the Billboard 200", while its `why` said only that the
+    chunk describes the album -- so ranking-evidence read 0 and the answer was
+    refused on evidence the corpus plainly held. Of 18 corpus chunks carrying a
+    nirvana/cobain ranking claim, 10 reached the walk union and 7 the answer
+    bundle; the gate could see the ranking language in none of them.
+
+    `verdicts` is {ord: {"why": str}} (or a list of verdict dicts); `bodies` is
+    {ord: str}. The body is used WHOLE by default.
+
+    A18(d) amendment (2026-09-16): an earlier version clipped bodies to 600
+    chars on the assumption that "the ranking claim sits in the lead". That was
+    asserted, not measured, and it is false. Measured offsets of "michael
+    jackson" in the four Nirvana ranking chunks: #7198 @700, #8469 @9109,
+    #3574 @10335, #6323 @24711 -- in bodies 27k-40k chars long. The clip missed
+    every one, #7198 by a hundred characters, and the gate refused an answer
+    the corpus held. The check is a substring scan for a fixed phrase set, so
+    length costs nothing; `body_chars` stays available for callers that must
+    bound it, defaulting to no clip.
+
+    Spec: .spec/specs/graph-explorer/design.md 6.23 A18(d)
+    Task: playbook.md T88
+    """
+    if isinstance(verdicts, list):
+        verdicts = {v.get("ord"): v for v in verdicts if v.get("ord") is not None}
+    out = {}
+    for o in set(verdicts or {}) | set(bodies or {}):
+        why = (verdicts.get(o) or {}).get("why", "") if verdicts else ""
+        body = (bodies or {}).get(o) or ""
+        body = body[:body_chars] if body_chars else body
+        out[o] = f"{why} {body}".strip()
+    return out
 
 
 def needs_more_evidence(answer: str, entails: int, *, prompt: str | None = None,

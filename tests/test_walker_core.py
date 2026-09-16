@@ -1284,3 +1284,35 @@ def test_superlative_evidence_must_come_from_a_CITED_chunk():
                       6993: "Pink Floyd active in 1990s"},
         n_chunks=88)
     assert gated, "only the CITED chunk's own claim may exempt the gate"
+
+
+def test_ranking_claim_in_the_BODY_counts_not_only_the_judges_why():
+    """A18(d): the judge's `why` is a terse paraphrase that routinely drops the
+    superlative. Live receipt (2026-09-16): #7198's body says "replaced Michael
+    Jackson at number one on the Billboard 200"; its why said only that the
+    chunk describes the album -- so ranking-evidence read 0 and the gate refused
+    an answer the corpus could support. The gate SHALL see the body."""
+    gated, _ = walker_core.answer_gate(
+        "Nirvana led the decade. #7198", entails=3,
+        prompt="who is the most famous musician of the 1990's?",
+        entail_ords=[7198], answer_ords=[7198],
+        entail_texts={7198: "Describes the album Nevermind. "
+                            "Nevermind replaced Michael Jackson's Dangerous at "
+                            "number one on the Billboard 200 in January 1992."},
+        n_chunks=88)
+    assert not gated, "a population-ranking claim in the cited body must exempt the gate"
+
+
+def test_ranking_claim_deep_in_a_long_body_is_still_seen():
+    """A18(d) amendment: the claim is NOT in the lead. Measured offsets of
+    "michael jackson" in the four Nirvana ranking chunks: #7198 @700,
+    #8469 @9109, #3574 @10335, #6323 @24711, in bodies 27k-40k chars long.
+    A 600-char clip missed every one of them -- #7198 by 100 characters."""
+    body = ("Nevermind is the second studio album by the American rock band "
+            "Nirvana. " + ("filler text about producers and sessions. " * 300)
+            + "By January 1992 it had replaced Michael Jackson's album "
+              "Dangerous at number one on the Billboard 200 chart.")
+    assert len(body) > 12000
+    t = walker_core.gate_texts({7198: {"why": "Describes the album."}}, {7198: body})
+    assert walker_core.count_population_superlatives([t[7198]]) == 1, \
+        "a ranking claim 12k chars into the body must still be seen"

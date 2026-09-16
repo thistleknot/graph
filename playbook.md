@@ -1461,3 +1461,30 @@ keep. The rule stands: verify, then ask, then commit.
     4 -> 5 as CONVENTION (Church & Hanks 1990 +-5 window), not DERIVED; no
     test pinned the old value 4, tests/test_relations.py + test_react.py
     52 passed unchanged.
+
+## Layer 26 -- sequential (three-tier chunking, small-to-big retrieval)
+Source: operator, 2026-09-16. Root cause of the judge's 3/163 entail rate:
+96% of documents were never chunked (measured).
+
+- [DONE] T89 Spec 6.27 C1-C5 with the measured per-source Box-Cox fits
+  _Files:_ .spec/specs/graph-explorer/design.md
+  _Verify:_ grep -c "C[1-5]" .spec/specs/graph-explorer/design.md
+
+- [OPEN] T90 chunker.py: per-source paragraph fit (headers excluded), L0/L1/L2
+  with parent ids, recursive 537/215 splitter, reduce_overlaps de-overlap;
+  DB-free tests incl. reconstruct-the-source property test
+  _Files:_ chunker.py, tests/test_chunker.py
+  _Verify:_ python -m pytest tests/test_chunker.py -q
+
+- [OPEN] T91 Schema + ingest: node gains tier + parent_ord; ingest writes all
+  three tiers; new run label mixed-full-3tier (C5: never supersede)
+  _Files:_ sql/, pg_store.py, chunkgraph.py, ingest_mixed.py, tests
+  _Verify:_ live ingest completes; per-tier counts reported
+
+- [OPEN] T92 Small-to-big serve: anchor at L2, expand L2->L1->L0, cap at L0
+  _Files:_ sampler.py, evidence.py, tests
+  _Verify:_ python -m pytest tests/test_sampler.py -q
+
+- [OPEN] T93 A/B on the gold lane: old run vs 3-tier, G1-G9, n>=3 per row
+  _Files:_ (none -- measurement only)
+  _Verify:_ PYTHONPATH=. python tools/diag_agentic.py <both labels>

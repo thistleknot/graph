@@ -82,7 +82,7 @@ def score_row(result, answer_text=None, gold_terms=None, bodies=None):
             "stop_reason": result["stop_reason"], "passed": passed}
 
 
-def gate_reason(result, prompt, answer_text):
+def gate_reason(result, prompt, answer_text, bodies=None):
     """T77: what walker_core.answer_gate would say about the FINAL,
     accumulated answer -- independent of react's own stop_reason. Mirrors
     the accumulated-evidence gate call in walker_app.py (A15's re-run of the
@@ -96,7 +96,7 @@ def gate_reason(result, prompt, answer_text):
     entails = result.get("entails") or []
     verdicts = result.get("verdicts") or {}
     ans_ords = walker_core.cited_ords(answer_text) if answer_text else []
-    why = {o: v.get("why", "") for o, v in verdicts.items()}
+    why = walker_core.gate_texts(verdicts, bodies or {})   # A18(d): why + BODY
     sup_entails = walker_core.count_population_superlatives(
         [why.get(o, "") for o in entails])
     gated, _ = walker_core.answer_gate(
@@ -137,20 +137,25 @@ def run_row(conn, run, rid, prompt, gold_terms, embed):
             answer_error = f"{type(e).__name__}: {e}"
 
     bodies = None
+    body_by_ord = None
     try:
         ords = result.get("ords") or []
         if ords:
             with conn.cursor() as cur:
-                cur.execute("SELECT body FROM node WHERE run_id = %s AND ord = ANY(%s)",
+                cur.execute("SELECT ord, body FROM node WHERE run_id = %s AND ord = ANY(%s)",
                             (str(run.run_id), list(ords)))
-                bodies = [r["body"] for r in cur.fetchall()]
+                rows_ = cur.fetchall()
+                # A9 scores gold recall over a LIST of texts; A18(d)'s gate needs
+                # {ord: body}. Build both from one fetch -- they are not the same shape.
+                body_by_ord = {r["ord"]: r["body"] for r in rows_}
+                bodies = list(body_by_ord.values())
     except Exception:                                        # noqa: BLE001
         bodies = None                     # fall back to digest-based number
 
     sc = score_row(result, answer_text, gold_terms, bodies=bodies)
     sc["elapsed_s"] = round(dt, 2)
     sc["answer_error"] = answer_error
-    sc["gate"] = gate_reason(result, prompt, answer_text)
+    sc["gate"] = gate_reason(result, prompt, answer_text, body_by_ord)
     return sc
 
 
