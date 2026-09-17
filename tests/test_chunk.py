@@ -677,14 +677,26 @@ class TestR25Tokenizer:
     def test_digits_survive(self):
         """KNOWN-BAD: re.findall(r'[a-z]+') made every year invisible to BM25 --
         5,061 qterms sampled from a live run, zero containing a digit."""
-        assert "1990" in chunkgraph._tok("released in 1990 .")
-        assert "1991" in chunkgraph._tok("Nevermind was released in 1991 .")
+        assert "1990s" in chunkgraph._tok("released in 1990 .")
+        assert "1990s" in chunkgraph._tok("Nevermind was released in 1991 .")
+        assert "185" in chunkgraph._tok("winds of 185 mph")
 
-    def test_year_emits_its_decade_bucket(self):
+    def test_year_becomes_its_decade_bucket(self):
         """The query says 1990, the text says 1991. Exact tokens cannot bridge
         that; the decade bucket is where they meet."""
-        assert set(chunkgraph._tok("released in 1991")) >= {"1991", "1990s"}
-        assert set(chunkgraph._tok("in 1994 and 1999")) >= {"1994", "1999", "1990s"}
+        assert "1990s" in chunkgraph._tok("released in 1991")
+        assert set(chunkgraph._tok("in 1994 and 1999")) == {"1990s"}
+
+    def test_year_does_not_emit_a_self_collocating_pair(self):
+        """KNOWN-BAD: emitting BOTH the year and its decade put them adjacent in
+        every occurrence -- a 100%-collocated bigram by construction -- and the
+        PHRASE stage (R9) merged them into one token. Measured in the live index:
+        2008_2000s x810, 2007_2000s x806, 2010_2010s x793, while `1990` and
+        `1991` had df=0. Neither half survived as a term, and queries are never
+        phrase-merged, so the compound was unreachable from any query."""
+        toks = chunkgraph._tok("in 1991 and in 1994")
+        assert toks == ["1990s", "1990s"]              # no bare year beside it
+        assert not [t for t in toks if t.isdigit() and len(t) == 4]
 
     def test_query_decade_matches_text_year(self):
         """The whole point, end to end: 1990's in the query reaches 1991 in the
@@ -706,3 +718,10 @@ class TestR25Tokenizer:
         toks = chunkgraph._tok("category 5 hurricane with 185 mph winds")
         assert "185" in toks and "hurricane" in toks
         assert not [t for t in toks if t.endswith("0s")]
+
+    def test_query_decade_still_reaches_text_year(self):
+        """The bridge must survive the fix: 1990's in the query still meets 1991
+        in the text, now via a single shared token rather than two."""
+        q = set(chunkgraph._tok("who is the most famous musician of the 1990's?"))
+        t = set(chunkgraph._tok("Nevermind was released in 1991 by Nirvana ."))
+        assert q & t == {"1990s"}

@@ -84,7 +84,13 @@ def tokenize(text: str) -> list[str]:
     out = []
     for w in _WORD_RE.findall(text.lower()):
         if _YEAR_RE.match(w):
-            out.append(w)
+            # DECADE ONLY, not the bare year as well. Emitting both put them
+            # ADJACENT in every single occurrence -- a 100%-collocated bigram by
+            # construction -- and the PHRASE stage (R9, gensim Phrases) merged
+            # them into one token. Measured in the index: 2008_2000s x810,
+            # 2007_2000s x806, 2010_2010s x793, while `1990` and `1991` had
+            # df=0. Neither half survived, and queries are never phrase-merged
+            # (gt_terms.tokenize), so the compound was unreachable from a query.
             out.append(w[:3] + "0s")
         elif _DECADE_RE.match(w):
             out.append(w)
