@@ -543,18 +543,18 @@ def run(conn, run_, query, *, embed=None, judge_fn=None, walk_fn=None,
         # genuinely wasted iterations. The ONE condition that actually
         # matters is whether the iteration added any new entailing chunks:
         # if the accumulated entail count did not increase versus the
-        # previous iteration, the loop is spending budget for nothing and
-        # SHALL stop. Needs a previous record (i >= 2), and still requires
+        # previous iteration, the loop is STALLED. A20(b) supersedes what the
+        # rest of this note used to say: stalling NEVER ends the walk. It marks
+        # the state, which is passed to the proposer as a hint to change
+        # strategy; only sufficiency (A2) or the budget (A4) stops the loop.
+        # Needs a previous record (i >= 2), and still requires
         # ent_total > 0: a walk that has found NOTHING yet is already routed
         # by A2's forced-insufficient path, and "flat at zero" is not the
         # stagnation this guards against -- it is the ordinary zero-entail
         # case, which keeps spending budget on purpose (A6) rather than
         # giving up early.
-        if i >= 2 and prev_ent_total is not None and ent_total > 0:
-            no_new_entails = ent_total <= prev_ent_total
-            if no_new_entails:
-                stop_reason = "no-movement"
-                break
+        stalled = (i >= 2 and prev_ent_total is not None and ent_total > 0
+                    and ent_total <= prev_ent_total)
         prev_ent_total = ent_total
 
         if ent_total == 0 and i == max_iters:
@@ -565,11 +565,44 @@ def run(conn, run_, query, *, embed=None, judge_fn=None, walk_fn=None,
             stop_reason = "budget"
             break
 
+        # A20: ASK SUFFICIENCY BEFORE GIVING UP ON STAGNATION. The proposer used
+        # to be called only after the no-movement and budget breaks, so the loop
+        # stopped when it stopped MAKING PROGRESS, never when it had ENOUGH --
+        # `stop=sufficient` was essentially never observed in the gold lane.
+        #
+        # Measured, ab-section, "who is the most famous musician of the 1990's?":
+        # the base walk returns 11 Selena chunks and 0 Nirvana, the judge entails
+        # 9 of them, the next iteration adds none, no-movement fires, and the UI
+        # answers "Hypothesis: Selena". Nobody ever asked whether nine Selena
+        # chunks answer a question about the most famous musician of the decade.
+        # The CLI, which happened to widen before stalling, reached Nirvana in 3
+        # of 4 runs on the same run and query.
+        #
+        # Stagnation is a reason to CHANGE STRATEGY, not to quit: the proposer is
+        # the thing that picks the next action, so it must be consulted first.
+        # See A20(b) below for what happens to a stalled loop -- it is hinted,
+        # never halted.
         prop = propose_fn(cur_query, getattr(ev, "digest", None), history,
                            missing_hint=missing_acc)
         sufficient = bool(prop.get("sufficient", False))
         if ent_total == 0:
             sufficient = False        # A2: forced, regardless of the model
+        # A20(b): stagnation does NOT end the walk. The first version of A20
+        # guarded this break with `i >= max_iters - 1`, which at the default
+        # MAX_ITERS=3 evaluates to `i >= 2` -- byte-identical to the condition it
+        # replaced, so it was a no-op. Measured: A20 run1 stopped
+        # `no-movement iters=2`, exactly as before.
+        #
+        # The budget is the stopping rule (A4) and sufficiency is the success
+        # rule (A2). "I stopped finding new things with the CURRENT strategy" is
+        # neither -- it is the signal to try a DIFFERENT action, which is what
+        # the proposer above just chose. Stalling is now carried into that
+        # proposal as state and nothing else.
+        if stalled:
+            missing_acc = missing_acc or []
+            hint = "the last iteration added no new entailing chunks; change strategy"
+            if hint not in missing_acc:
+                missing_acc.append(hint)
         if sufficient:
             stop_reason = "sufficient"
             break

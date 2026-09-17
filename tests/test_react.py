@@ -575,24 +575,63 @@ def test_apply_action_dedups_reanchor_terms_per_token():
 
 # ---------------------------------------- A17(c) no-movement stop
 
-def test_no_movement_stop_fires_on_a_flat_history():
-    """A17(c): once the walk has run long enough to have two full iterations
-    of history beyond the base (i>=2), a mean/per-cid/entails-flat iteration
-    stops the loop rather than spending the rest of the budget for nothing."""
+def test_stagnation_does_not_stop_the_walk(monkeypatch):
+    """A20(b), superseding A17(c)'s early stop. A flat iteration is NOT a reason
+    to end the walk -- the budget is the stopping rule (A4) and sufficiency is
+    the success rule (A2). "I stopped finding new things with the CURRENT
+    strategy" is neither; it is the signal to try a DIFFERENT action, which is
+    the proposer's job. So the loop now runs to budget and carries the stall into
+    the proposal as a hint.
+
+    Why it moved: the proposer used to be called only AFTER the no-movement
+    break, so the loop stopped when it stopped making progress and never when it
+    had enough -- `stop=sufficient` was essentially never observed. Measured on
+    ab-section, "most famous musician of the 1990's": the base walk returns 11
+    Selena chunks and 0 Nirvana, the judge entails 9, the next iteration adds
+    none, no-movement fired, and the UI answered "Hypothesis: Selena" -- nobody
+    ever asked whether nine Selena chunks answer the question.
+
+    NB the first attempt at this guarded the break with `i >= max_iters - 1`,
+    which at the default MAX_ITERS=3 is `i >= 2`: byte-identical to the condition
+    it replaced, and measurably a no-op (A20 run1 stopped no-movement iters=2).
+    """
     bnd = mk_bundle([1, 2, 3, 4], scores={1: 1.0, 2: 1.0, 3: 1.0, 4: 1.0})
     ev = FakeEv(cid_of={1: "a", 2: "a", 3: "b", 4: "b"})
     walk = fake_walk([(bnd, ev)] * 10)
     judge = fake_judge({1: "entails"}, [])   # entails found once, at iteration 0
+    seen_hints = []
 
     def widen_forever(query, digest, history, missing_hint=None):
+        seen_hints.append(list(missing_hint or []))
         return {"sufficient": False, "missing": [], "action": "WIDEN",
                 "query_add": "", "why": "", "source": "stub"}
 
     result = react.run(None, None, "q", walk_fn=walk, judge_fn=judge,
                         propose_fn=widen_forever, max_iters=5)
-    assert result["stop_reason"] == "no-movement"
-    # must not fire at iteration 0 or 1 -- earliest possible stop is i=2
-    assert result["n_iters"] == 2
+    assert result["stop_reason"] == "budget"      # NOT no-movement
+    assert result["n_iters"] == 5                 # spent the whole budget trying
+    # the stall was handed to the proposer instead of ending the walk
+    assert any("change strategy" in h for hints in seen_hints for h in hints)
+
+
+def test_sufficiency_is_asked_before_the_walk_can_end(monkeypatch):
+    """A20: the proposer is consulted on EVERY iteration that is not budget-
+    capped, so a loop holding entails is always asked whether they answer the
+    question before it is allowed to stop."""
+    bnd = mk_bundle([1, 2, 3], scores={1: 1.0, 2: 1.0, 3: 1.0})
+    walk = fake_walk([(bnd, FakeEv())] * 10)
+    judge = fake_judge({1: "entails"}, [])
+    calls = {"n": 0}
+
+    def sufficient_on_second(query, digest, history, missing_hint=None):
+        calls["n"] += 1
+        return {"sufficient": calls["n"] >= 2, "missing": [], "action": "WIDEN",
+                "query_add": "", "why": "", "source": "stub"}
+
+    result = react.run(None, None, "q", walk_fn=walk, judge_fn=judge,
+                        propose_fn=sufficient_on_second, max_iters=5)
+    assert result["stop_reason"] == "sufficient"
+    assert calls["n"] == 2
 
 
 def test_no_movement_stop_does_not_fire_when_entails_increase():
