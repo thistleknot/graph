@@ -1497,3 +1497,48 @@ Source: operator, 2026-09-16. Root cause of the judge's 3/163 entail rate:
 - [OPEN] T93 A/B on the gold lane: old run vs 3-tier, G1-G9, n>=3 per row
   _Files:_ (none -- measurement only)
   _Verify:_ PYTHONPATH=. python tools/diag_agentic.py <both labels>
+
+## Layer 27 — sequential (query path, 2026-09-17)
+- [DONE] T96 R25 ONE tokenizer, digits kept, years emit their decade
+  _Files:_ stoplist.py, chunkgraph.py, gt_terms.py, tests/test_chunk.py
+  _Verify:_ python -m pytest tests/test_chunk.py -q
+  _Lessons:_ the root cause of the 1990s-musician failure. Both tokenizers used
+    re.findall(r'[a-z]+'), so every year was invisible to BM25 -- 5,061 qterms
+    sampled, zero with a digit. Index and query agreed, so nothing looked broken.
+    G1 evidence 0/2 -> 2/2, gold survival 0.778 -> 0.889. Took two attempts: the
+    first emitted year AND decade adjacently, a 100%-collocated bigram the PHRASE
+    stage merged into 2008_2000s, destroying both halves.
+
+- [DONE] T97 A19 answer cap 50 -> ANSWER_CAP=100
+  _Files:_ react.py, tests/test_react.py
+  _Verify:_ python -m pytest tests/test_react.py -q
+  _Lessons:_ the call site hardcoded 50 against cap_bundle's documented 100 and
+    discarded 7 of the 10 gold chunks the walk found. Did NOT change the outcome;
+    per-chunk chars halve as the count doubles (60k total is what binds).
+
+- [DONE] T98 S20 dense entry point (gt_sql.dense_search), opt-in
+  _Files:_ gt_sql.py, graph_tools.py, sampler.py
+  _Verify:_ python -m pytest tests/test_sampler.py tests/test_graph_tools.py -q
+  _Lessons:_ the HNSW index was built at ingest and never queried by anything.
+    Three stacked bugs: (1) the index is global while queries filter by run_id, so
+    LIMIT 200 returned 8 rows; (2) SET LOCAL is a no-op under autocommit=True;
+    (3) my own wiring fetched k=min(k_anchor,ef)=3. After all three, k=100 returns
+    100 rows with gold at ranks 20 and 45.
+
+- [OPEN] T99 Dense anchors must survive the walk
+  _Files:_ sampler.py
+  _Verify:_ PYTHONPATH=. python tools/diag_evidence.py ab-section
+  _Notes:_ anchors enter (12 with dense vs 4 lexical) and the score-ranked
+    expansion evicts them -- gold in bundle unchanged at 0/92. Design work.
+
+- [OPEN] T100 The loop checks sufficiency LAST
+  _Files:_ react.py
+  _Notes:_ react.py:542-562 breaks on no-movement and budget BEFORE calling the
+    proposer, so the sufficiency judge is consulted only when the loop both grew
+    its entail count and has iterations left. stop=sufficient is essentially never
+    observed. Operator asked why it does not retrieve until sufficient; this is why.
+
+- [OPEN] T101 Every phrase the index merges is unreachable from a query
+  _Notes:_ the PHRASE stage (R9) merges index tokens; gt_terms.tokenize never
+    merges. So 17th_century, 1840s_1850s et al. can never be matched. Found while
+    diagnosing T96.
