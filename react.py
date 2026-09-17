@@ -25,6 +25,18 @@ MAX_ITERS = 3                 # ARBITRARY: chosen, not derived. Best practice is
                                # budget calibrated on held-out task difficulty
                                # (6.26 T3(b), gold-lane). A4: iterations BEYOND
                                # the base walk
+ANSWER_CAP = 100               # DERIVED (A19): how many chunks may reach the
+                               # answer stage. Matches cap_bundle's own
+                               # documented default; the previous call site
+                               # hardcoded 50, a second budget stacked on the
+                               # real one. interpret.render_bundle already
+                               # bounds the judge's input at
+                               # EVIDENCE_TOTAL_CHARS=60,000 and scales the
+                               # per-chunk budget by the count, so characters
+                               # are what bind. Measured: the base walk returns
+                               # 89 chunks rendering to 59,922 chars -- inside
+                               # the budget -- while the 50-cap discarded 7 of
+                               # the 10 gold-bearing chunks the walk had found.
 PROPOSE_TIMEOUT = 60.0         # COST-BOUND: a measured performance cap, not a
                                # quality threshold -- wall-clock budget on the
                                # propose call.
@@ -635,7 +647,23 @@ def run(conn, run_, query, *, embed=None, judge_fn=None, walk_fn=None,
             last_bundle, sampled=ords,
             scores={o: scores_all.get(o, 0.0) for o in ords},
             origin={o: origin_all.get(o, "walk") for o in ords})
-    answer_bundle = (entails_first_bundle(union_bundle, verdict_of, 50)
+    # A19: the chunk-count cap was a hardcoded 50 here while cap_bundle's own
+    # documented default is 100 -- a second, tighter budget stacked on the real
+    # one. interpret.render_bundle already bounds the judge's input at
+    # EVIDENCE_TOTAL_CHARS (60,000) and scales per-chunk budget by the count, so
+    # the character budget is what actually binds; the chunk cap only decides
+    # WHICH chunks are eligible at all.
+    #
+    # Measured on ab-document after R25, "most famous musician of the 1990's":
+    #     26 gold-bearing chunks in the corpus
+    #     BASE walk     89 chunks -> 10 gold present
+    #     ANSWER bundle 50 chunks ->  3 gold present   <- 7 of 10 discarded here
+    # and entails_first_bundle cannot rescue them: it orders entailing ords
+    # first, but on the first pass the judge has entailed nothing, so it
+    # degenerates to score order and cuts exactly the tail the walk just earned.
+    # The deterministic lane renders all 89 chunks in 59,922 chars, inside the
+    # 60,000 budget, so the wider cap costs nothing the renderer cannot hold.
+    answer_bundle = (entails_first_bundle(union_bundle, verdict_of, ANSWER_CAP)
                       if union_bundle is not None else None)
 
     return {"ords": ords, "found_at": found_at, "verdicts": verdict_of,

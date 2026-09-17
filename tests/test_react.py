@@ -655,3 +655,30 @@ def test_repeated_identical_walk_stops_as_fixed_point():
     assert len(queries) == len(set((q, tuple(sorted(r.params.items())))
                                     for q, r in zip(queries, res["iterations"]))), \
         "no (query, params) pair may repeat"
+
+
+# ------------------------------------------- A19 the answer cap must not starve
+
+def test_answer_cap_matches_cap_bundle_default():
+    """A19 KNOWN-BAD: the call site hardcoded 50 while cap_bundle's documented
+    default is 100 -- a second, tighter budget stacked on the renderer's real
+    one. Measured on ab-document after R25: the base walk found 10 gold-bearing
+    chunks and the 50-cap discarded 7 of them before the judge saw anything."""
+    import inspect
+    assert react.ANSWER_CAP == 100
+    assert inspect.signature(react.cap_bundle).parameters["n"].default == react.ANSWER_CAP
+    src = inspect.getsource(react.run)
+    assert "entails_first_bundle(union_bundle, verdict_of, ANSWER_CAP)" in src, \
+        "the answer bundle must use the named constant, not a literal"
+
+
+def test_entails_first_cannot_rescue_a_cut_tail():
+    """Why raising the cap was the fix and reordering was not: on the FIRST pass
+    the judge has entailed nothing, so entails_first_bundle degenerates to score
+    order and cuts exactly the tail the walk just earned."""
+    b = mk_bundle(range(10), scores={o: float(10 - o) for o in range(10)})
+    got = react.entails_first_bundle(b, {}, 5)          # nothing entailed yet
+    assert list(got.sampled) == [0, 1, 2, 3, 4]         # pure score order
+    assert 9 not in got.sampled                          # the tail is gone
+    got2 = react.entails_first_bundle(b, {9: {"verdict": "entails"}}, 5)
+    assert 9 in got2.sampled                             # only AFTER a verdict
