@@ -300,8 +300,40 @@ def select_anchors(base: list, pool: list, sources: dict, ef: int,
     return merged
 
 
+def _with_dense(conn, run, base: list, qvec, k: int, ef: int) -> list:
+    """S20: union DENSE anchors into the lexical ones. ADDITIVE, never
+    displacing -- the repo has three measured wins for add-never-displace and
+    none for re-ranking, and the lexical anchors are what the frozen diagnostic
+    is calibrated on. WHERE qvec is None this returns `base` unchanged and is
+    the identity, so every caller that does not opt in keeps today's behaviour
+    byte for byte.
+
+    Exists because the front door was lexical only while the graph has been
+    dual-space in its edges since R3/R5. Measured on ab-section for "who is the
+    most famous musician of the 1990's?": "famous" appears in ZERO of the 58
+    Nirvana/Cobain chunks, so BM25 anchoring reached none of them, while a gold
+    chunk sits at dense rank 20 of 27,259.
+    """
+    if qvec is None:
+        return base
+    have = {h.get("ord") for h in base}
+    room = max(0, ef - len(base))
+    if room <= 0:
+        return base
+    # Fetch to the ROOM, not to k_anchor. k_anchor is 3 by default and the
+    # lexical top-3 is all BM25 is trusted for; the dense side has no such
+    # calibration and its useful hits sit deeper. Measured on ab-section: with
+    # k=3 the dense anchors were #457/#312/#487 -- short quote chunks that score
+    # high on any short conversational query -- while the first gold chunk sits
+    # at dense rank 20 of 27,259. ef bounds the walk anyway (S10), so the room
+    # is the honest budget.
+    extra = [r for r in gt.dense_search(conn, run, qvec, k=room + len(base))
+             if r.get("ord") not in have]
+    return base + extra[:room]
+
+
 def anchor_hits(conn, run: gt.RunHandle, query: str, k_anchor: int, ef: int,
-                expand_aliases: bool = False) -> list:
+                expand_aliases: bool = False, qvec=None) -> list:
     """S15 (amended 2026-09-03) entry point: today's global gt.search top-k,
     unconditionally, plus at most one competitive extra per absent source.
 
@@ -320,6 +352,8 @@ def anchor_hits(conn, run: gt.RunHandle, query: str, k_anchor: int, ef: int,
     # today comes from making the same call, not from assuming the top-k of a
     # larger fetch is prefix-stable.
     base = gt.search(conn, run, query, k=k, expand_aliases=expand_aliases)
+
+    base = _with_dense(conn, run, base, qvec, k, ef)        # S20
 
     sources = gt.run_sources(conn, run)
     elig = {s: n for s, n in sources.items() if n > 0}
@@ -421,7 +455,7 @@ def boltzmann_sample(scores: dict, n: int = DEFAULT_N, T: float = DEFAULT_T,
 def ef_search(conn, run: gt.RunHandle, query: str, ef: int = DEFAULT_EF,
               T: float = DEFAULT_T, m: int = DEFAULT_M,
               k_anchor: int = DEFAULT_K_ANCHOR, max_hops: int = MAX_HOPS,
-              seed: int = 0, expand_aliases: bool = False) -> tuple[dict, dict]:
+              seed: int = 0, expand_aliases: bool = False, qvec=None) -> tuple[dict, dict]:
     """Best-first expansion with an HNSW stop condition (S9-S12).
 
     ef IS the evidence budget (S10), so anchors never exceed it:
@@ -465,7 +499,8 @@ def ef_search(conn, run: gt.RunHandle, query: str, ef: int = DEFAULT_EF,
     if ef < 1 or m < 1 or max_hops < 1:
         raise ValueError(f"ef, m, max_hops must all be >= 1 "
                          f"(got {ef}, {m}, {max_hops})")
-    hits = anchor_hits(conn, run, query, k_anchor, ef, expand_aliases=expand_aliases)
+    hits = anchor_hits(conn, run, query, k_anchor, ef,
+                        expand_aliases=expand_aliases, qvec=qvec)
     if not hits:
         return {}, {"stop": "no_anchor", "depth": 0, "expanded": 0, "seen": 0,
                     "hop_capped": 0, "pool_median": 0, "pools_over_m": 0,
@@ -870,7 +905,7 @@ def ef_evidence(conn, run: gt.RunHandle, query: str, ef: int = DEFAULT_EF,
                 ring_top: int = DEFAULT_RING_TOP,
                 ring_per: int = DEFAULT_RING_PER,
                 bridge_pairs: int = DEFAULT_BRIDGE_PAIRS,
-                expand_aliases: bool = False) -> tuple["Bundle", dict]:
+                expand_aliases: bool = False, qvec=None) -> tuple["Bundle", dict]:
     """evidence() with ef_search in place of fixed-hop expansion.
 
     Same Bundle shape so community_histogram, term_stats and the walker's
@@ -883,7 +918,8 @@ def ef_evidence(conn, run: gt.RunHandle, query: str, ef: int = DEFAULT_EF,
     says which term set produced it. The ring (source_topk) does not expand.
     """
     W, tele = ef_search(conn, run, query, ef=ef, T=T, m=m,
-                        k_anchor=k_anchor, seed=seed, expand_aliases=expand_aliases)
+                        k_anchor=k_anchor, seed=seed, expand_aliases=expand_aliases,
+                        qvec=qvec)
     anchors = list(tele.get("anchors", []))
     extra = (ring(conn, run, W, top=ring_top, per=ring_per, mix=tele.get("anchor_mix"),
                   query=query)

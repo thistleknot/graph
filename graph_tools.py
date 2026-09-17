@@ -174,7 +174,7 @@ from __future__ import annotations
 # Task: playbook.md T37
 
 from gt_sql import (
-    DSN, RunHandle, connect, list_runs, get_run, search, node, neighbors,
+    DSN, RunHandle, connect, list_runs, get_run, search, dense_search, node, neighbors,
     community, communities_touched, run_sources, bridges, quotient,
     subgraph_edges, walk, why, source_of, source_mix, format_source_mix,
     term_stats, community_terms, local_medoid, cross_community, query_terms,

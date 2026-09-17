@@ -572,3 +572,70 @@ def _decorate(conn, run: RunHandle, rows: list[dict]) -> list[dict]:
     for r in rows:
         r.update({k: v for k, v in meta.get(r["ord"], {}).items() if k != "ord"})
     return rows
+
+
+def dense_search(conn, run: RunHandle, qvec, k: int = 8) -> list[dict]:
+    """S20: the DENSE entry point -- pgvector top-k over node_embedding.
+
+    The graph has been dual-space in its EDGES since R3/R5, but its front door
+    was lexical only: `search()` above is BM25 over the graph's vocabulary, and
+    every anchor came from it. The HNSW index that pg_store builds at ingest
+    (vector_ip_ops, pg_store._ensure_hnsw) was never queried by anything --
+    written, indexed, and read back only as text for the neo4j export.
+
+    That gap is why a question whose wording differs from the corpus's wording
+    cannot start in the right neighbourhood. Measured on ab-section for "who is
+    the most famous musician of the 1990's?": the word "famous" appears in ZERO
+    of the 58 chunks mentioning Nirvana or Kurt Cobain (Wikipedia writes
+    "best-selling", "influential", "acclaimed"), so BM25 anchoring reached none
+    of them -- while by dense similarity a gold chunk sits at rank 20 of 27,259
+    and the ranking-claim chunk #20762 ("regularly considered one of the
+    greatest music artists of all time") at rank 137.
+
+    Embeddings are L2-normalized at fit (R14, |norm-1| <= 1e-6), so the inner
+    product `<#>` ranks identically to cosine and is cheaper. `<#>` returns the
+    NEGATIVE inner product, hence ASC ordering for most-similar-first.
+
+    Returns gt.search-shaped rows so callers cannot tell the two entry points
+    apart structurally; `score` is the recovered inner product in [-1, 1].
+    """
+    if qvec is None or k < 1:
+        return []
+    lit = "[" + ",".join(f"{float(x):.7g}" for x in qvec) + "]"
+    with conn.cursor() as cur:
+        # The HNSW index is GLOBAL across every run in the table, while this
+        # query filters to one run_id. pgvector scans hnsw.ef_search candidates
+        # across the WHOLE index and only then applies the filter, so a run
+        # holding a fraction of the rows gets a fraction of the candidates and
+        # LIMIT is silently unreachable. Measured on ab-section (27,259 of the
+        # table's rows, alongside mixed-full-dual and ab-document):
+        #     LIMIT 8 -> 8 rows | LIMIT 50 -> 8 | LIMIT 200 -> 8   (ef_search=40)
+        #     LIMIT 200 -> 86 rows                                 (ef_search=400)
+        # and the 8 that survived were all `quotes` chunks, which is what made
+        # the dense anchors look length-biased rather than starved.
+        #
+        # Scale the candidate pool by this run's share of the table so the
+        # filter has enough to survive. Plain SET, not SET LOCAL: connect() runs
+        # autocommit=True, so every statement is its own transaction and a LOCAL
+        # setting is discarded before the next query -- measured, it left the
+        # result at 8 rows exactly as if unset. Session scope is the right scope
+        # here anyway; a larger candidate pool only costs time and accuracy is
+        # monotonic in it.
+        cur.execute("SELECT count(*) AS c FROM node_embedding")
+        total = int(cur.fetchone()["c"] or 1)
+        cur.execute("SELECT count(*) AS c FROM node_embedding WHERE run_id = %s", (run.run_id,))
+        mine = int(cur.fetchone()["c"] or 1)
+        want = min(1000, max(40, int(k * max(1.0, total / max(mine, 1)) * 4)))
+        try:
+            cur.execute(f"SET hnsw.ef_search = {want}")
+        except Exception:                                          # noqa: BLE001
+            pass       # not an HNSW plan (seq scan on a small table): exact anyway
+        cur.execute("""SELECT e.ord AS ord, n.doc_id AS doc_id,
+                              -(e.embedding <#> %s::vector) AS score,
+                              n.attrs->>'source' AS source
+                         FROM node_embedding e
+                         JOIN node n ON n.run_id = e.run_id AND n.ord = e.ord
+                        WHERE e.run_id = %s
+                        ORDER BY e.embedding <#> %s::vector
+                        LIMIT %s""", (lit, run.run_id, lit, k))
+        return [dict(r) for r in cur.fetchall()]
