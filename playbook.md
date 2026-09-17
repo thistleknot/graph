@@ -1531,7 +1531,19 @@ Source: operator, 2026-09-16. Root cause of the judge's 3/163 entail rate:
   _Notes:_ anchors enter (12 with dense vs 4 lexical) and the score-ranked
     expansion evicts them -- gold in bundle unchanged at 0/92. Design work.
 
-- [OPEN] T100 The loop checks sufficiency LAST
+- [DONE] T100 A20: the loop retrieves until sufficient or budget, never until bored
+  _Files:_ react.py, tests/test_react.py
+  _Verify:_ python -m pytest tests/test_react.py -q
+  _Lessons:_ the operator's question ("how can it not do retrievals until sufficient")
+    was literally true: no-movement and budget broke BEFORE the proposer was called.
+    Measured: base walk gives 11 Selena / 0 Nirvana, judge entails 9, next iteration
+    adds none, loop quits, UI answers "Hypothesis: Selena". A20(b) makes stagnation a
+    HINT, never a halt. First attempt was a NO-OP -- `i >= max_iters - 1` is `i >= 2`
+    at MAX_ITERS=3, byte-identical to what it replaced; the n=4 run caught it in one
+    iteration. stop=budget iters=3 now on every run (was no-movement iters=2).
+    NAMING RATE NOT TESTED: 3/4 vs baseline 3/4, inside the comparator's own noise.
+
+- [SUPERSEDED] T100 The loop checks sufficiency LAST
   _Files:_ react.py
   _Notes:_ react.py:542-562 breaks on no-movement and budget BEFORE calling the
     proposer, so the sufficiency judge is consulted only when the loop both grew
