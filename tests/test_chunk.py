@@ -662,3 +662,47 @@ class TestR24LambdaSampling:
         assert "bc_fit_sample" in pg_store._PARAM_ATTRS
         assert "bc_fit_seed" in pg_store._PARAM_ATTRS
         assert "chunk_mode" in pg_store._PARAM_ATTRS
+
+
+# ------------------------------------------------ R25 one tokenizer, digits kept
+
+class TestR25Tokenizer:
+    def test_index_and_query_are_the_same_function(self):
+        """R25: they were hand-copied mirrors. A query that tokenizes differently
+        from the index asks for terms the index cannot contain."""
+        import gt_terms, stoplist
+        q = "who is the most famous musician of the 1990's?"
+        assert chunkgraph._tok(q) == gt_terms.tokenize(q) == stoplist.tokenize(q)
+
+    def test_digits_survive(self):
+        """KNOWN-BAD: re.findall(r'[a-z]+') made every year invisible to BM25 --
+        5,061 qterms sampled from a live run, zero containing a digit."""
+        assert "1990" in chunkgraph._tok("released in 1990 .")
+        assert "1991" in chunkgraph._tok("Nevermind was released in 1991 .")
+
+    def test_year_emits_its_decade_bucket(self):
+        """The query says 1990, the text says 1991. Exact tokens cannot bridge
+        that; the decade bucket is where they meet."""
+        assert set(chunkgraph._tok("released in 1991")) >= {"1991", "1990s"}
+        assert set(chunkgraph._tok("in 1994 and 1999")) >= {"1994", "1999", "1990s"}
+
+    def test_query_decade_matches_text_year(self):
+        """The whole point, end to end: 1990's in the query reaches 1991 in the
+        text. Measured reach into the 58 Nirvana/Cobain chunks: 2 -> 38."""
+        q = set(chunkgraph._tok("who is the most famous musician of the 1990's?"))
+        t = set(chunkgraph._tok("Nevermind was released in 1991 by Nirvana ."))
+        assert q & t == {"1990s"}
+
+    def test_decades_do_not_bleed_across(self):
+        q = set(chunkgraph._tok("the 1990's"))
+        t = set(chunkgraph._tok("released in 1987 and in 2003"))
+        assert not (q & t)
+
+    def test_stopwords_and_short_tokens_still_dropped(self):
+        toks = chunkgraph._tok("the of a an it is to be or")
+        assert toks == []
+
+    def test_non_year_numbers_are_kept_without_a_decade(self):
+        toks = chunkgraph._tok("category 5 hurricane with 185 mph winds")
+        assert "185" in toks and "hurricane" in toks
+        assert not [t for t in toks if t.endswith("0s")]

@@ -101,6 +101,29 @@ R18 There SHALL be ONE stoplist, NLTK's English list plus the local extras,
    to `didn` + `t`, and `didn` surfaced as a community term. Content words of a
    register (got, knew, looked, eyes) are NOT stopwords; suppressing those is
    the keyness prior's job (salient_grams R9), not the tokenizer's.
+R25 There SHALL be ONE tokenizer (stoplist.tokenize), imported by BOTH the index
+   side (_tok) and the query side (gt_terms.tokenize), and it SHALL keep
+   digit-bearing tokens, emitting for every year its decade bucket as well.
+   Extends R18's "one stoplist" law to the tokenizer for the same reason: the
+   two were hand-copied mirrors held together by a docstring, and a query that
+   tokenizes differently from the index asks for terms the index cannot contain.
+   The previous rule was `re.findall(r"[a-z]+", ...)`, alpha only, so every year,
+   date, quantity and model number was invisible to BM25 -- measured, 5,061
+   distinct qterms sampled from a live run, ZERO containing a digit. Consistent
+   on both sides, therefore silent.
+   Measured consequence: "who is the most famous musician of the 1990's?"
+   tokenized to ['famous', 'musician'], and BM25 returned Banagher and West
+   Virginia Mountaineers football. Of the 58 chunks mentioning Nirvana or Kurt
+   Cobain, the word "famous" reaches ZERO (Wikipedia writes "best-selling" and
+   "influential") and "musician" reaches 2.
+   A bare year does not close the gap: the query says 1990, the text says
+   1991/1993/1994. So a year emits BOTH itself and its decade (1991 -> 1991,
+   1990s) and a written decade emits itself, and the two meet at the bucket:
+       reachable, live alpha-only tokenizer :  2 of 58
+       reachable, year + decade             : 38 of 58   (19x)
+       per-term: 1990s -> 37, 1990 -> 10, musician -> 2, famous -> 0
+   Vocabulary cost measured over 3,000 chunks: 38,373 -> 40,077 (+4.4%).
+   Changing this REQUIRES a re-ingest: the index stores the tokens.
 R19 WHERE documents carry a source label, chunk params SHALL be derived once per
    source -- Box-Cox, m = median, hi = m + 2*MAD in transformed space, inverted --
    and each document SHALL be chunked against its own source's `hi`. Generalizes
@@ -238,9 +261,13 @@ BC_FIT_SEED = 0          # CONVENTION: reproducibility only; any fixed value wor
                          # seed is what keeps construction deterministic (the product
                          # commitment) once the fit stops reading every pair.
 from stoplist import _STOP                     # R18: one stoplist, no heavy imports
+from stoplist import tokenize as _tokenize     # R25: one tokenizer, index == query
 
 def _tok(text):
-    return [w for w in re.findall(r"[a-z]+", text.lower()) if w not in _STOP and len(w) > 2]
+    """R25: the ONE tokenizer, shared with the query side (gt_terms.tokenize).
+    Both import it from stoplist so they cannot drift -- the index and the query
+    MUST emit identical tokens or a query asks for terms the index cannot hold."""
+    return _tokenize(text)
 
 def _paras(doc):
     """Blank-line paragraphs, each a list of non-empty stripped lines."""

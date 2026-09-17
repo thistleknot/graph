@@ -17,6 +17,7 @@ import psycopg
 
 import config
 from stoplist import _STOP                   # R18: one stoplist, no heavy imports
+from stoplist import tokenize as _tokenize   # R25: one tokenizer, index == query
 
 
 def _gt():
@@ -31,11 +32,12 @@ def _gt():
 
 
 def tokenize(text: str) -> list[str]:
-    """Mirrors chunkgraph._tok: lowercase alpha, >2 chars, stopwords dropped.
-    Phrases are NOT merged -- the engine does not merge query phrases either,
-    and diverging would silently change what is matched."""
-    return [w for w in re.findall(r"[a-z]+", text.lower())
-            if w not in _STOP and len(w) > 2]
+    """R25: THE tokenizer, imported from stoplist and shared with the index side
+    (chunkgraph._tok). This was a hand-copied mirror held together by a docstring;
+    it is now the same function, so index and query cannot drift. Phrases are
+    still NOT merged -- the engine does not merge query phrases either, and
+    diverging would silently change what is matched."""
+    return _tokenize(text)
 
 
 def expand_terms(terms: list[str], aliases: dict) -> list[str]:
