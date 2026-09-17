@@ -94,6 +94,22 @@ I15 excerpt() SHALL split `body` at a granularity it can actually SELECT from.
     excerpt; a 6,747-char ab-section body -> 1 block -> no selection possible,
     opening 1,500 chars returned. This is the same blank-line assumption that
     R23(a) exists to correct, in a third place.
+I16 Evidence SHALL be packed as WHOLE units, never clipped to an equal share --
+    but the unit COUNT SHALL be decided upstream, at the bundle cap, not by the
+    renderer dropping what it was handed. render_bundle's standing contract is
+    that every ord in `ords` is rendered, or the model is asked to judge chunks
+    it cannot see (measured once already: 64 listed, 56 shown, coverage 0.88).
+    _fit_whole violates that and nullifies I8's anchor budget, so WHOLE_UNITS
+    ships OFF; the mode stays for the cap-side rework.
+    per_doc = EVIDENCE_TOTAL_CHARS / n_units gave every unit 600 chars at the
+    ~90-unit walks this system performs -- 4.4% of a 13,720-char document -- and
+    measurably cut the answer out of the evidence: a 41,907-char body excerpted
+    to 500 chars with "kurt cobain" present in the body and ABSENT from the
+    excerpt. Units are taken in score order, anchors first (I8), each kept
+    ENTIRE, stopping when the next will not fit; the per-unit budget is then the
+    largest kept body, so excerpt() is a no-op on what it is handed. Fewer
+    complete units beat more fragments -- a 600-char shard cannot entail
+    anything. The total budget is unchanged; only its allocation is.
 I7  WHERE RERANK_MODEL names a cached ColBERT checkpoint and pylate imports,
     chunks SHALL be reranked by MaxSim against the prompt and clipped to
     RERANK_TOP before rendering. Otherwise the stage is a no-op and says so.
@@ -115,6 +131,9 @@ OLLAMA_MODEL = os.environ.get("LABEL_MODEL", "qwen3.5-oc:4b")
 NUM_CTX = int(os.environ.get("INTERPRET_NUM_CTX", "16384"))          # I2
 MAX_TOKENS = 4096        # 64 verdicts x ~30 tokens + answer; 1800 truncated (measured)
 MAX_CHUNK_CHARS = 1500      # per-chunk evidence budget; excerpted by the prompt (I8)
+WHOLE_UNITS = False         # I16: OFF by default -- see the guard. The policy is
+                            # right; this implementation drops units render was
+                            # handed, which breaks the VALID-IDS-match invariant.
 ANCHOR_MULT = 4             # anchors (BM25 top-k) get 4x: they are where the answer most likely is
 EVIDENCE_TOTAL_CHARS = 60000  # judge input cap; 64 docs x 1,500 + anchors x4 reached ~100k chars
 OLLAMA_MAX_CHARS = 40000      # beyond this the local 4b cannot hold the prompt in num_ctx: skip it
@@ -193,6 +212,51 @@ def chunk_label(row, titles: dict | None = None) -> str:
     Never raises on a row missing `ord`, on `titles=None`, or an empty map."""
     t = (titles or {}).get(row.get("ord"))
     return t if isinstance(t, str) and t else row["doc_id"]
+
+
+def _fit_whole(conn, run, ords: list, bundle, anchors: set) -> tuple[list, int]:
+    """I16: pack WHOLE units until the budget is spent. Never clip.
+
+    The old rule gave every retrieved chunk an equal share, per_doc =
+    EVIDENCE_TOTAL_CHARS / n_units, and then excerpted each body down to it. At
+    the walk sizes this system actually returns (~90 units) that is 600 chars
+    apiece -- 4.4% of a 13,720-char document -- and the measured consequence is
+    the whole point:
+
+        body=41,907 chars -> excerpt returned 500 chars
+        'kurt cobain' in body: True | in excerpt: False
+
+    The answer was cut out of the evidence by the budget, and no amount of
+    tuning WHERE to cut fixes that. Operator, 2026-09-17: "Why would you
+    truncate any text / I gave you the small to big answer to avoid truncation."
+
+    So: take units in score order (anchors first -- they are where the answer
+    most likely is, I8), keep each one ENTIRE, and stop when the next one will
+    not fit. Fewer, complete units beat more fragments: a 600-char shard of an
+    article cannot entail anything, while twelve whole sections can. The budget
+    is unchanged; only its allocation is.
+
+    Returns (kept_ords, per_doc) where per_doc is the largest kept body, so the
+    downstream excerpt() call is a no-op on every unit it is handed.
+    """
+    if not ords:
+        return ords, 300
+    scores = getattr(bundle, "scores", {}) or {}
+    order = sorted(ords, key=lambda o: (o not in anchors, -float(scores.get(o, 0.0)), o))
+    kept, used, widest = [], 0, 300
+    for o in order:
+        body = (gt.node(conn, run, o) or {}).get("body") or ""
+        n = len(body)
+        if kept and used + n > EVIDENCE_TOTAL_CHARS:
+            continue                      # try the next, smaller unit
+        kept.append(o)
+        used += n
+        widest = max(widest, n)
+        if used >= EVIDENCE_TOTAL_CHARS:
+            break
+    # restore the caller's order so the VALID IDS header and the bodies agree
+    keep = set(kept)
+    return [o for o in ords if o in keep], min(widest, EVIDENCE_TOTAL_CHARS)
 
 
 def _split_paragraphs(body: str, n_chars: int) -> list[str]:
@@ -320,12 +384,16 @@ def render_bundle(conn, run, bundle, terms: dict, concept: dict,
     (measured: 64 listed, 56 shown, coverage 0.88). Cutting is the rerank
     stage's job (I7), not this function's."""
     ords = list(ords) if ords is not None else list(bundle.sampled)
-    keep = set(ords)
     anchors = set(getattr(bundle, "anchors", []) or [])
-    # scale the per-document budget so the whole bundle stays under the cap
-    n_a = len(anchors & keep); n_o = max(len(keep) - n_a, 0)
-    unit = EVIDENCE_TOTAL_CHARS / max(n_o + ANCHOR_MULT * n_a, 1)
-    per_doc = int(max(300, min(MAX_CHUNK_CHARS, unit)))
+    per_doc = None
+    if WHOLE_UNITS:                                                        # I16
+        ords, per_doc = _fit_whole(conn, run, ords, bundle, anchors)
+    keep = set(ords)
+    if per_doc is None:
+        # scale the per-document budget so the whole bundle stays under the cap
+        n_a = len(anchors & keep); n_o = max(len(keep) - n_a, 0)
+        unit = EVIDENCE_TOTAL_CHARS / max(n_o + ANCHOR_MULT * n_a, 1)
+        per_doc = int(max(300, min(MAX_CHUNK_CHARS, unit)))
     touched = [t for t in gt.communities_touched(conn, run, ords)]
     cid_of = {o: gt.node(conn, run, o)["cid"] for o in ords}
     titles = pg_store.node_titles(conn, run.run_id, ords)                      # R22
