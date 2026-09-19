@@ -26,10 +26,26 @@ they sit above.
 
 ## Quickstart — ask the corpus a question
 
+Windows (`cmd`, the primary shell here). **`PYTHONPATH=. python ...` is bash-only
+and fails in cmd with `ModuleNotFoundError: No module named 'config'`** — `set` it
+on its own line instead:
+
+```bat
+docker compose up -d graphdb
+set PYTHONPATH=.
+set OPENROUTER_API_KEY=...
+python -m streamlit run walker_app.py --server.port 8501
+```
+
+PowerShell uses `$env:` and bash uses the inline form:
+
+```powershell
+$env:PYTHONPATH="."; $env:OPENROUTER_API_KEY="..."
+python -m streamlit run walker_app.py --server.port 8501
+```
+
 ```bash
-docker compose up -d graphdb                  # Postgres + pgvector on host :5433
-export OPENROUTER_API_KEY=...                 # the judge / answer model
-PYTHONPATH=. python -m streamlit run walker_app.py --server.port 8501
+PYTHONPATH=. OPENROUTER_API_KEY=... python -m streamlit run walker_app.py --server.port 8501
 ```
 
 Open <http://localhost:8501>, pick a run in the dropdown, type a question.
@@ -52,27 +68,34 @@ without it the system still runs sparse-only (R5).
 
 ## Checking it works
 
-```bash
-# deterministic: does the gold term survive into the evidence the judge reads?
-# no model call, zero variance, rerunning gives the same number (6.29)
-PYTHONPATH=. python tools/diag_evidence.py ab-section
+With `PYTHONPATH` already set (see above):
 
-# the frozen 20-row do-no-harm gate; expect PASS 18/20 | FAIL ['E3'] | KNOWN-FAIL ['A2']
-PYTHONPATH=. python tools/diag_rerun.py mixed-full-dual
+```bat
+REM deterministic: does the gold term survive into the evidence the judge reads?
+REM no model call, zero variance, rerunning gives the same number (6.29)
+python tools\diag_evidence.py ab-section
 
-# the 9-row gold lane: runs the full agentic loop and scores the ANSWER.
-# carries the model's sampling variance -- see 6.29 before comparing two configs with it
-PYTHONPATH=. python tools/diag_agentic.py ab-section
+REM the frozen 20-row do-no-harm gate
+REM expect: PASS 18/20 | FAIL ['E3'] | KNOWN-FAIL ['A2']
+python tools\diag_rerun.py mixed-full-dual
+
+REM the 9-row gold lane: runs the full agentic loop and scores the ANSWER.
+REM carries the model's sampling variance -- read 6.29 before comparing two
+REM configurations with it; its repeat noise (0.139) exceeds the effects it is
+REM usually pointed at (0.083)
+python tools\diag_agentic.py ab-section
 ```
 
 ## Ingest
 
-```bash
-export CHUNKGRAPH_MODEL_DIR="$(python -c 'import config;print(config.MODEL_DIR)')"
-python ingest_brown.py <label>                                  # NLTK Brown only
-python ingest_mixed.py <label> --brown N --quotes N --wiki N    # mixed corpus
-python ingest_mixed.py <label> --chunk-mode section             # R23 section-anchored chunks
-pytest -q                                                       # offline suite, no network / no DB
+`CHUNKGRAPH_MODEL_DIR` is needed for ingest only (it turns the dense space on):
+
+```bat
+for /f %i in ('python -c "import config;print(config.MODEL_DIR)"') do set CHUNKGRAPH_MODEL_DIR=%i
+python ingest_brown.py <label>
+python ingest_mixed.py <label> --brown N --quotes N --wiki N
+python ingest_mixed.py <label> --chunk-mode section
+pytest -q
 ```
 
 `--chunk-mode section` fits chunk size on paragraph counts per heading-delimited
