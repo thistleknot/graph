@@ -24,11 +24,58 @@ they sit above.
 | Cross-cutting design and rationale | [.spec/specs/graph-explorer/design.md](.spec/specs/graph-explorer/design.md) |
 | **Multi-source ingest** (Brown + quotes + wikitext in one graph): per-source chunk fits (R19), source metadata (R20), per-source-pair block normalization with one global cut (R21), and the distribution-alignment rationale — why per-block Box-Cox-to-z handles register *and* size imbalance with no quotas | [design.md §6.14](.spec/specs/graph-explorer/design.md), "Multi-source ingest" |
 
-## Running
+## Quickstart — ask the corpus a question
 
+```bash
+docker compose up -d graphdb                  # Postgres + pgvector on host :5433
+export OPENROUTER_API_KEY=...                 # the judge / answer model
+PYTHONPATH=. python -m streamlit run walker_app.py --server.port 8501
 ```
-docker compose up -d              # Postgres (graphdb) on host :5433
-python ingest_brown.py <label>    # single-corpus driver (NLTK Brown)
-python ingest_mixed.py <label> --brown N --quotes N --wiki N   # mixed-corpus driver
-pytest -q                         # offline suite, no network / no DB required
+
+Open <http://localhost:8501>, pick a run in the dropdown, type a question.
+
+`config.MODEL_DIR` must point at a model2vec artifact for the dense space (R14);
+without it the system still runs sparse-only (R5).
+
+**Two things that will otherwise look like bugs:**
+
+- **The walker caches by (run, prompt).** Asking the same question twice replays
+  the first answer rather than re-walking. Restart streamlit to clear it, or
+  change the wording. (This produced a stale screenshot during T96 and cost an
+  hour of misdiagnosis.)
+- **Answers are not deterministic.** The agentic loop calls a model, so the same
+  question can land differently run to run. Measured on `ab-section`, "who is the
+  most famous musician of the 1990's?": the right artist is named in **3 of 4**
+  runs; the fourth returns no answer (`entailed=0`). A blank answer is the known
+  failure mode, not a regression — ask again. Everything BEFORE the model call is
+  deterministic and reruns identically.
+
+## Checking it works
+
+```bash
+# deterministic: does the gold term survive into the evidence the judge reads?
+# no model call, zero variance, rerunning gives the same number (6.29)
+PYTHONPATH=. python tools/diag_evidence.py ab-section
+
+# the frozen 20-row do-no-harm gate; expect PASS 18/20 | FAIL ['E3'] | KNOWN-FAIL ['A2']
+PYTHONPATH=. python tools/diag_rerun.py mixed-full-dual
+
+# the 9-row gold lane: runs the full agentic loop and scores the ANSWER.
+# carries the model's sampling variance -- see 6.29 before comparing two configs with it
+PYTHONPATH=. python tools/diag_agentic.py ab-section
 ```
+
+## Ingest
+
+```bash
+export CHUNKGRAPH_MODEL_DIR="$(python -c 'import config;print(config.MODEL_DIR)')"
+python ingest_brown.py <label>                                  # NLTK Brown only
+python ingest_mixed.py <label> --brown N --quotes N --wiki N    # mixed corpus
+python ingest_mixed.py <label> --chunk-mode section             # R23 section-anchored chunks
+pytest -q                                                       # offline suite, no network / no DB
+```
+
+`--chunk-mode section` fits chunk size on paragraph counts per heading-delimited
+section, per source (R23); `document` is the older whole-document rule (R17/R19)
+and remains the default so existing runs stay reproducible. Changing the
+tokenizer or the chunk mode requires a re-ingest — the index stores the tokens.
