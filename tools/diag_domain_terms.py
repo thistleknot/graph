@@ -27,7 +27,8 @@ sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="repla
 import numpy as np
 
 from domain_corpora import chunk_corpus, derive_pack_target, load_arxiv, load_neop
-from domain_terms import (SCALE_FACTORS, bpe_over_terms, probe_recall, select)
+from domain_terms import (bpe_by_merges, bpe_over_terms, probe_at_cuts,
+                          probe_recall, select)
 
 
 def _pct(vals, q):
@@ -128,12 +129,25 @@ def run_domain(domain: str, n_arxiv: int, n_bands: int):
     print("  --> %s" % verdict)
     print("  banded missed: %s" % ", ".join(banded["missed"][:12]))
 
-    print("\n-- BPE over survivors --")
-    for sf in SCALE_FACTORS:
+    print("\n-- diagnostic recall at matched cardinality cuts (rank binds here) --")
+    rows = probe_at_cuts(res, domain)
+    print("  cut     " + "".join("%7d" % r["cut"] for r in rows))
+    print("  hit     " + "".join("%7d" % r["hit"] for r in rows)
+          + "   (of %d)" % rows[0]["of"])
+
+    print("\n-- BPE over survivors, both parameterisations (T107) --")
+    print("  scale_factor (vocab = n_terms * f):")
+    for sf in (0.2, 0.33, 0.5, 2, 3, 5):
         b = bpe_over_terms(res["selected_terms"], sf)
-        print("  x%d  target=%6d actual=%6d  single-token %5d/%5d (%.0f%%)  mean_pieces=%.2f"
-              % (sf, b["target_vocab"], b["actual_vocab"], b["whole_single_token"],
-                 b["n_terms"], 100 * b["whole_frac"], b["mean_pieces"]))
+        print("    f=%-5s target=%6d actual=%6d  single-token %5.1f%%  pieces mean=%.2f max=%d"
+              % (sf, b["target_vocab"], b["actual_vocab"],
+                 100 * b["whole_frac"], b["mean_pieces"], b["max_pieces"]))
+    print("  merge budget (trigram.md:58, min pair freq 2):")
+    for nm in (300, 1000, 3000, 10000):
+        b = bpe_by_merges(res["selected_terms"], nm)
+        print("    merges=%-6d alphabet=%3d actual=%6d  single-token %5.1f%%  pieces mean=%.2f max=%d"
+              % (nm, b["alphabet"], b["actual_vocab"],
+                 100 * b["whole_frac"], b["mean_pieces"], b["max_pieces"]))
     return res
 
 

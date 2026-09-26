@@ -33,12 +33,38 @@ AMENDS .spec/specs/graph-term-selection/requirements.md:
 
 EARS guards:
 
-T1  The per-term collapse SHALL be max over chunks and SHALL NOT be multiplied
-    by sqrt(df). salient_grams.py:657 does apply that weight; adopting it would
-    re-admit df as a score term, which the operator's design excludes. Floor
-    worth stating: BM25's own idf = log(1 + (N-df+.5)/(df+.5)) contains df by
-    definition, so the score is never df-free -- what is excluded is ADDITIONAL
-    df weighting and df-based banding.
+T1  The per-term collapse SHALL be `max over chunks * sqrt(df)` --
+    salient_grams.py:655-657, the incumbent -- and the sqrt(df) factor SHALL NOT
+    be removed.
+
+    df here is a RANK WEIGHT, not a filter. The operator's constraint is that df
+    filters only at the >50% mask (T5), and that is unchanged: sqrt(df) removes
+    no term. Mechanism: BM25 is maximal for a RARE term in a SHORT chunk, so a
+    collapse with no df term is ranked by hapaxes.
+
+    MEASURED 2026-09-26, four arms on both corpora against diagnostic term lists
+    read off real corpus passages (.tmp/probe_arms.py), diagnostic terms found in
+    the top-N by each arm's own score:
+
+        arxiv (35 terms)        100  250  500 1000 2500
+        max over chunks           0    0    0    0    0
+        mean over occurrences     0    0    0    0    0
+        max * sqrt(df)            7   13   22   29   32
+        max, banded on df         0    0    0    0    0
+
+        neop (33 terms)         100  250  500 1000 2500
+        max over chunks           1    2    2    2    5
+        mean over occurrences     1    1    1    1    3
+        max * sqrt(df)            4   14   17   20   24
+        max, banded on df         1    2    2    2    5
+
+    Rejected on that evidence: bare max (ranks `downarrow`, `vjp`, `binghamton`
+    first); mean over occurring chunks (same failure, `jug`, `niece`); and
+    banding on df per spec R2.1, which is LAST on both domains -- an axis this
+    session argued for twice and the measurement falsified.
+
+    Floor worth stating: BM25's own idf = log(1 + (N-df+.5)/(df+.5)) contains df
+    by definition, so the score was never df-free in the first place.
 
 T2  The score SHALL be log2-transformed before band statistics are computed.
     The transform is INERT at the band cut -- quantiles are invariant under any
@@ -107,21 +133,33 @@ SIGMA_FACTOR = 1.0         # T4, tunable
 LENGTH_K = 3.0             # T6, the incumbent anomaly_mask default
 SCALE_FACTORS = (2, 3, 5)  # T7 sweep
 
-# PROBE SETS -- fixed here BEFORE any measurement, per spec R2.2's acceptance
-# ("The probe set SHALL NOT be drawn from what the gate admits"). Domain terms a
-# reader would expect the analysis to surface; recall of these is the gate's test.
+# DIAGNOSTIC TERM SETS -- DERIVED by reading real corpus passages printed by
+# .tmp/probe_eyeball.py, per operator instruction 2026-09-26 ("Look at the
+# documents and eye ball terms you would expect to be domain specific and create
+# a set list of diagnostic terms"). Every term below was seen in a printed
+# passage, or is the lemma of one.
+#
+# Drawn from the CORPUS, never from selector output -- spec R2.2's acceptance
+# ("The probe set SHALL NOT be drawn from what the gate admits") holds.
+#
+# Supersedes an earlier list written from subject knowledge rather than from
+# these documents, which was a weak instrument: it named terms the corpora barely
+# use, so it could not separate the arms. All 33/35 below are present in the
+# tokenized corpus, so any miss is the selector's, not the list's.
 PROBE = {
     "neop": (
-        "plotinus enneads hypostasis henad theurgy demiurge emanation nous "
-        "intelligible ineffable procession participation intellect porphyry "
-        "iamblichus proclus chaldaean oracles ascent purification contemplation "
-        "dyad monad platonic soul daemon divinization"
+        "daimon daimons noetic supramundane apotheosis deification chaldean "
+        "oracles plotinus plotinian porphyry sententiae nous intellect henosis "
+        "soul transmigration enneads empedocles pythagoreans theurgy eros "
+        "ascent hypostasis demiurge emanation iamblichus proclus parmenides "
+        "immortalization divinity reincarnated principle"
     ).split(),
     "arxiv": (
-        "transformer attention embedding gradient retrieval benchmark corpus "
-        "encoder decoder tokenizer perplexity pretraining inference latency "
-        "recall precision baseline ablation dataset optimizer neural "
-        "convolutional recurrent supervised"
+        "architectures representations embedding embeddings neural networks "
+        "bert adversarial filtering accuracy entity entities relation triples "
+        "bilstm sampling covariance variance optimizer hyperparameter epochs "
+        "warmup normalization encoder contrastive loss tokens dataset vectors "
+        "transformer attention gradient baseline minibatch complexity"
     ).split(),
 }
 
@@ -131,18 +169,20 @@ def tokenize_chunks(texts: list[str]) -> list[list[str]]:
     return [tokenize(t) for t in texts]
 
 
-def score_terms(token_docs: list[list[str]]) -> dict:
-    """BM25 -> per-term max collapse -> log2. Returns aligned arrays.
+def score_terms(token_docs: list[list[str]], *, df_weight: bool = True) -> dict:
+    """BM25 -> per-term collapse -> log2. Returns aligned arrays.
 
-    T1: max over chunks, no sqrt(df).
+    T1: `max over chunks * sqrt(df)`. `df_weight=False` reproduces the measured
+    losing arm and exists so T8's attribution requirement holds.
     T2: log2 applied here; band statistics consume `log_score`.
     """
     BM, TF, terms, df = bm25_matrix(token_docs)
     n_chunks = TF.shape[0]
     max_bm = BM.tocsc().max(0).toarray().ravel()
-    with np.errstate(divide="ignore"):
-        log_score = np.log2(np.where(max_bm > 0, max_bm, np.nan))
-    return {"terms": terms, "df": df, "max_bm": max_bm,
+    score = max_bm * np.sqrt(df) if df_weight else max_bm
+    with np.errstate(divide="ignore", invalid="ignore"):
+        log_score = np.log2(np.where(score > 0, score, np.nan))
+    return {"terms": terms, "df": df, "max_bm": max_bm, "score": score,
             "log_score": log_score, "n_chunks": n_chunks, "n_terms": len(terms)}
 
 
@@ -201,10 +241,11 @@ def select_in_bands(log_score: np.ndarray, bands: list[np.ndarray],
 def select(texts: list[str], *, n_bands: int = N_BANDS,
            factor: float = SIGMA_FACTOR, df_max_frac: float = DF_MAX_FRAC,
            length_k: float = LENGTH_K, use_bands: bool = True,
-           use_df_mask: bool = True, use_anomaly: bool = True) -> dict:
+           use_df_mask: bool = True, use_anomaly: bool = True,
+           df_weight: bool = True, max_terms: int | None = None) -> dict:
     """The full per-domain selection. T8: every stage independently disableable."""
     token_docs = tokenize_chunks(texts)
-    sc = score_terms(token_docs)
+    sc = score_terms(token_docs, df_weight=df_weight)
     terms, df, log_score = sc["terms"], sc["df"], sc["log_score"]
     n_chunks = sc["n_chunks"]
 
@@ -234,6 +275,10 @@ def select(texts: list[str], *, n_bands: int = N_BANDS,
         stages["df_mask"] = int(admitted.sum())
 
     sel = np.where(admitted)[0]
+    if max_terms is not None and sel.size > max_terms:   # T9
+        sel = sel[np.argsort(-log_score[sel])][:max_terms]
+        sel.sort()
+        stages["max_terms"] = int(sel.size)
     return {
         "terms": terms, "df": df, "log_score": log_score, "max_bm": sc["max_bm"],
         "n_chunks": n_chunks, "selected": sel,
@@ -242,8 +287,31 @@ def select(texts: list[str], *, n_bands: int = N_BANDS,
         "params": {"n_bands": n_bands, "factor": factor,
                    "df_min": DF_MIN, "df_max_frac": df_max_frac,
                    "length_k": length_k, "use_bands": use_bands,
-                   "use_df_mask": use_df_mask, "use_anomaly": use_anomaly},
+                   "use_df_mask": use_df_mask, "use_anomaly": use_anomaly,
+                   "df_weight": df_weight, "max_terms": max_terms},
     }
+
+
+def probe_at_cuts(res: dict, domain: str,
+                  cuts=(100, 250, 500, 1000, 2500, 5000)) -> list[dict]:
+    """T9: diagnostic recall at matched cardinality cuts -- where RANK binds.
+
+    Full-vocabulary recall cannot separate collapse methods: the band gate keeps
+    ~87% of eligible terms, so every arm holds the diagnostic terms by volume.
+    Measured 2026-09-26: at top-1000 on arxiv, max*sqrt(df) found 29 of 35 while
+    bare max, mean and df-banding each found ZERO.
+    """
+    want = set(PROBE[domain])
+    terms, ls = res["terms"], res["log_score"]
+    sel = res["selected"]
+    ranked = sel[np.argsort(-ls[sel])]
+    out = []
+    for c in cuts:
+        top = ranked[:c]
+        hit = sum(1 for i in top if str(terms[i]) in want)
+        out.append({"cut": c, "n": int(top.size), "hit": hit,
+                    "of": len(want)})
+    return out
 
 
 def probe_recall(selected_terms: list[str], domain: str) -> dict:
@@ -256,22 +324,54 @@ def probe_recall(selected_terms: list[str], domain: str) -> dict:
             "missed": [w for w in want if w not in got]}
 
 
-def bpe_over_terms(selected_terms: list[str], scale_factor: int) -> dict:
-    """T7: BPE trained on the surviving term strings, vocab = n * scale_factor."""
+def _bpe(selected_terms: list[str], target_vocab: int,
+         min_frequency: int) -> dict:
     from tokenizers import Tokenizer, models, trainers
 
     n = len(selected_terms)
-    target = int(n * scale_factor)
     tok = Tokenizer(models.BPE(unk_token="[UNK]"))
-    trainer = trainers.BpeTrainer(vocab_size=target, min_frequency=1,
+    trainer = trainers.BpeTrainer(vocab_size=max(1, int(target_vocab)),
+                                  min_frequency=min_frequency,
                                   special_tokens=["[UNK]"], show_progress=False)
     tok.train_from_iterator(selected_terms, trainer=trainer)
-    vocab = tok.get_vocab()
-    whole = sum(1 for t in selected_terms
-                if len(tok.encode(t).tokens) == 1)
     pieces = [len(tok.encode(t).tokens) for t in selected_terms]
-    return {"scale_factor": scale_factor, "n_terms": n, "target_vocab": target,
-            "actual_vocab": len(vocab),
+    whole = sum(1 for p in pieces if p == 1)
+    return {"n_terms": n, "target_vocab": int(target_vocab),
+            "actual_vocab": len(tok.get_vocab()),
+            "min_frequency": min_frequency,
             "whole_single_token": whole,
             "whole_frac": whole / n if n else 0.0,
-            "mean_pieces": float(np.mean(pieces)) if pieces else 0.0}
+            "mean_pieces": float(np.mean(pieces)) if pieces else 0.0,
+            "max_pieces": int(max(pieces)) if pieces else 0}
+
+
+def bpe_over_terms(selected_terms: list[str], scale_factor: float,
+                   min_frequency: int = 1) -> dict:
+    """T7: BPE on surviving term strings, vocab = n_terms * scale_factor.
+
+    NOTE the direction. scale_factor >= 1 is a NO-OP and is retained only so the
+    finding stays reproducible. Measured 2026-09-26 at 2 / 3 / 5: the actual
+    vocabulary was IDENTICAL across all three arms (18,718 neop / 38,638 arxiv),
+    single-token share 100%, mean_pieces 1.00. When the budget exceeds the term
+    count, BPE merges every term whole and never needs a shared subword.
+    Subword structure requires scale_factor < 1.
+    """
+    out = _bpe(selected_terms, len(selected_terms) * scale_factor, min_frequency)
+    out["scale_factor"] = scale_factor
+    return out
+
+
+def bpe_by_merges(selected_terms: list[str], n_merges: int,
+                  min_frequency: int = 2) -> dict:
+    """T7: the merge-budget parameterisation from trigram/trigram.md:58 --
+    "Run byte-pair encoding (up to 300 merges, min pair freq 2) over the
+    surviving terms to find shared subwords".
+
+    Vocabulary budget = alphabet + n_merges, so the budget is independent of the
+    term count and the arms actually differ.
+    """
+    alphabet = len({c for t in selected_terms for c in t})
+    out = _bpe(selected_terms, alphabet + n_merges + 1, min_frequency)
+    out["n_merges"] = n_merges
+    out["alphabet"] = alphabet
+    return out
