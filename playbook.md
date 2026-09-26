@@ -1628,3 +1628,37 @@ Plan: C:\Users\user\.claude\plans\i-ve-been-thinking-about-quiet-cray.md
     one docling "paragraph" is 152,264 chars (a reference list or table dump),
     which D4 never splits, giving p99=9183 against a 1448 target and driving all
     25 over-ceiling chunks.
+
+- [DONE] T107 BPE: both parameterisations, and they are the same curve
+  _Files:_ domain_terms.py, tools/diag_domain_terms.py
+  _Verify:_ PYTHONPATH=. python tools/diag_domain_terms.py --arxiv 200
+  _Lessons:_ fractional scale_factor and a merge budget trace ONE trade-off
+    (smaller vocab -> more pieces per term), so they are reparameterisations of
+    each other: f=0.2 -> 5,840 vocab / 9.1% single-token / 2.22 mean pieces;
+    merges=10000 -> 8,479 / 14.0% / 2.04. f>=2 is inert at every factor
+    (38,895 vocab, 100% single-token) because a budget above the term count never
+    needs a shared subword.
+
+- [DONE] T108 The score ranks hapax noise above central domain terms
+  _Files:_ domain_terms.py
+  _Verify:_ PYTHONPATH=. python tools/diag_domain_terms.py --arxiv 200
+  _Lessons:_ `max * sqrt(df)` -- the salient_grams incumbent -- is the ONLY arm
+    that ranks domain terms at all. arxiv top-1000: 29 of 35 against ZERO for
+    bare max, mean-over-occurrences, and df-banding alike. df here is a RANK
+    WEIGHT that removes nothing, so the operator's "df only masks >=50%"
+    constraint is intact; the two are different jobs. Two of my own positions
+    were falsified: df-banding (spec R2.1), which I argued for twice and which
+    came LAST on both domains, and mean-collapse, which I proposed as the fix.
+    Also: the diagnostic list must be READ OFF the corpus -- the invented list
+    named terms the corpora barely use and could not separate the arms.
+
+- [OPEN] T110 With the score fixed, the band gate no longer earns its place
+  _Files:_ domain_terms.py
+  _Notes:_ neop banded 27/33 vs global top-N 33/33 at matched size; arxiv 35/35
+    both. The earlier "banding wins 0.67 vs 0.52" was an ARTIFACT of the broken
+    score -- banding was compensating for a bad ranking by keeping terms spread
+    across bands, and that compensation is worthless once the ranking is right.
+    The stage is also ~88% flat per band (inert as a filter) and the 50% df mask
+    removes 8 terms on neop, 0 on arxiv. So three of the four stages in the
+    operator's selection design now measure as near-no-ops. Operator's call:
+    keep banding for a property not yet measured, or cut to rank + cardinality.
