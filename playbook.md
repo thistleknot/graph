@@ -1554,3 +1554,77 @@ Source: operator, 2026-09-16. Root cause of the judge's 3/163 entail rate:
   _Notes:_ the PHRASE stage (R9) merges index tokens; gt_terms.tokenize never
     merges. So 17th_century, 1840s_1850s et al. can never be matched. Found while
     diagnosing T96.
+
+## Layer 28 — sequential (domain term analysis sidecar, 2026-09-26)
+
+Objective, operator's words: **"the intent behind the two datasets is domain
+specific term analysis"** — neoplatonic texts and arxiv papers, per-domain BM25,
+log2 score bands, df only for the >50% mask, BPE over survivors. Sidecar only:
+no graph edges, no pg_store, so none of the measured n^2 pair-RAM wall.
+Plan: C:\Users\user\.claude\plans\i-ve-been-thinking-about-quiet-cray.md
+
+- [DONE] T104 Load both corpora and chunk them on their own statistics
+  _Files:_ domain_corpora.py, tests/test_domain_corpora.py
+  _Verify:_ pytest tests/test_domain_corpora.py -q
+  _Lessons:_ font-size heading detection FALSIFIED before it was built — of 20
+    PDFs, 8 have ZERO bold heading candidates, body-size-by-char-mass lands on
+    FOOTNOTE text in the Lewy book (8.2pt => 20.1 "headings"/page), and italic is
+    body text in 3 files. So the planned '##' emitter was dropped, not shipped.
+    pymupdf blocks are LINES in half the PDFs and PARAGRAPHS in the other half
+    (p90/p50: 100/93 vs 3597/2485), so chunks pack whole blocks to a measured
+    char target and never split one. Ruler fitted on the only neoplatonic file
+    with real sections (Lewy repaired md, 53 headings / 30 with paragraphs):
+    target=7310 chars, lam=-0.080; arxiv fits its own at 1448. Conservation 0/19
+    and 0/200 documents failed. sparsevec 1000-nonzero: neop 0%, arxiv 0.2%.
+    A unit test caught md_sections returning the whole document as one section
+    when a document had no headings — the exact R23(a) defect.
+
+- [DONE] T105 Per-domain term selection: log2 BM25, equal-count bands, dual sigma
+  _Files:_ domain_terms.py
+  _Verify:_ PYTHONPATH=. python tools/diag_domain_terms.py --arxiv 200
+  _Lessons:_ banding BEATS global top-N at matched vocabulary size on probe
+    recall, both domains: neop 0.67 vs 0.52, arxiv 0.88 vs 0.50. Three measured
+    defects. (1) The stage is nearly INERT as a filter — admitted fraction is
+    flat at ~87% per band (neop 79.8-100, arxiv 80.7-98.8), matching the ~87%
+    predicted from a uniform-slice argument before the run. (2) The 50% df mask
+    removed ZERO terms in both domains; no term reaches half the chunks.
+    (3) Dropping salient_grams' `* sqrt(df)` (operator's design excludes df from
+    the score) makes max-BM25 rank single-occurrence noise first: top neop-only
+    terms are binghamton/gymnasia/flute, top arxiv-only are downarrow/jmath/plt,
+    while plotinus/porphyry/proclus/soul are MISSED. Mechanism: max-over-chunks
+    is maximised by a hapax in a short chunk, and idf crushes high-df central
+    vocabulary into the bottom band where the ~12% cut lands — which is R2.5's
+    idf-suppression claim, observed.
+
+- [DONE] T106 The report, deterministic and model-free
+  _Files:_ tools/diag_domain_terms.py
+  _Verify:_ PYTHONPATH=. python tools/diag_domain_terms.py --arxiv 200
+  _Lessons:_ carries the band table, admitted-fraction spread, which branch binds
+    (parametric 1 / robust 9 in both domains), the outlier mask's measured bound
+    and the df of every term it flags, probe recall vs global top-N at matched
+    size, the BPE sweep, and the cross-domain diff.
+
+- [OPEN] T107 BPE at scale_factor 2/3/5 is a no-op — the sweep axis is dead
+  _Files:_ domain_terms.py
+  _Notes:_ measured, all three arms identical: actual_vocab 18718 (neop) /
+    38638 (arxiv), single-token 100%, mean_pieces=1.00. When the BPE budget
+    EXCEEDS the term count, every term merges to one token and no shared subword
+    is ever found; n_terms * 2 guarantees it. trigram/trigram.md:58 has the
+    intended scale — "up to 300 merges, min pair freq 2". The factor must SHRINK
+    the vocabulary below n_terms, or the sweep must be on a merge budget.
+    Needs the operator's call on which.
+
+- [OPEN] T108 The score ranks hapax noise above central domain terms
+  _Files:_ domain_terms.py
+  _Notes:_ see T105 defect (3). Three candidate fixes, none measured, none
+    chosen: restore `max_bm * sqrt(df)` (the incumbent, but re-admits df to the
+    score); collapse by mean-over-occurrences instead of max; or band on df as
+    spec R2.1 specifies, which holds idf near-constant within a band and is the
+    thing R2.5 was written to test. Operator's design decision, not mine.
+
+- [OPEN] T109 LaTeX command names and one 152k-char unit leak through docling
+  _Notes:_ arxiv-only top terms include downarrow, jmath, dashrightarrow,
+    betainc, lessorequalslant — LaTeX macros surviving docling's markdown. And
+    one docling "paragraph" is 152,264 chars (a reference list or table dump),
+    which D4 never splits, giving p99=9183 against a 1448 target and driving all
+    25 over-ceiling chunks.
