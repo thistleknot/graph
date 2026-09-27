@@ -140,6 +140,38 @@ T7  BPE SHALL be trained over the SURVIVING term strings only, never the raw
     defect, and chunkgraph T101 records the live consequence: every phrase the
     index merges is unreachable from an unmerged query.
 
+T7a THE OBJECTIVE, MEASURED (operator 2026-09-26: "all this was meant to
+    accomplish was a tokenizer that provides reasonable lexical performance ...
+    a way to approximate a smaller corpus (vocab)"). A BM25 index over BPE
+    PIECES trained on the f=0.00 survivors, scored on the same deterministic
+    gold as the whole-term arms (tools/diag_domain_recall.py):
+
+                                  vocab   hit@1  rec@10   MRR
+        arxiv title, 200 q
+          full BM25             128,053   0.825   0.146   0.879
+          BPE pieces              5,309   0.835   0.139   0.886   4.1% of vocab
+        arxiv body sentence, 178 q
+          full BM25             128,053   0.938   0.106   0.953
+          BPE pieces              5,309   0.910   0.096   0.939
+        neop body sentence, 19 q
+          full BM25              29,018   0.895   0.377   0.947
+          BPE pieces              2,900   0.895   0.377   0.947   identical
+        neop section heading, 23 q
+          full BM25              29,018   0.227   0.364   0.268
+          selected whole terms    7,343   0.263   0.474   0.317
+          BPE pieces              2,900   0.174   0.391   0.242
+
+    VERDICT: on par with full BM25 at 4-10% of the vocabulary, with no
+    out-of-vocabulary term possible. Wins arxiv title MRR; ties neop body
+    exactly. Loses arxiv body-sentence recall@10 by 9% relative -- over the
+    operator's 5% shippable bar -- and trails whole-term selection on neop
+    headings by ~2 queries of 23. Mechanism both ways: pieces let
+    embedding/embeddings share weight (lifts short queries) and blur
+    covariance into co+variance (costs specific ones).
+
+    Merge budget saturates: on neop, 3,000 and 10,000 merges both yield 2,900
+    pieces -- only that many pairs recur at min_frequency=2 over 7,343 terms.
+
 T8  Every stage SHALL be individually disableable so a change is attributable to
     one stage (spec R8.4), and the pipeline SHALL be deterministic -- no model
     call anywhere, so a rerun that differs is a defect, not variance.

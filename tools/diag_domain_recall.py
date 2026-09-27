@@ -219,6 +219,68 @@ def evaluate(BM, terms, keep, queries, rel_of, ks=KS):
             "mrr": float(np.mean(rr)) if rr else 0.0}
 
 
+def bpe_arms(tag, texts, queries, rel_of, selected_terms, merge_budgets=(1000, 3000, 10000)):
+    """The claim actually under test: does a SUBWORD index approximate BM25?
+
+    Every arm above keeps whole terms. This re-tokenises chunks AND queries into
+    BPE pieces trained on the surviving terms only (T7), builds BM25 over the
+    pieces, and scores the same gold. No OOV is possible -- every word decomposes
+    -- so this is the "smaller corpus (vocab)" the operator asked for, measured
+    on retrieval rather than on piece statistics.
+    """
+    from tokenizers import Tokenizer, models, trainers
+
+    print("\n  -- BPE subword index over the SELECTED terms (%d), same gold --"
+          % len(selected_terms))
+    print("  arm                   vocab   nq   hit@1  hit@5 hit@10  rec@10  rec@50    MRR")
+    word_docs = [tokenize(t) for t in texts]
+    alphabet = len({c for t in selected_terms for c in t})
+    for nm in merge_budgets:
+        t0 = time.time()
+        tok = Tokenizer(models.BPE(unk_token="[UNK]"))
+        tr = trainers.BpeTrainer(vocab_size=alphabet + nm + 1, min_frequency=2,
+                                 special_tokens=["[UNK]"], show_progress=False)
+        tok.train_from_iterator(selected_terms, trainer=tr)
+        cache = {}
+
+        def pieces(words):
+            out = []
+            for w in words:
+                p = cache.get(w)
+                if p is None:
+                    p = cache[w] = tok.encode(w).tokens
+                out.extend(p)
+            return out
+
+        piece_docs = [pieces(d) for d in word_docs]
+        BM, TF, terms, df = bm25_matrix(piece_docs)
+        col = {str(t): j for j, t in enumerate(terms)}
+        BMc = BM.tocsc()
+        ks = KS
+        hits = {k: 0 for k in ks}
+        rec = {k: [] for k in ks}
+        rr, scored = [], 0
+        for q, target in queries:
+            cols = [col[p] for p in set(pieces(tokenize(q))) if p in col]
+            rel = rel_of(target)
+            if not cols or not rel:
+                continue
+            scored += 1
+            s = np.asarray(BMc[:, cols].sum(axis=1)).ravel()
+            order = np.argsort(-s)
+            first = next((r for r, i in enumerate(order[:max(ks)], 1) if i in rel), None)
+            rr.append(1.0 / first if first else 0.0)
+            for k in ks:
+                inter = len(set(order[:k].tolist()) & rel)
+                hits[k] += 1 if inter else 0
+                rec[k].append(inter / len(rel))
+        n = max(scored, 1)
+        print("  BPE merges=%-6d %8d %4d  %6.3f %6.3f %6.3f  %6.3f  %6.3f %6.3f   (%.0fs)"
+              % (nm, len(terms), scored, hits[1] / n, hits[5] / n, hits[10] / n,
+                 float(np.mean(rec[10])), float(np.mean(rec[50])),
+                 float(np.mean(rr)), time.time() - t0))
+
+
 def sweep(tag, texts, queries, rel_of):
     print("\n" + "=" * 78)
     print("%s  chunks=%d  queries=%d" % (tag, len(texts), len(queries)))
@@ -259,6 +321,11 @@ def sweep(tag, texts, queries, rel_of):
     print("  delta recall@10 = %+.3f  -> selection %s"
           % (d, "HELPS" if d > 0.005 else
              ("HURTS" if d < -0.005 else "is NEUTRAL (within 0.005)")))
+
+    # The subword claim, on the f=0.00 survivors (the shipped factor).
+    keep0 = soft_keep(ls, idx, df, n_chunks, 0.0)
+    bpe_arms(tag, texts, queries, rel_of,
+             [str(t) for t in terms[np.where(keep0)[0]]])
     return best[1]
 
 

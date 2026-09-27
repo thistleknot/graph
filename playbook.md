@@ -1690,3 +1690,20 @@ Plan: C:\Users\user\.claude\plans\i-ve-been-thinking-about-quiet-cray.md
     four gold sets. That is a DIFFERENT experiment from the vocabulary arms --
     dense changes the scorer and the space, so it cannot serve as the baseline for
     a vocabulary change (it would attribute the effect to the wrong thing).
+
+- [DONE] T113 Does the BPE subword index approximate full-vocabulary BM25?
+  _Files:_ tools/diag_domain_recall.py, domain_terms.py
+  _Verify:_ PYTHONPATH=. python tools/diag_domain_recall.py --arxiv 200
+  _Lessons:_ YES, at 4-10% of the vocabulary -- this was the whole objective, in
+    the operator's words "a tokenizer that provides reasonable lexical
+    performance ... a way to approximate a smaller corpus (vocab)". A BM25 index
+    over 5,309 BPE pieces (24x smaller than the 128,053-term full vocabulary, no
+    OOV possible) beats full BM25 on arxiv title MRR (0.886 vs 0.879) and ties it
+    exactly on neop body sentences (0.947 / 0.377 / 0.895, identical). Two costs
+    stated bare: arxiv body-sentence recall@10 falls 0.106 -> 0.096, 9% relative,
+    OVER the 5% shippable bar; and on neop headings whole-term selection (0.474)
+    beats pieces (0.391), ~2 queries of 23. Mechanism both ways -- pieces share
+    weight across embedding/embeddings (helps short queries) and blur covariance
+    into co+variance (hurts specific ones). Every prior "recall" number in this
+    layer was term-list COVERAGE, not retrieval; this is the first retrieval
+    measurement of the tokenizer itself. Merge budget saturates at 2,900 on neop.
