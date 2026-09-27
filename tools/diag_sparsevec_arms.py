@@ -119,8 +119,16 @@ def prep_queries(gq, rel_of, qtok, col):
     return qcols, rels
 
 
-def run_arm(conn, name, label, BM, terms, qtok, golds, reuse, rows_meta):
-    """One vocabulary through all four measurements. Returns rows for the report."""
+def run_arm(conn, name, label, BM, terms, qtok, golds, reuse, rows_meta,
+            m=HNSW_M, efc=HNSW_EFC):
+    """One vocabulary through all four measurements. Returns rows for the report.
+
+    m / efc: HNSW graph parameters. The operator's production corpus (2.8M distinct
+    terms over 13M records) forced m=4, ef_construction=16; the hypothesis under
+    test there is that a SMALLER vocabulary gives rows more shared nonzeros and so
+    a connected enough graph for HNSW to walk. Under --reuse the rows are kept and
+    only the index is rebuilt when (m, efc) differ from what was built.
+    """
     dim = len(terms)
     col = {str(t): j for j, t in enumerate(terms)}
     n_rows = BM.shape[0]
@@ -138,8 +146,13 @@ def run_arm(conn, name, label, BM, terms, qtok, golds, reuse, rows_meta):
     # table legitimately holds slightly fewer rows than the matrix. An exact
     # equality here rebuilt both tables on --reuse; accept >= 99% present.
     if reuse and have >= 0.99 * n_rows:
-        print("  reuse: %s already holds %d rows; skipping COPY + HNSW" % (t, have))
-        build_s = None
+        print("  reuse: %s already holds %d rows; skipping COPY" % (t, have))
+        if (m, efc) != (HNSW_M, HNSW_EFC):
+            build_s = ss.create_hnsw(conn, label, m=m, ef_construction=efc)
+            print("  HNSW REBUILT m=%d ef_construction=%d build %.0fs" % (m, efc, build_s))
+        else:
+            print("  HNSW reused (m=%d ef_construction=%d)" % (m, efc))
+            build_s = None
     else:
         t0 = time.time()
         csr = BM.tocsr()
@@ -151,8 +164,8 @@ def run_arm(conn, name, label, BM, terms, qtok, golds, reuse, rows_meta):
                        dict(zip(csr.indices[s:e].tolist(), csr.data[s:e].tolist())))
         w = ss.write_chunks(conn, label, dim, rows())
         print("  COPY %d rows (%d truncated) %.0fs" % (w["written"], w["truncated"], time.time() - t0))
-        build_s = ss.create_hnsw(conn, label, m=HNSW_M, ef_construction=HNSW_EFC)
-        print("  HNSW m=%d ef_construction=%d build %.0fs" % (HNSW_M, HNSW_EFC, build_s))
+        build_s = ss.create_hnsw(conn, label, m=m, ef_construction=efc)
+        print("  HNSW m=%d ef_construction=%d build %.0fs" % (m, efc, build_s))
     c = ss.counts(conn, label)
     print("  table+index bytes: %s  (%.1f MB)  max_nnz=%s" % (
         "{:,}".format(c["bytes"]), c["bytes"] / 1e6, c["max_nnz"]))
@@ -204,7 +217,11 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--reuse", action="store_true")
     ap.add_argument("--titles", type=int, default=N_TITLE)
+    ap.add_argument("--m", type=int, default=HNSW_M, help="HNSW m (operator production: 4)")
+    ap.add_argument("--efc", type=int, default=HNSW_EFC,
+                    help="HNSW ef_construction (operator production: 16)")
     args = ap.parse_args()
+    print("HNSW params: m=%d ef_construction=%d" % (args.m, args.efc))
     rng = np.random.default_rng(SEED)
 
     # ------------------------------------------------------------ population
@@ -238,7 +255,8 @@ def main():
     t0 = time.time()
     BMw, TFw, termsw, dfw = bm25_matrix([tokenize(t) for t in texts])
     print("[raw] words=%d  bm25 %.0fs  (df>=1, no masks, rows NOT normalised)" % (len(termsw), time.time() - t0))
-    rep, cnt, build = run_arm(conn, "RAW words", "arms_raw", BMw, termsw, tokenize, golds, args.reuse, meta)
+    rep, cnt, build = run_arm(conn, "RAW words", "arms_raw", BMw, termsw, tokenize, golds,
+                              args.reuse, meta, m=args.m, efc=args.efc)
     all_reports["raw"] = (rep, cnt, build)
     del BMw, TFw
 
@@ -251,7 +269,8 @@ def main():
     t0 = time.time()
     BMp, TFp, termsp, dfp = bm25_matrix([pf(t) for t in texts])
     print("[bpe] pieces=%d  bm25 over pieces %.0fs" % (len(termsp), time.time() - t0))
-    rep, cnt, build = run_arm(conn, "BPE pieces", "arms_bpe", BMp, termsp, pf, golds, args.reuse, meta)
+    rep, cnt, build = run_arm(conn, "BPE pieces", "arms_bpe", BMp, termsp, pf, golds,
+                              args.reuse, meta, m=args.m, efc=args.efc)
     all_reports["bpe"] = (rep, cnt, build)
     del BMp, TFp
     conn.close()
