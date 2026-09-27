@@ -66,7 +66,11 @@ SEED = 0
 N_TITLE = 500
 N_BODY = 200
 SAMPLE_TOTAL = 30_000            # the vocabulary-derivation sample, as measured 2026-09-26
-EF_SEARCH = (40, 400)
+# 50 is the LOWEST ef_search at which rec@50 exists: pgvector returns at most
+# ef_search rows, so at the operator's production 40 recall at 50 is undefined, not
+# merely low. Operator 2026-09-27: "drop non differentiating comparisons (rec@10) and
+# only focus on rec@50" -- rec@10 is capped at 10/76 = 0.13 by chunks per paper.
+EF_SEARCH = (50, 100, 400)
 KS_FULL = (1, 5, 10, 50)
 PARITY_N = 200
 HNSW_M, HNSW_EFC = 16, 64
@@ -130,7 +134,10 @@ def run_arm(conn, name, label, BM, terms, qtok, golds, reuse, rows_meta):
     # ---- psql table: write unless --reuse finds the full population
     t = ss.ensure_schema(conn, label, dim)
     have = ss.counts(conn, label)["rows"]
-    if reuse and have == n_rows - 0:            # all rows present (empty-vector rows are skipped below)
+    # write_chunks skips rows with no nonzeros (182 of 169,382 measured), so the
+    # table legitimately holds slightly fewer rows than the matrix. An exact
+    # equality here rebuilt both tables on --reuse; accept >= 99% present.
+    if reuse and have >= 0.99 * n_rows:
         print("  reuse: %s already holds %d rows; skipping COPY + HNSW" % (t, have))
         build_s = None
     else:

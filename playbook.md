@@ -1795,3 +1795,19 @@ Plan: C:\Users\user\.claude\plans\i-ve-been-thinking-about-quiet-cray.md
     scores except via tie-breaking -> MRR deltas under ~0.01 here are tie noise.
     Visibility defect fixed for future runs: the UTF-8 stdout wrapper block-buffered
     regardless of `python -u`; line_buffering=True in all three tools.
+  _Lessons (rec@50 rerun, operator: "drop non differentiating comparisons (rec@10) and
+    only focus on rec@50"):_ rec@10 is capped at 10/76 = 0.13 by chunks per paper and
+    every arxiv cell sat within 0.005 of each other -- non-differentiating, as the
+    operator said. Under rec@50 (ceiling 0.66, cells at ~0.23) TWO conclusions change.
+    (1) HNSW at ef=50 costs NOTHING on arxiv: raw 0.228 vs exact 0.232 titles, 0.118 vs
+    0.115 body; BPE 0.210 vs 0.206, 0.102 vs 0.096 -- at 5-11 ms/q vs 94-147 exact.
+    The "-24% at production settings" was a hit@k story: HNSW misses the single best
+    chunk but fills the top 50 with other chunks of the same paper (hypothesis for the
+    mechanism; the numbers stand). (2) The vocabulary IS the loss at every ef: BPE vs
+    raw -8% titles / -14% body at ef=50, -11% / -17% at exact, over the 5% bar, and
+    40% more disk. Under rec@50 there is no case for BPE-as-sparsevec on this corpus.
+    Unchanged: short queries collapse under HNSW on both arms (0.364 -> 0.091 raw,
+    0.522 -> 0.087 BPE at ef=50; ef=400 recovers half). rec@50 does not exist below
+    ef_search=50 (pgvector caps rows at ef), so the sweep is {50,100,400}. Parity
+    byte-identical to the first pass: deterministic rank-10 ties, not flakiness.
+    --reuse worked once its equality check tolerated the 182 empty-vector rows.
