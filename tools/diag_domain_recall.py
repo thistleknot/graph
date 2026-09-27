@@ -180,8 +180,13 @@ def soft_keep(ls, idx, df, n_chunks, factor, df_max_frac=0.50):
     return keep
 
 
-def evaluate(BM, terms, keep, queries, rel_of, ks=KS):
-    """Recall and MRR for one vocabulary. `rel_of` maps a query to relevant rows."""
+def evaluate(BM, terms, keep, queries, rel_of, ks=KS, qtok=tokenize):
+    """Recall and MRR for one vocabulary. `rel_of` maps a query to relevant rows.
+
+    `qtok` turns a query string into index units -- words by default, or a
+    piece tokenizer when BM is built over BPE pieces. One scorer for both, so a
+    word-vs-piece comparison cannot differ in anything but the vocabulary.
+    """
     col = {str(t): j for j, t in enumerate(terms)}
     allowed = keep
     BMc = BM.tocsc()
@@ -190,7 +195,7 @@ def evaluate(BM, terms, keep, queries, rel_of, ks=KS):
     rr = []
     scored = 0
     for q, target in queries:
-        cols = [col[t] for t in set(tokenize(q))
+        cols = [col[t] for t in set(qtok(q))
                 if t in col and allowed[col[t]]]
         if not cols:
             continue

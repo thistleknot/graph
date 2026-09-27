@@ -1707,3 +1707,60 @@ Plan: C:\Users\user\.claude\plans\i-ve-been-thinking-about-quiet-cray.md
     into co+variance (hurts specific ones). Every prior "recall" number in this
     layer was term-list COVERAGE, not retrieval; this is the first retrieval
     measurement of the tokenizer itself. Merge budget saturates at 2,900 on neop.
+
+- [DONE] T114 Derive the vocabulary on a 100k-chunk subset and prove it transfers
+  _Files:_ tools/diag_subset_sparsevec.py, tests/test_diag_subset_sparsevec.py
+  _Verify:_ PYTHONPATH=. python tools/diag_subset_sparsevec.py --no-psql
+  _Notes:_ operator's log-ratio allocation asks neop for 34,631 of its 588 chunks
+    (59x infeasible); feasible rule = min(size, quota) -> all neop + seeded 58.9%
+    of arxiv. Transfer test = subset-derived pieces vs full-derived pieces, both
+    scored on the FULL arxiv gold. Full-corpus load measured at 585 s for 2,227
+    docs vs 10 s for 200 -- 5x superlinear, a perf defect; cached to .tmp/.
+
+- [DONE] T115 Index the sample as pgvector sparsevec and measure recall in psql
+  _Files:_ sparsevec_store.py, tests/test_sparsevec_store.py, tools/diag_subset_sparsevec.py
+  _Verify:_ PYTHONPATH=. python tools/diag_subset_sparsevec.py
+  _Notes:_ <d,q> with d = BM25 weights over pieces and q binary IS the numpy score,
+    so exact scan must match numpy to the digit (asserted on top-10 sets, same
+    top-1000 truncation both sides) before any HNSW number is read. Then HNSW
+    sparsevec_ip_ops at ef_search 40/100/400: recall + ms/query. 293 chunks
+    (0.17%) exceed the 1000-nonzero cap; their vectors keep the heaviest 1000.
+    Docker Desktop was down; started it (pid 35480, ledger row in .tmp/processes.md).
+  _Lessons (T114):_ RAN AT 30k, NOT 100k -- the 100k run was reaped by the harness for
+    system memory beside the operator's 14 GB GRPO job; 100k is UNTESTED. Vocabulary
+    from 30,000 chunks (17% of arxiv) transfers to the full 168,794-chunk corpus with
+    no measurable loss: 2,203 title queries, MRR 0.770 subset-derived vs 0.768
+    full-derived vs 0.773 full-vocab BM25 (1,486,001 words); hit@10 0.897/0.895/0.899.
+    8,763 pieces = 0.6% of the word vocabulary. The two piece vocabularies share only
+    HALF their pieces (Jaccard 0.504) and score the same -- coverage matters, not the
+    specific pieces. rec@10 -8% relative on titles, over the 5% bar, same pattern as
+    every piece result. First rerun died on my .tolist() on a list; the cache build
+    cost 767 s and is the only reason the rerun was 5 min.
+  _Lessons (T115):_ PARITY PROVEN: psql exact scan reproduces numpy on 100.0% of
+    2,143 title and 199 body queries (identical hit/recall/MRR to three decimals).
+    HNSW sparsevec_ip_ops: ef=400 within ~1.5% of exact at 12-17 ms/q vs 49-73 exact;
+    ef=40 loses 11% hit@10 at 4-6 ms/q. 29,964 rows, 77 MB, build 29 s, 62 rows
+    (0.2%) truncated to their 1000 heaviest pieces. DEFECT, mine: chunks were sampled
+    uniformly, which SPLITS every paper, so the psql gold sets are fragments and the
+    absolute psql recall (hit@10 0.776) is NOT comparable to the transfer numbers
+    (0.897). One neop heading query (1 of 23) has a different exact-scan top-10 SET
+    with identical metrics -- hypothesis: score tie at rank 10 broken differently by
+    Postgres and numpy's stable sort. Not checked.
+
+- [OPEN] T116 Sample by DOCUMENT for the psql lane, not by chunk
+  _Files:_ tools/diag_subset_sparsevec.py
+  _Notes:_ whole papers in or out, so title -> own paper gold is complete inside the
+    index and psql recall becomes comparable to the full-corpus transfer numbers.
+    Chunk-level sampling stays correct for VOCABULARY derivation (that was the
+    operator's design and it transferred); only the retrieval eval needs documents.
+
+- [OPEN] T117 The 1-of-23 exact-scan parity mismatch on neop headings
+  _Files:_ tools/diag_subset_sparsevec.py
+  _Notes:_ print that query's rank-9..11 scores from both numpy and psql. If they tie,
+    the "defect" flag threshold should compare score-sets, not ord-sets; if they do
+    not tie, it is a real scoring divergence and the parity claim is wrong for it.
+
+- [OPEN] T118 Full-corpus load is 5x superlinear (585-767 s for 2,227 docs vs 10 s for 200)
+  _Files:_ domain_corpora.py
+  _Notes:_ profile per stage before touching anything; one 3,395,651-char docling
+    unit is the leading suspect. Cached for now, so it costs nothing per iteration.
