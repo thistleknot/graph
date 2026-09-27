@@ -57,7 +57,10 @@ EF_SEARCH = (40, 100, 400)
 
 
 def _utf8():
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+    # line_buffering=True, or the wrapper block-buffers even under `python -u` and the
+    # log shows nothing until exit (observed 2026-09-27).
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8",
+                                  errors="replace", line_buffering=True)
 
 
 # ----------------------------------------------------------------- corpora ----

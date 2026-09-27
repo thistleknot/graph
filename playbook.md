@@ -1764,3 +1764,34 @@ Plan: C:\Users\user\.claude\plans\i-ve-been-thinking-about-quiet-cray.md
   _Files:_ domain_corpora.py
   _Notes:_ profile per stage before touching anything; one 3,395,651-char docling
     unit is the leading suspect. Cached for now, so it costs nothing per iteration.
+
+- [DONE] T119 The 2x2: {raw words, BPE pieces} x {exact, HNSW} on the full population
+  _Files:_ tools/diag_sparsevec_arms.py
+  _Verify:_ PYTHONPATH=. python -u tools/diag_sparsevec_arms.py
+  _Notes:_ operator asked for three arms at ef_search=40; measured -11% hit@10 from HNSW
+    at ef=40 vs -0.5% MRR from the vocabulary, so a single-ef design is dominated by the
+    index knob -- run the square, sweep ef {40,400}, index the FULL 169,382-row population
+    (chunk sampling fragments gold: 0.776 vs 0.897). Verified 2026-09-27: sparsevec dim
+    ceiling 1e9 (1,486,001 parses), SPARSEVEC_MAX_NNZ 16000 in the header (1,000 is the
+    HNSW cap per docs, unverified on disk), HNSW returns at most ef_search rows (ef=40,
+    LIMIT 100/50/40 -> 40) so every rec@50 at ef=40 reported 2026-09-26 was over 40 rows
+    and is INVALID; chunkgraph._sparse_sim L2-normalises rows (692-693) -> raw arm uses
+    salient_grams.bm25_matrix. Index bytes is a first-class column.
+  _Lessons:_ PREMISE REVERSED -- the BPE sparsevec index is 40% BIGGER than raw
+    (408.6 MB vs 292.9 MB, hnsw build 161 s vs 113 s). sparsevec is coordinate-list
+    storage: bytes scale with NONZEROS PER ROW, not dimension, and a word splits into
+    ~2 pieces. A compact vocabulary shrinks vocabulary-bounded structures (term table,
+    tsvector dictionary, embedding matrix) and ENLARGES a sparsevec index. Recall,
+    169,382 rows, 500 titles / 200 body: raw exact 0.896/0.945 hit@10; raw hnsw ef=40
+    0.798/0.715 (-11%/-24%); bpe hnsw ef=40 0.822/0.690 (-8%/-27%); ef=400 raw
+    0.886/0.890, bpe 0.888/0.860. So at ef=40 HNSW is the loss, not the vocabulary,
+    and the vocabulary at matched HNSW is a wash (+3%/-3.5%, under the 5% bar). Short
+    queries collapse under HNSW on BOTH arms: neop headings 0.23-0.26 exact ->
+    0.04 at ef=40, 0.09-0.17 at ef=400 (n=22-23; hypothesis: 2-3-term queries give
+    the IP graph no gradient). Truncation to 1,000 nnz cost nothing measurable.
+    Parity: 100% titles both arms, 99.5% body both arms, raw neop 86.4% (19/22) with
+    identical metrics -- rank-10 ties, three instances now (T117). Calibration: hnsw
+    ef=400 posted MRR 0.766 vs exact 0.758 on raw titles, impossible for the same
+    scores except via tie-breaking -> MRR deltas under ~0.01 here are tie noise.
+    Visibility defect fixed for future runs: the UTF-8 stdout wrapper block-buffered
+    regardless of `python -u`; line_buffering=True in all three tools.

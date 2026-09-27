@@ -52,7 +52,7 @@ def _utf8_stdout():
     "ValueError: I/O operation on closed file".
     """
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8",
-                                  errors="replace")
+                                  errors="replace", line_buffering=True)
 
 import numpy as np
 from scipy import sparse, stats
