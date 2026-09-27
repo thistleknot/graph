@@ -81,6 +81,36 @@ T3  Bands SHALL be equal-count over the log2 score, and any band with fewer than
     ("MERGE consecutive sections with < m ... accumulating until they reach m")
     applied to bands rather than sections.
 
+T4a SIGMA_FACTOR is TUNED AGAINST RETRIEVAL RECALL, and the tuning returned a
+    NULL RESULT: recall does not depend on it. Measured 2026-09-26 by
+    tools/diag_domain_recall.py over four deterministic gold sets, recall@10
+    across the whole factor range 0.00 -> 1.00:
+
+        arxiv, title -> own paper        200 q   0.141 .. 0.140
+        arxiv, body sentence -> paper    178 q   0.100 .. 0.101
+        neop,  section heading           23 q    0.474 .. 0.474  (identical)
+        neop,  body sentence             19 q    0.370 .. 0.377
+
+    A 4x change in vocabulary (7,343 -> 14,585 and 16,497 -> 30,296 terms) moves
+    recall by at most 0.007, and the per-eval "winner" varies (0.25, 0.25, 0.00,
+    0.75) at the third decimal -- noise picking a winner, not tuning.
+
+    The instrument is NOT broken: the same harness separates full vocabulary from
+    selected (+0.110 on neop headings, -0.006 on arxiv titles). The FACTOR AXIS is
+    inert, and mechanically must be: BM25 query scoring sums weights over query
+    terms, the soft band trims only the bottom of the score distribution, and
+    those terms are both rare in queries and negligible in weight when present.
+
+    So the factor is set to 0.00 on the tie-break that DOES respond -- index size.
+    It buys the smallest vocabulary (~50% retention) for at most 0.007 of recall.
+    Stated plainly: this is not "best recall", it is cheapest on a flat curve.
+
+T4b Selection versus NO selection is a real effect and points BOTH ways:
+    neop section headings 0.364 -> 0.474 recall@10 (+30% relative, n=23, so ~2
+    queries of granularity -- suggestive, not settled); both arxiv evals -0.005 /
+    -0.006 (~4% relative, under the operator's 5% shippable bar). Short generic
+    queries benefit from a pruned index; specific ones do not.
+
 T4  WITHIN a band, a term SHALL be admitted when its log2 score clears EITHER
     the parametric bound (mean - factor*sd) OR the robust bound
     (median - factor*1.4826*MAD). Equivalent to >= MIN of the two. The
@@ -129,7 +159,7 @@ DF_MIN = 2                 # eligibility floor; also the OCR-join filter (T6)
 DF_MAX_FRAC = 0.50         # the "whales" mask (T5)
 N_BANDS = 10               # deciles; 4 is the documented alternate
 MIN_BAND = 8               # T3, matching chunkgraph._bc_center's own floor
-SIGMA_FACTOR = 1.0         # T4, tunable
+SIGMA_FACTOR = 0.0         # T4 -- TUNED, see below
 LENGTH_K = 3.0             # T6, the incumbent anomaly_mask default
 SCALE_FACTORS = (2, 3, 5)  # T7 sweep
 

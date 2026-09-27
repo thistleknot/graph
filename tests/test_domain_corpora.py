@@ -96,3 +96,25 @@ def test_units_for_pdf_text_splits_on_blank_lines_not_markdown():
 def test_units_for_arxiv_uses_the_markdown_path():
     text = "## Title\n\nabstract text\n\n## Intro\n\nintro text"
     assert units_for(text, "arxiv") == ["abstract text", "intro text"]
+
+
+def test_heading_sections_keeps_headings_aligned_with_their_own_paragraphs():
+    """The gold-set bug: pairing two independently filtered lists misaligned every row.
+
+    An earlier version zipped a length-filtered heading list against the section
+    list, which drops zero-paragraph sections. Every heading was then matched to
+    the WRONG section and the retrieval gold scored hit@1 = 0.000 -- reported at
+    the time as a defect in my eval, not as sparse retrieval failing on books.
+    This pins the pairing, which is the only thing that made it meaningless.
+    """
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+    from diag_domain_recall import heading_sections
+
+    text = ("## Empty One\n\n"            # no paragraphs -> dropped entirely
+            "## Real Two\n\npara for two\n\n"
+            "## Empty Three\n\n"          # also dropped
+            "## Real Four\n\npara for four\n\nsecond para for four")
+    got = heading_sections(text)
+    assert [h for h, _ in got] == ["Real Two", "Real Four"]
+    assert got[0][1] == ["para for two"]
+    assert got[1][1] == ["para for four", "second para for four"]

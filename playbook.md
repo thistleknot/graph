@@ -1662,3 +1662,31 @@ Plan: C:\Users\user\.claude\plans\i-ve-been-thinking-about-quiet-cray.md
     removes 8 terms on neop, 0 on arxiv. So three of the four stages in the
     operator's selection design now measure as near-no-ops. Operator's call:
     keep banding for a property not yet measured, or cut to rank + cardinality.
+
+- [DONE] T111 Tune the sigma factor against retrieval recall
+  _Files:_ tools/diag_domain_recall.py, domain_terms.py, tests/test_domain_corpora.py
+  _Verify:_ PYTHONPATH=. python tools/diag_domain_recall.py --arxiv 200
+  _Lessons:_ NULL RESULT, and the operator's framing was right to demand it --
+    diagnostic term coverage could never have tuned this knob (every factor gave
+    an identical top-1000). Built deterministic gold with no judge and no model:
+    arxiv paper title -> its own chunks, arxiv body sentence -> its own paper,
+    Lewy section heading -> that section, Lewy body sentence -> its document.
+    Across the full factor range 0.00-1.00, recall@10 moves <=0.007 on all four
+    evals while the vocabulary changes 4x; the per-eval winner varies at the third
+    decimal. The instrument WORKS -- it separates full vocabulary from selected
+    (+0.110 neop headings, -0.006 arxiv titles) -- so the FACTOR axis is inert,
+    and must be: BM25 sums weights over query terms and the band only trims the
+    bottom of the score distribution, where query terms never live. Factor set to
+    0.00 on index size, the one criterion that responds. Two bugs of the same
+    class in my own eval, both caught: headings paired against an independently
+    filtered section list (hit@1 = 0.000, reported as MY defect not as a finding),
+    then unstripped paragraphs that only substring-matched by accident. Also
+    rewrapping sys.stdout at import time killed pytest capture for any test that
+    imported the tool -- moved into main().
+
+- [OPEN] T112 Does a lexical lane earn its place here at all?
+  _Notes:_ the vocabulary question is now answered; the space question is not.
+    Selected-vocabulary BM25 versus dense embeddings versus fusion, on the same
+    four gold sets. That is a DIFFERENT experiment from the vocabulary arms --
+    dense changes the scorer and the space, so it cannot serve as the baseline for
+    a vocabulary change (it would attribute the effect to the wrong thing).
