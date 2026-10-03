@@ -1811,3 +1811,44 @@ Plan: C:\Users\user\.claude\plans\i-ve-been-thinking-about-quiet-cray.md
     ef_search=50 (pgvector caps rows at ef), so the sweep is {50,100,400}. Parity
     byte-identical to the first pass: deterministic rank-10 ties, not flakiness.
     --reuse worked once its equality check tolerated the 182 empty-vector rows.
+
+## Layer 29 -- sequential (arxiv graph: junk out, everything in Postgres, a 30-minute service; operator 2026-10-03)
+Source: this session, 2026-10-03. Operator: "can we fix everything you and I just brought up" and "can we setup
+a service just like arxiv-llmtxt-ingest to automagically process remaining extracted markdowns into this graph
+representation for us, checking every 30 minutes (15 minutes after arxiv-llmtxt-ingest)".
+NO GOVERNING SPEC beyond those two instructions and ~/.skills/sparsevec-lexsem-graph. Executive decisions, basis
+logged: (1) junk = the `latexi` image-OCR marker OR >=90% of lettered lines holding <=2 alphanumerics with >=8
+such lines, or no letter or digit at all (259 of 56,310 chunks; every statistic tried first -- in-vocabulary share, single-token share,
+short-line share -- overlapped legitimate math or pseudocode and was rejected; the live count is 259: 258 by
+marker or line profile plus one chunk with no letter or digit); (2) between full rebuilds the
+vocabulary, idf, avgdl and the embedding mean are FROZEN, new chunks get a nearest-centroid community marked as
+such; (3) a full rebuild runs when new chunks reach 5% of the build (an arbitrary starting constant, logged
+every cycle); (4) the service is a logon-started Scheduled Task running one watch loop, like its sibling.
+- [DONE] T120 Flag extraction-junk chunks, never drop them, and exclude them wherever references are excluded
+  _Files:_ domain_corpora.py, tests/test_domain_corpora.py
+  _Verify:_ pytest tests/test_domain_corpora.py -q
+  _Lessons:_ junk was its own communities AND the exemplars; four character statistics all overlapped legitimate math, so the rule is the exact image-OCR marker plus an extreme lone-letter-line profile (259 chunks). The synthetic chunker test needs the real fit: the toy corpus fits hi=13, too small to hold 8 lines.
+- [DONE] T121 Keep the chunk text, vectors (sparse ip, sparse cosine, dense), communities, exemplars and draft summaries in Postgres
+  _Files:_ sparsevec_store.py, tests/test_sparsevec_store.py
+  _Verify:_ pytest tests/test_sparsevec_store.py -q
+  _Lessons:_ CREATE TABLE IF NOT EXISTS bakes the vocabulary size into the column type, so a full build must drop the label's tables (reset_label_tables). Versions overwrite (delete_papers) and ords below the build's size are never reused (min_ord).
+- [DONE] T122 Make the full build write what it derives to Postgres and leave nothing only in .tmp
+  _Files:_ tools/ingest_arxiv_sparsevec.py, tools/arxiv_community_map.py, tools/summarize_clusters.py, tests/test_arxiv_community_map.py, tests/test_summarize_clusters.py, tests/test_ingest_arxiv_sparsevec.py
+  _Verify:_ pytest tests/test_arxiv_community_map.py tests/test_summarize_clusters.py tests/test_ingest_arxiv_sparsevec.py -q
+  _Lessons:_ a cache valid by row count is not an identity: purge by content fingerprint. The summarizer indexed exemplar rows into the wrong list after junk exclusion until load_inputs used retrievable(). The PNG write died twice because a viewer held the file memory-mapped (Errno 22); save_figure falls back to a timestamped sibling. The figure now grows to its longest card.
+- [DONE] T123 Process newly extracted markdowns into the graph between rebuilds and rebuild when enough have arrived
+  _Files:_ tools/arxiv_graph_service.py, tests/test_arxiv_graph_service.py
+  _Verify:_ pytest tests/test_arxiv_graph_service.py -q
+  _Lessons:_ doc_row must break weight ties by column index like keep_heaviest or an incremental row differs from the full build's; delete an overwritten paper BEFORE the duplicate-text check; a cycle must add missing columns and normalise ids itself, the live database predated both; a failed render is invisible to the build state, so pending_steps reads the PNG's age.
+- [DONE] T124 Register the 30-minute watcher as a Scheduled Task offset 15 minutes from arxiv-llmtxt-ingest
+  _Files:_ tools/arxiv_graph_service.py
+  _Verify:_ Get-ScheduledTask arxiv-graph-ingest; one live cycle in .tmp/arxiv_graph_watch.log
+  _Lessons:_ registered arxiv-graph-ingest mirroring arxiv-llmtxt-ingest's settings; the slot is (sibling minute mod 15) + 17 re-read each cycle; first unattended cycle ran 15:19:01 on its slot.
+- [DONE] T125 Serve hybrid search over the graph that returns each hit's WHOLE section (operator: "how do I use this rag myself ... a function for openwebui to use this backend to reconstruct whole sections for use with rag")
+  _Files:_ tools/arxiv_rag_api.py, tests/test_arxiv_rag_api.py
+  _Verify:_ pytest tests/test_arxiv_rag_api.py -q; python tools/arxiv_rag_api.py --ask "<question>" against the live build
+  _Lessons:_ the sparse arm returned zero-score chunks padded to the pool until only ip > 0 counted; the default max_chars cuts a ~22k-character section and says so. Whole section = chunks sharing (doc_id, section_idx) with continuation headers stripped.
+- [DONE] T126 Register the retrieval API as a logon Scheduled Task so OpenWebUI can load it as an OpenAPI tool server
+  _Files:_ tools/arxiv_rag_api.py
+  _Verify:_ Get-ScheduledTask arxiv-rag-api; GET /health and /openapi.json answer on its port
+  _Lessons:_ registered arxiv-rag-api (port 8780, 127.0.0.1); OpenAPI at /openapi.json; live HTTP search verified. Not verified against an OpenWebUI instance: none runs here.
