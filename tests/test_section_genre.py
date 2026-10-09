@@ -1,4 +1,4 @@
-"""Pins tools/section_genre.py on a planted world whose genre axes and subjects are known.
+"""Pins src/section_genre.py on a planted world whose genre axes and subjects are known.
 
 Spec: approved plan C:\\Users\\user\\.claude\\plans\\jolly-soaring-moler.md, arm B, task T160. Synthetic vectors, no disk.
 
@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import section_genre as sg
 

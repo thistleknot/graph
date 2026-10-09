@@ -1,4 +1,4 @@
-"""Pins tools/section_query_panel.py guards P1-P2 on hand-built results. No database, no model, no network; one small matplotlib draw.
+"""Pins src/section_query_panel.py guards P1-P2 on hand-built results. No database, no model, no network; one small matplotlib draw.
 
 Run:  pytest tests/test_section_query_panel.py -v
 """
@@ -9,7 +9,7 @@ from pathlib import Path
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import section_query_panel as qp
 

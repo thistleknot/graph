@@ -1,4 +1,4 @@
-"""Pins tools/section_sparse.py: the unigram and adjacent-pair views, the unit-row inner product, and that adjacency breaks the bag-of-tokens tie.
+"""Pins src/section_sparse.py: the unigram and adjacent-pair views, the unit-row inner product, and that adjacency breaks the bag-of-tokens tie.
 
 Spec: approved plan step B2 (operator 2026-10-05), playbook.md T152. Tiny synthetic corpora, no disk, no model.
 
@@ -14,7 +14,7 @@ import pytest
 import scipy.sparse as sp
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import section_sparse as ss2
 

@@ -2701,9 +2701,9 @@ that is NOT in the entailing set is gated, not annotated. The existing
 "Answer cites ids outside the supported premises" check becomes a GATE.
 Receipt: the answer cited #7666, which Reason itself marked "insufficient".
 
-(d) COVERAGE (Article X, the real failure): tools/diag_rerun.py calls
+(d) COVERAGE (Article X, the real failure): src/diag_rerun.py calls
 sampler.ef_evidence ONLY -- it measures retrieval and CANNOT observe an
-answer; tools/diag_agentic.py exercises react.run, which ALWAYS loops, so
+answer; src/diag_agentic.py exercises react.run, which ALWAYS loops, so
 the UI's base-answer path (entails > 0, loop never fires) was in NO
 diagnostic. A G-row class with entails > 0 at the base walk SHALL exist and
 SHALL assert the gate, and the gate SHALL be validated against the KNOWN-BAD
@@ -2899,7 +2899,7 @@ replaced, when the work is scheduled, by one of:
   (a) the same estimator-pair band the repo already uses, computed on the
       observed distribution (the CHUNK stage derives chunk size this way --
       the precedent is in-house);
-  (b) calibration against the gold lane (tools/diag_agentic.py), which makes
+  (b) calibration against the gold lane (src/diag_agentic.py), which makes
       the number measured rather than picked;
   (c) an explicitly cited literature default, e.g. ReVerb's >= 20 distinct
       argument pairs for a relation-phrase support floor.
@@ -3049,7 +3049,7 @@ vs document chunking -- measured **0.083**. The comparator's own noise exceeds
 the difference it is asked to resolve, so no sample count settles it: a broken
 instrument, not a tie (rules/085-partition-variance).
 
-E1. `tools/diag_evidence.py` measures the pipeline UP TO the model call, which is
+E1. `src/diag_evidence.py` measures the pipeline UP TO the model call, which is
     entirely deterministic: seeded walk (`sampler.ef_evidence`, seed=0) plus
     `interpret.render_bundle`, which I3 already guarantees is "same bundle ->
     same string". The question it asks: **does the gold term appear in the

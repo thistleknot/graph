@@ -13,8 +13,9 @@ import sys
 from pathlib import Path
 
 _REPO_ROOT = str(Path(__file__).resolve().parent.parent)
+_SRC_DIR = str(Path(__file__).resolve().parent.parent / "src")
 _TESTS_DIR = str(Path(__file__).resolve().parent)
-for _p in (_REPO_ROOT, _TESTS_DIR):
+for _p in (_REPO_ROOT, _SRC_DIR, _TESTS_DIR):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 

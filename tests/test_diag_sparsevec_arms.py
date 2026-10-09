@@ -15,7 +15,7 @@ from pathlib import Path
 
 _root = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_root))
-sys.path.insert(0, str(_root / "tools"))
+sys.path.insert(0, str(_root / "src"))
 
 from diag_sparsevec_arms import KS_FULL, ks_for  # noqa: E402
 

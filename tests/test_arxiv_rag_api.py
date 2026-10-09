@@ -17,7 +17,7 @@ import psycopg
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import arxiv_rag_api as api
 import sparsevec_store as ss

@@ -10,27 +10,40 @@ formation, or community assignment, and every edge names the documents it came
 from.
 
 The pipeline and its numbered EARS guards (`R1`…`R21`) live in the module
-docstrings of [chunkgraph.py](chunkgraph.py) and
-[salient_grams.py](salient_grams.py); the docstrings ARE the spec for the code
+docstrings of [chunkgraph.py](src/chunkgraph.py) and
+[salient_grams.py](src/salient_grams.py); the docstrings ARE the spec for the code
 they sit above.
+
+## Repository layout
+
+```
+src/            every Python module, flat (modules import each other by bare name; tests and scripts put src/ on the path)
+tests/          pytest suite; pytest.ini sets pythonpath = src
+docs/           notes and reference: section_map/ (example PNG + markdown), cookbook/ (query snippets), trigram/, psql_graph.md, plan.md, chunking.md
+sql/            Postgres init migration, mounted by docker-compose.yml
+.spec/          steering and specs (the module docstrings carry the guards)
+playbook.md     task ledger
+third_party/    ignored: vendored book companion code, re-download from upstream
+.tmp/           ignored: every intermediate and output of a run
+```
 
 ## arXiv section map — start here
 
 The current work is a map over whole **sections** of 2,521 arXiv papers (80,642 usable sections), kept in Postgres
 (`chunkgraph-pg`, host port 5433, user/db/password `graph`). Each stage is its own module; run them in this order
-from the repo root (`python -u tools\<file>.py`). `.tmp/` holds every intermediate and output.
+from the repo root (`python -u src\<file>.py`). `.tmp/` holds every intermediate and output.
 
 | Step | Entrypoint | What it does |
 |---|---|---|
-| 1 | `tools/section_corpus.py` | cut the extracted papers into sections, keep the usable ones |
-| 2 | `tools/section_embed.py`, `tools/section_sparse.py` | dense (jina v5 nano through model2vec) and sparse (BPE + adjacent pair) vectors |
-| 3 | `tools/section_map.py` | exact correlation edges in both spaces, one fused graph, Leiden communities, exemplars, UMAP layout |
-| 4 | `tools/section_store.py --tag xpa` | write the build to Postgres: `sect_node`, `sect_edge`, `sect_community` |
-| 4b | `tools/section_store.py --tag xpa --entities` | match the frozen entity inventory onto the sections into `sect_mention` (about 6 minutes) |
-| 5 | `tools/summarize_clusters.py --all` | LLM draft summary per community (resumes from its JSON) |
-| 6 | `tools/arxiv_titles.py` | paper titles into `paper_title`, prefilled from the CSVs in `C:/Users/user/arxiv_id_lists`, the arXiv API for gaps |
-| 7 | `tools/section_render.py --tag xpa` | **the picture**: labelled community PNG and markdown (Dunning terms, entities, paper titles) |
-| 8 | `tools/section_query_panel.py` | ask a question: hybrid retrieval, community view, and the hop-planning ReAct agent, drawn as a strip |
+| 1 | `src/section_corpus.py` | cut the extracted papers into sections, keep the usable ones |
+| 2 | `src/section_embed.py`, `src/section_sparse.py` | dense (jina v5 nano through model2vec) and sparse (BPE + adjacent pair) vectors |
+| 3 | `src/section_map.py` | exact correlation edges in both spaces, one fused graph, Leiden communities, exemplars, UMAP layout |
+| 4 | `src/section_store.py --tag xpa` | write the build to Postgres: `sect_node`, `sect_edge`, `sect_community` |
+| 4b | `src/section_store.py --tag xpa --entities` | match the frozen entity inventory onto the sections into `sect_mention` (about 6 minutes) |
+| 5 | `src/summarize_clusters.py --all` | LLM draft summary per community (resumes from its JSON) |
+| 6 | `src/arxiv_titles.py` | paper titles into `paper_title`, prefilled from the CSVs in `C:/Users/user/arxiv_id_lists`, the arXiv API for gaps |
+| 7 | `src/section_render.py --tag xpa` | **the picture**: labelled community PNG and markdown (Dunning terms, entities, paper titles) |
+| 8 | `src/section_query_panel.py` | ask a question: hybrid retrieval, community view, and the hop-planning ReAct agent, drawn as a strip |
 
 Library modules, imported not run: `section_graphrag.py` (hybrid GraphRAG and the agent), `section_graph.py` (edges),
 `arxiv_community_map.py` (exemplars and the card/markdown writers), `term_salience.py` (Dunning terms), `section_genre.py`.
@@ -44,11 +57,11 @@ retrieval step yet. The agent's answer quality is not yet measured against plain
 ### What the map looks like
 
 One card per community, largest first, with its Dunning terms, its top entities, its exemplar sections and the
-paper each came from. [`examples/section_map/community_map.png`](examples/section_map/community_map.png) is the
-picture; [`examples/section_map/communities.md`](examples/section_map/communities.md) is the same content as text
-(every exemplar section, with links to arXiv). Both are copies of what `tools/section_render.py` writes to `.tmp/`.
+paper each came from. [`docs/section_map/community_map.png`](docs/section_map/community_map.png) is the
+picture; [`docs/section_map/communities.md`](docs/section_map/communities.md) is the same content as text
+(every exemplar section, with links to arXiv). Both are copies of what `src/section_render.py` writes to `.tmp/`.
 
-![community map](examples/section_map/community_map.png)
+![community map](docs/section_map/community_map.png)
 
 ### How edges are decided (section to section)
 
@@ -106,26 +119,26 @@ map follows their idea (graph and communities in Postgres) but uses Leiden over 
 
 ## Quickstart — ask the corpus a question
 
-Windows (`cmd`, the primary shell here). **`PYTHONPATH=. python ...` is bash-only
+Windows (`cmd`, the primary shell here). **`PYTHONPATH=src python ...` is bash-only
 and fails in cmd with `ModuleNotFoundError: No module named 'config'`** — `set` it
 on its own line instead:
 
 ```bat
 docker compose up -d graphdb
-set PYTHONPATH=.
+set PYTHONPATH=src
 set OPENROUTER_API_KEY=...
-python -m streamlit run walker_app.py --server.port 8501
+python -m streamlit run src/walker_app.py --server.port 8501
 ```
 
 PowerShell uses `$env:` and bash uses the inline form:
 
 ```powershell
-$env:PYTHONPATH="."; $env:OPENROUTER_API_KEY="..."
-python -m streamlit run walker_app.py --server.port 8501
+$env:PYTHONPATH="src"; $env:OPENROUTER_API_KEY="..."
+python -m streamlit run src/walker_app.py --server.port 8501
 ```
 
 ```bash
-PYTHONPATH=. OPENROUTER_API_KEY=... python -m streamlit run walker_app.py --server.port 8501
+PYTHONPATH=src OPENROUTER_API_KEY=... python -m streamlit run src/walker_app.py --server.port 8501
 ```
 
 Open <http://localhost:8501>, pick a run in the dropdown, type a question.
@@ -153,17 +166,17 @@ With `PYTHONPATH` already set (see above):
 ```bat
 REM deterministic: does the gold term survive into the evidence the judge reads?
 REM no model call, zero variance, rerunning gives the same number (6.29)
-python tools\diag_evidence.py ab-section
+python src\diag_evidence.py ab-section
 
 REM the frozen 20-row do-no-harm gate
 REM expect: PASS 18/20 | FAIL ['E3'] | KNOWN-FAIL ['A2']
-python tools\diag_rerun.py mixed-full-dual
+python src\diag_rerun.py mixed-full-dual
 
 REM the 9-row gold lane: runs the full agentic loop and scores the ANSWER.
 REM carries the model's sampling variance -- read 6.29 before comparing two
 REM configurations with it; its repeat noise (0.139) exceeds the effects it is
 REM usually pointed at (0.083)
-python tools\diag_agentic.py ab-section
+python src\diag_agentic.py ab-section
 ```
 
 ## Ingest
@@ -172,9 +185,9 @@ python tools\diag_agentic.py ab-section
 
 ```bat
 for /f %i in ('python -c "import config;print(config.MODEL_DIR)"') do set CHUNKGRAPH_MODEL_DIR=%i
-python ingest_brown.py <label>
-python ingest_mixed.py <label> --brown N --quotes N --wiki N
-python ingest_mixed.py <label> --chunk-mode section
+python src/ingest_brown.py <label>
+python src/ingest_mixed.py <label> --brown N --quotes N --wiki N
+python src/ingest_mixed.py <label> --chunk-mode section
 pytest -q
 ```
 

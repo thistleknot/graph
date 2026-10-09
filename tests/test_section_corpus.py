@@ -1,4 +1,4 @@
-"""Pins tools/section_corpus.index_text and its use in section_sparse.build (arm C: the heading is left out of what is indexed, kept for display).
+"""Pins src/section_corpus.index_text and its use in section_sparse.build (arm C: the heading is left out of what is indexed, kept for display).
 
 Spec: approved plan C:\\Users\\user\\.claude\\plans\\jolly-soaring-moler.md, task T166. Synthetic records, no disk.
 
@@ -12,7 +12,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import section_corpus as sc
 import section_sparse as ss

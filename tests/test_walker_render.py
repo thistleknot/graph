@@ -165,7 +165,7 @@ def test_walk_tab_renders_communities_from_a_prompt():
     medoid cards are titled by their own salient terms (6.8). No exception."""
     from streamlit.testing.v1 import AppTest
     try:
-        at = AppTest.from_file("walker_app.py", default_timeout=240)
+        at = AppTest.from_file("src/walker_app.py", default_timeout=240)
         at.run()
         at.text_input("q").set_value("jury trial grand jury investigation").run()
     except Exception as e:                                # pragma: no cover
@@ -252,7 +252,7 @@ def test_reason_and_judge_disagreement_is_shown():
                        {"ord": 12, "verdict": "entails", "why": "yes"},
                        {"ord": 13, "verdict": "entails", "why": "yes"}]}
     try:
-        at = AppTest.from_file("walker_app.py", default_timeout=240)
+        at = AppTest.from_file("src/walker_app.py", default_timeout=240)
         at.session_state["assess"] = (q, rr)
         at.run()
         at.text_input("q").set_value(q).run()
@@ -283,7 +283,7 @@ def test_panels_render_digests_and_chain_communities():
                        {"ord": 12, "verdict": "entails", "why": "yes"},
                        {"ord": 13, "verdict": "entails", "why": "yes"}]}
     try:
-        at = AppTest.from_file("walker_app.py", default_timeout=240)
+        at = AppTest.from_file("src/walker_app.py", default_timeout=240)
         at.session_state["assess"] = (q, rr)
         at.run()
         at.text_input("q").set_value(q).run()
@@ -331,7 +331,7 @@ def test_classes_card_renders_a_class_line():
                        {"ord": 12, "verdict": "entails", "why": "yes"},
                        {"ord": 13, "verdict": "entails", "why": "yes"}]}
     try:
-        at = AppTest.from_file("walker_app.py", default_timeout=240)
+        at = AppTest.from_file("src/walker_app.py", default_timeout=240)
         at.session_state["assess"] = (q, rr)
         at.run()
         at.text_input("q").set_value(q).run()
@@ -361,7 +361,7 @@ def test_stat_row_renders_four_tiles():
                        {"ord": 12, "verdict": "entails", "why": "yes"},
                        {"ord": 13, "verdict": "entails", "why": "yes"}]}
     try:
-        at = AppTest.from_file("walker_app.py", default_timeout=240)
+        at = AppTest.from_file("src/walker_app.py", default_timeout=240)
         at.session_state["assess"] = (q, rr)
         at.run()
         at.text_input("q").set_value(q).run()
@@ -390,7 +390,7 @@ def test_judged_rows_carry_verdict_pills():
                        {"ord": 12, "verdict": "entails", "why": "yes"},
                        {"ord": 13, "verdict": "entails", "why": "yes"}]}
     try:
-        at = AppTest.from_file("walker_app.py", default_timeout=240)
+        at = AppTest.from_file("src/walker_app.py", default_timeout=240)
         at.session_state["assess"] = (q, rr)
         at.run()
         at.text_input("q").set_value(q).run()
@@ -520,7 +520,7 @@ def test_mirror_is_the_neo4j_tab():
     (stock image sends DENY). Preceded, inside Analysis, by the
     dendrite-sorted Partitions panel in Zone 3 left (6.22 P18); one input
     field for the whole app."""
-    src = open("walker_app.py", encoding="utf-8").read()
+    src = open("src/walker_app.py", encoding="utf-8").read()
     assert "tab_mirror" not in src                      # no third tab
     mirror = src.split("MIRROR (T26)")[1]
     assert "components.iframe" in mirror
@@ -549,7 +549,7 @@ def test_query_param_seeds_prompt_source():
     """P13: the app reads ?q= into session state before the prompt input and
     writes the running prompt back to st.query_params. Source-level pin (an
     AppTest cannot set query params pre-run in this streamlit version)."""
-    src = open("walker_app.py", encoding="utf-8").read()
+    src = open("src/walker_app.py", encoding="utf-8").read()
     seed = src.index('st.session_state["q"] = st.query_params["q"]')
     widget = src.index('st.text_input("Prompt"')
     assert seed < widget, "?q= seed must run before the prompt widget mounts"
@@ -559,7 +559,7 @@ def test_query_param_seeds_prompt_source():
 def test_no_sidebar_anywhere():
     """P17: the walker renders without a Streamlit sidebar -- run selector,
     stats and details live in the top row of the main area."""
-    src = open("walker_app.py", encoding="utf-8").read()
+    src = open("src/walker_app.py", encoding="utf-8").read()
     assert "st.sidebar" not in src, "P17: st.sidebar must not reappear"
     assert 'st.popover("details")' in src, "details popover missing from top row"
 
@@ -567,7 +567,7 @@ def test_no_sidebar_anywhere():
 # ------------------------- 6.22 P18 zones (T58)
 
 def _src():
-    return open("walker_app.py", encoding="utf-8").read()
+    return open("src/walker_app.py", encoding="utf-8").read()
 
 
 def test_zone_columns_split_verdict_from_evidence():
@@ -746,7 +746,7 @@ def test_every_panel_head_title_has_an_accent():
     """Live crash receipt: panel_head('Agentic retrieval') raised KeyError --
     every title passed to panel_head must exist in ACCENT."""
     import re
-    src = open("walker_app.py", encoding="utf-8").read()
+    src = open("src/walker_app.py", encoding="utf-8").read()
     titles = set(re.findall(r'panel_head\("([^"]+)"', src))
     accents = set(re.findall(r'"([^"]+)":\s*(?:GOOD|BAD|WARN|PRIMARY|"#\w+")', src))
     assert titles <= accents, f"panel titles missing an ACCENT entry: {titles - accents}"
@@ -760,7 +760,7 @@ def test_every_answer_gate_call_passes_entail_texts():
     supply entail_texts."""
     import re
     src = _src()
-    src = src + open("tools/diag_agentic.py", encoding="utf-8").read()   # the tool is a gate call site too
+    src = src + open("src/diag_agentic.py", encoding="utf-8").read()   # the tool is a gate call site too
     calls = re.findall(r"(?:answer_gate|needs_more_evidence)\((?:[^()]|\([^()]*\))*\)", src)
     prompted = [c for c in calls if "prompt=q" in c]
     assert prompted, "no prompt-bearing gate calls found -- test is not measuring anything"

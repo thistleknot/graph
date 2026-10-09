@@ -1,4 +1,4 @@
-"""Pins tools/term_salience.py guards TS1-TS6 on synthetic data: hand-computed edge shares, a hashing bag-of-words encoder in place of
+"""Pins src/term_salience.py guards TS1-TS6 on synthetic data: hand-computed edge shares, a hashing bag-of-words encoder in place of
 MiniLM, and planted community structure. No model, no database.
 
 Run:  pytest tests/test_term_salience.py -v
@@ -14,7 +14,7 @@ import pytest
 import scipy.sparse as sp
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import term_salience as ts
 

@@ -34,7 +34,7 @@ def test_import_leaves_no_connection():
     the database down and exits 0 with empty stderr."""
     result = subprocess.run(
         [sys.executable, "-c", "import walker_core"],
-        cwd=".", capture_output=True, text=True, timeout=60)
+        cwd="src", capture_output=True, text=True, timeout=60)
     assert result.returncode == 0, result.stderr
     assert result.stderr == ""
 

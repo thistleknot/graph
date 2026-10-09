@@ -1,4 +1,4 @@
-"""Pins tools/section_map.py's pieces: the self-first neighbour layout, the cached-or-computed edges, and communities recovered from a fused graph.
+"""Pins src/section_map.py's pieces: the self-first neighbour layout, the cached-or-computed edges, and communities recovered from a fused graph.
 
 Spec: approved plan step B4 (operator 2026-10-05), playbook.md T154. Synthetic clusters, small sizes, no disk beyond tmp_path.
 
@@ -14,7 +14,7 @@ import pytest
 import scipy.sparse as sp
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import section_graph as sg
 import section_map as smap

@@ -1,4 +1,4 @@
-"""Pins tools/section_screen.py's pure pieces: the whole-paper sample, the arm config, the same-heading share. The pipeline itself is run on real data.
+"""Pins src/section_screen.py's pure pieces: the whole-paper sample, the arm config, the same-heading share. The pipeline itself is run on real data.
 
 Spec: approved plan C:\\Users\\user\\.claude\\plans\\jolly-soaring-moler.md, task T161. Synthetic ids, no disk.
 
@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import section_screen as scr
 

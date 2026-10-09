@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import summarize_clusters as sc
 from summarize_clusters import MAX_FILL, MAX_TOKENS, assert_not_truncated, build_prompt, collapse_ws, fits, parse

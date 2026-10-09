@@ -16,7 +16,7 @@ import react
 import sampler
 
 _diag_agentic_spec = importlib.util.spec_from_file_location(
-    "diag_agentic", Path(__file__).resolve().parent.parent / "tools" / "diag_agentic.py")
+    "diag_agentic", Path(__file__).resolve().parent.parent / "src" / "diag_agentic.py")
 diag_agentic = importlib.util.module_from_spec(_diag_agentic_spec)
 _diag_agentic_spec.loader.exec_module(diag_agentic)
 
@@ -320,7 +320,7 @@ def test_gold_terms_populate_gold_recall_evidence():
 
 # --------------------------------------------------------------------------- live smoke
 
-# --------------------------------------------------------------------------- A10 gold lane (tools/diag_agentic.py)
+# --------------------------------------------------------------------------- A10 gold lane (src/diag_agentic.py)
 
 def test_gold_rows_have_id_prompt_and_nonempty_gold_terms():
     ids = set()

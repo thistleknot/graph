@@ -1,4 +1,4 @@
-"""Pins tools/section_embed.py: the vectorised pooling equals model2vec's own, without its truncation and pad-id failure.
+"""Pins src/section_embed.py: the vectorised pooling equals model2vec's own, without its truncation and pad-id failure.
 
 Spec: approved plan step A2 (operator 2026-10-05), playbook.md T150. A synthetic word-level model, no disk; one test uses the saved
 distilled model when it is on this machine.
@@ -15,7 +15,7 @@ import numpy as np
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from model2vec import StaticModel
 from tokenizers import Tokenizer, models, pre_tokenizers

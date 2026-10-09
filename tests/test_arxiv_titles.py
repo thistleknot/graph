@@ -1,4 +1,4 @@
-"""Pins tools/arxiv_titles.py guards AT1-AT3 on hand-built CSVs and Atom replies. No network, no database: the HTTP call is injected.
+"""Pins src/arxiv_titles.py guards AT1-AT3 on hand-built CSVs and Atom replies. No network, no database: the HTTP call is injected.
 
 Run:  pytest tests/test_arxiv_titles.py -v
 """
@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import arxiv_titles as at
 

@@ -1,4 +1,4 @@
-"""Pins tools/section_map.split_oversize: only communities above factor x the serving-size mean are re-partitioned, inside their own subgraph, under the
+"""Pins src/section_map.split_oversize: only communities above factor x the serving-size mean are re-partitioned, inside their own subgraph, under the
 same seed-stability gate; a failed gate leaves the community whole; ids stay contiguous.
 
 Spec: operator 2026-10-05/06 (communities should be topics; "recommend one" -> split the oversize ones), playbook.md T154. Synthetic planted graphs, no disk.
@@ -15,7 +15,7 @@ import pytest
 import scipy.sparse as sp
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import arxiv_community_map as m
 import section_map as smap

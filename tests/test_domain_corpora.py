@@ -107,7 +107,7 @@ def test_heading_sections_keeps_headings_aligned_with_their_own_paragraphs():
     the time as a defect in my eval, not as sparse retrieval failing on books.
     This pins the pairing, which is the only thing that made it meaningless.
     """
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
     from diag_domain_recall import heading_sections
 
     text = ("## Empty One\n\n"            # no paragraphs -> dropped entirely

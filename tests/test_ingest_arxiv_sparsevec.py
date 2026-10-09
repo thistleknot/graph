@@ -15,7 +15,7 @@ import numpy as np
 import scipy.sparse as sp
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from ingest_arxiv_sparsevec import keep_heaviest, query_terms, saturated
 from salient_grams import bm25_matrix

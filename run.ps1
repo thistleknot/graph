@@ -6,7 +6,7 @@
 # was considered and cut (T34 _Notes:).
 #
 # Usage:
-#   ./run.ps1 start   # launch walker_app.py under streamlit, write .tmp/walker.pid
+#   ./run.ps1 start   # launch src/walker_app.py under streamlit, write .tmp/walker.pid
 #   ./run.ps1 stop     # kill the pidfile's process tree, remove the pidfile
 #   ./run.ps1 status   # report pidfile + health
 
@@ -57,7 +57,7 @@ switch ($Action) {
             $env:CHUNKGRAPH_MODEL_DIR = "C:/Users/user/models/m2v-minilm-l6-256"
         }
 
-        $appPath = Join-Path $RepoRoot "walker_app.py"
+        $appPath = Join-Path $RepoRoot "src\walker_app.py"
         $argList = @("-m", "streamlit", "run", $appPath,
                      "--server.port", "$Port", "--server.headless", "true")
 

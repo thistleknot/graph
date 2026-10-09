@@ -1,4 +1,4 @@
-"""Pins tools/section_graphrag.py guards G1-G5 on hand-built neighbour lists and prompts. No model, no network, no database (the SQL side is pinned in test_section_store.py).
+"""Pins src/section_graphrag.py guards G1-G5 on hand-built neighbour lists and prompts. No model, no network, no database (the SQL side is pinned in test_section_store.py).
 
 Run:  pytest tests/test_section_graphrag.py -v
 """
@@ -9,7 +9,7 @@ from pathlib import Path
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import section_graphrag as g
 

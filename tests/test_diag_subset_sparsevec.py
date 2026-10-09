@@ -20,7 +20,7 @@ from scipy import sparse
 
 _root = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_root))
-sys.path.insert(0, str(_root / "tools"))
+sys.path.insert(0, str(_root / "src"))
 
 from diag_subset_sparsevec import allocation, truncate_rows  # noqa: E402
 

@@ -1,4 +1,4 @@
-"""Pins tools/section_graph.py: the streamed edges equal the brute-force ones, each node's neighbours are its exact top-k, the negative tail is
+"""Pins src/section_graph.py: the streamed edges equal the brute-force ones, each node's neighbours are its exact top-k, the negative tail is
 counted, the union carries provenance. Synthetic clusters, dense and sparse inputs, no disk.
 
 Spec: approved plan step B3 (operator 2026-10-05), playbook.md T153.
@@ -15,7 +15,7 @@ import pytest
 import scipy.sparse as sp
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import section_graph as sg
 

@@ -1,4 +1,4 @@
-"""Pins tools/section_scorecard.py: every number on a planted map whose answer is known, the heading normaliser, and the frozen rubric.
+"""Pins src/section_scorecard.py: every number on a planted map whose answer is known, the heading normaliser, and the frozen rubric.
 
 Spec: approved plan C:\\Users\\user\\.claude\\plans\\jolly-soaring-moler.md, task T158. Synthetic labels, no disk beyond tmp_path.
 
@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import section_scorecard as sc
 

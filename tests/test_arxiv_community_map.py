@@ -16,7 +16,7 @@ import pytest
 import scipy.sparse as sp
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import arxiv_community_map as m
 import hnsw_communities as hc
@@ -227,7 +227,7 @@ def test_the_companion_file_holds_the_whole_section_of_every_selected_chunk_not_
 
 
 def test_a_caller_that_rebinds_OUT_MD_is_honoured_and_the_chunk_maps_file_is_left_alone(tmp_path, monkeypatch):
-    """Regression, 2026-10-06: a default `path=OUT_MD` was bound at definition, so tools/section_map.py (which rebinds m.OUT_MD) overwrote the chunk
+    """Regression, 2026-10-06: a default `path=OUT_MD` was bound at definition, so src/section_map.py (which rebinds m.OUT_MD) overwrote the chunk
     map's .tmp/arxiv_communities.md twice."""
     chunk_md = tmp_path / "chunk_map.md"
     chunk_md.write_text("the chunk map's own file", encoding="utf-8")

@@ -1,4 +1,4 @@
-"""Pins tools/section_store.py guards D1-D5 against the local pgvector container, inside a transaction that is ROLLED BACK: nothing the tests write survives, and the
+"""Pins src/section_store.py guards D1-D5 against the local pgvector container, inside a transaction that is ROLLED BACK: nothing the tests write survives, and the
 sect_* DDL they run is rolled back with it when the tables do not exist yet. Six synthetic sections in three communities; no model, no network.
 
 Run:  pytest tests/test_section_store.py -v
@@ -13,7 +13,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "tools"))
+sys.path.insert(0, str(ROOT / "src"))
 
 import section_store as st
 
