@@ -74,6 +74,11 @@ V9  A paper is identified by its doc_id ('arxiv/<arXiv id without version>', dom
 V8  `lex_chunk_meta.is_junk` flags extraction debris (domain_corpora C10) and `text_md5`
     lets an incremental ingest keep identical chunk texts once, as the full chunker does
     (C8). Junk and reference chunks are stored and flagged, never dropped.
+V10 An entity inventory is frozen PER BUILD in `lex_entity` and the chunks it matches in `lex_mention`
+    (build_id, ord, ent_id, cnt); entity_derive.py derives it (AE1-AE14), nothing here does. A build
+    with no `lex_entity` rows has no entities and the service's entities step does nothing for it.
+    Deleting a paper (V9) deletes its mentions (entity_derive AE12). Spec: NO GOVERNING SPEC beyond the
+    approved plan derive-arxiv-entities-with-information-theory.md; task T131.
 
 DDL lives HERE via ensure_schema, not in sql/, per entities.py:129-135.
 """
@@ -285,8 +290,10 @@ def delete_papers(conn, label: str, doc_ids: list[str], build_id: int | None = N
             if cur.fetchone()[0] is not None:
                 cur.execute(f"DELETE FROM {_table(label, kind)} WHERE ord = ANY(%s)", (ords,))
         if build_id is not None:
-            for t in ("lex_assign", "lex_exemplar"):
-                cur.execute(f"DELETE FROM {t} WHERE build_id = %s AND ord = ANY(%s)", (build_id, ords))
+            for t in ("lex_assign", "lex_exemplar", "lex_mention"):                       # V10: mentions go with the chunk
+                cur.execute("SELECT to_regclass(%s)", (t,))
+                if cur.fetchone()[0] is not None:
+                    cur.execute(f"DELETE FROM {t} WHERE build_id = %s AND ord = ANY(%s)", (build_id, ords))
         cur.execute("DELETE FROM lex_chunk_meta WHERE label = %s AND ord = ANY(%s)", (label, ords))
     return len(ords)
 
@@ -471,6 +478,62 @@ def write_summaries(conn, build_id: int, recs: list[dict]) -> int:
                               r.get("completion_tokens"), r.get("cost"),
                               json.dumps(r["chunk_keys"]), r.get("reason")))
     return len(recs)
+
+
+def ensure_entity_schema(conn) -> None:
+    """V10. The frozen inventory and its mentions. Idempotent."""
+    with conn.cursor() as cur:
+        cur.execute("""CREATE TABLE IF NOT EXISTS lex_entity (
+                           build_id    bigint   NOT NULL REFERENCES lex_build ON DELETE CASCADE,
+                           ent_id      integer  NOT NULL,
+                           fold        text     NOT NULL,
+                           surface     text     NOT NULL,
+                           n           smallint NOT NULL,
+                           score       real     NOT NULL,
+                           df_papers   integer  NOT NULL,
+                           df_chunks   integer  NOT NULL,
+                           tf          integer  NOT NULL,
+                           canonical   integer  NOT NULL,
+                           PRIMARY KEY (build_id, ent_id))""")
+        cur.execute("""CREATE TABLE IF NOT EXISTS lex_mention (
+                           build_id bigint  NOT NULL REFERENCES lex_build ON DELETE CASCADE,
+                           ord      integer NOT NULL,
+                           ent_id   integer NOT NULL,
+                           cnt      integer NOT NULL,
+                           PRIMARY KEY (build_id, ord, ent_id))""")
+        cur.execute("CREATE INDEX IF NOT EXISTS lex_mention_ent ON lex_mention (build_id, ent_id)")
+
+
+def write_entities(conn, build_id: int, rows: list[tuple]) -> None:
+    """V10. Replace the build's inventory. rows = (ent_id, fold, surface, n, score, df_papers, df_chunks, tf, canonical).
+    Its mentions are cleared with it: a mention names an entity of THIS inventory only."""
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM lex_mention WHERE build_id = %s", (build_id,))
+        cur.execute("DELETE FROM lex_entity WHERE build_id = %s", (build_id,))
+        with cur.copy("COPY lex_entity (build_id, ent_id, fold, surface, n, score, df_papers, df_chunks, tf, canonical) FROM STDIN") as cp:
+            for e, fold, surf, n, sc, dp, dc, tf, can in rows:
+                cp.write_row((build_id, int(e), fold, surf, int(n), float(sc), int(dp), int(dc), int(tf), int(can)))
+
+
+def read_entities(conn, build_id: int) -> list[tuple]:
+    """V10. Guarantee: the build's inventory rows in ent_id order (same shape write_entities takes), [] when none was frozen."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT ent_id, fold, surface, n, score, df_papers, df_chunks, tf, canonical FROM lex_entity "
+                    "WHERE build_id = %s ORDER BY ent_id", (build_id,))
+        return cur.fetchall()
+
+
+def replace_mentions(conn, build_id: int, ords: Iterable[int], rows: list[tuple[int, int, int]]) -> int:
+    """V10. For the chunks `ords`, drop their mentions and write `rows` = (ord, ent_id, cnt). Returns rows written. A chunk
+    re-matched is never counted twice."""
+    ords = [int(o) for o in ords]
+    with conn.cursor() as cur:
+        if ords:
+            cur.execute("DELETE FROM lex_mention WHERE build_id = %s AND ord = ANY(%s)", (build_id, ords))
+        with cur.copy("COPY lex_mention (build_id, ord, ent_id, cnt) FROM STDIN") as cp:
+            for o, e, c in rows:
+                cp.write_row((build_id, int(o), int(e), int(c)))
+    return len(rows)
 
 
 def query(conn, label: str, dim: int, qcols: list[int], k: int,

@@ -124,14 +124,6 @@ def test_rrf_rewards_agreement_between_arms_and_breaks_ties_by_item():
     assert api.rrf([]) == [] and api.rrf([[]]) == []
 
 
-def test_reconstruct_drops_the_repeated_header_of_continuation_chunks_only():
-    out = api.reconstruct(["## Results\n\nfirst part", "## Results\n\nsecond part", "no header here, just a continuation", "## Results\n\nthird"])
-    assert out == "## Results\n\nfirst part\n\nsecond part\n\nno header here, just a continuation\n\nthird"
-    assert out.count("## Results") == 1
-    assert api.reconstruct(["## A\n\nonly"]) == "## A\n\nonly" and api.reconstruct([]) == ""
-    assert api.reconstruct(["## A\n\nx", "## B\n\ny"]) == "## A\n\nx\n\n## B\n\ny"     # a different header is content, kept
-
-
 def test_say_survives_a_character_the_console_code_page_cannot_encode(monkeypatch):
     import io
     raw = io.BytesIO()
@@ -152,8 +144,8 @@ def test_a_hit_returns_the_whole_multi_chunk_section_not_just_the_matching_chunk
     out = api.search(conn, LABEL, st, "platypus zebrafish quokka", k=3, mode="sparse", max_chars=None)
     top = out["results"][0]
     assert top["doc_id"] == "arxiv/2601_0001" and top["section_title"] == "Long results" and top["matched_by"] == ["sparse"]
-    n_chunks = len(api.section_chunks(conn, LABEL, "arxiv/2601_0001", top["section_idx"]))
-    assert n_chunks >= 3                                              # the section really is split across chunks
+    chunks, omitted = api.section_chunks(conn, LABEL, "arxiv/2601_0001", top["section_idx"])
+    assert len(chunks) >= 3 and omitted == 0                          # the section really is split across chunks
     assert "filler paragraph 0 " in top["text"] and "filler paragraph 399 " in top["text"]      # both ends of it
     assert top["text"].count("## Long results") == 1                  # continuation headers stripped
     assert len(top["matched_ords"]) == 1 and not top["truncated"] and top["chars_total"] == len(top["text"])
@@ -184,12 +176,29 @@ def test_hits_in_one_section_fold_into_one_result_and_k_bounds_the_count(conn, s
     assert [r["rank"] for r in out["results"]] == list(range(1, len(keys) + 1))
 
 
-def test_the_default_limit_cuts_a_very_long_section_and_says_so_instead_of_returning_it_whole(conn, st):
+def test_the_default_returns_the_entire_section_not_a_prefix_of_it(conn, st):
     whole = api.search(conn, LABEL, st, "platypus zebrafish quokka", k=1, mode="sparse", max_chars=None)["results"][0]
-    assert whole["chars_total"] > api.DEFAULT_MAX_CHARS and not whole["truncated"]            # about 22k characters in this fixture
     default = api.search(conn, LABEL, st, "platypus zebrafish quokka", k=1, mode="sparse")["results"][0]
-    assert default["truncated"] is True and len(default["text"]) == api.DEFAULT_MAX_CHARS
-    assert default["chars_total"] == whole["chars_total"] and whole["text"].startswith(default["text"])      # a cut, never a rewrite
+    assert api.DEFAULT_MAX_CHARS == 200_000 and 20_000 < whole["chars_total"] < api.DEFAULT_MAX_CHARS      # ~22k chars here
+    assert default["text"] == whole["text"] and default["truncated"] is False                              # the old 20k cut is gone
+    assert "filler paragraph 399 " in default["text"]
+
+
+def test_a_junk_chunk_inside_a_section_is_left_out_of_its_text_and_counted(conn, st):
+    top = api.search(conn, LABEL, st, "platypus zebrafish quokka", k=1, mode="sparse", max_chars=None)["results"][0]
+    chunks, _ = api.section_chunks(conn, LABEL, top["doc_id"], top["section_idx"])
+    victim = next(c for c in chunks if c[1] > 0 and "platypus" not in c[2])      # a continuation chunk that is not the hit itself
+    marker = next(p for p in victim[2].split("\n\n")[1:] if p.strip())[:45]      # a paragraph carrying a unique number
+    assert "filler paragraph" in marker
+    assert marker in top["text"]
+    conn.execute("UPDATE lex_chunk_meta SET is_junk = true WHERE label = %s AND ord = %s", (LABEL, victim[0]))
+    try:
+        again = api.search(conn, LABEL, st, "platypus zebrafish quokka", k=1, mode="sparse", max_chars=None)["results"][0]
+        assert again["junk_chunks_omitted"] == 1 and marker not in again["text"]
+        assert again["chars_total"] < top["chars_total"] and "filler paragraph 399 " in again["text"]
+        assert api.get_section(conn, LABEL, top["doc_id"], top["section_idx"])["junk_chunks_omitted"] == 1
+    finally:
+        conn.execute("UPDATE lex_chunk_meta SET is_junk = false WHERE label = %s AND ord = %s", (LABEL, victim[0]))
 
 
 def test_a_cut_text_says_so_and_keeps_the_full_length(conn, st):
@@ -263,6 +272,7 @@ def test_the_endpoints_refuse_bad_parameters_and_unknown_sections(client):
     assert client.get("/search", params={"query": "x", "k": api.MAX_K + 1}).status_code == 422
     assert client.get("/search", params={"query": "x", "mode": "bogus"}).status_code == 422
     assert client.get("/search", params={"query": "x", "max_chars": 10}).status_code == 422
+    assert client.get("/search", params={"query": "x", "max_chars": api.CEILING_MAX_CHARS + 1}).status_code == 422
     assert client.get("/search", params={"query": ""}).status_code == 422
     assert client.get("/section", params={"doc_id": "arxiv/2601_0001", "section_idx": 9999}).status_code == 404
     assert client.get("/section", params={"doc_id": "arxiv/2601_0001", "section_idx": -1}).status_code == 422

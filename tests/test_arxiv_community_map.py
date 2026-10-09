@@ -27,19 +27,6 @@ def _unit(X):
     return X / np.linalg.norm(X, axis=1, keepdims=True)
 
 
-def test_mpl_escapes_dollars_so_latex_chunks_do_not_crash_the_render():
-    """Regression: '$$\\pi ^ { * } ...' raised ParseException and killed the whole figure."""
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-    s = "reward at each step, i.e., $$\\pi ^ { * } ( s..."
-    assert m.mpl(s) == "reward at each step, i.e., \\$\\$\\pi ^ { * } ( s..."
-    fig = plt.figure()
-    fig.text(0.1, 0.5, m.mpl(s))
-    fig.canvas.draw()
-    plt.close(fig)
-
-
 def test_snippet_skips_the_header_and_collapses_whitespace():
     s = m.snippet({"text": "## Title\n\nfirst   line\nsecond line " + "x" * 400}, 40)
     assert s.startswith("first line second line") and s.endswith("...") and len(s) <= 40
@@ -117,22 +104,6 @@ def test_a_summary_is_shown_only_when_its_chunks_are_the_communitys_exemplars(tm
     assert set(m.load_summaries(ex)) == {0}
     monkeypatch.setattr(m, "SUMMARIES", str(tmp_path / "missing.json"))
     assert m.load_summaries(ex) == {}
-
-
-def test_a_card_whose_text_cannot_fit_raises_instead_of_clipping(tmp_path, monkeypatch):
-    monkeypatch.setattr(m, "OUT_PNG", str(tmp_path / "x.png"))
-    rng = np.random.default_rng(0)
-    N = 60
-    lab = np.repeat([0, 1, 2], 20)
-    recs = [{"doc_id": "arxiv/%d" % i, "section_idx": i, "chunk_idx": 0, "section_title": "T", "text": "## T\n\nbody"} for i in range(N)]
-    st = {"lab": lab, "XY": rng.normal(size=(N, 2)), "chosen": 3.0, "cons_ari": 0.9}
-    ex = {c: {"size": 20, "n": 1, "n_papers": 3, "top_paper": "arxiv/0", "top_share": 0.5,
-              "exemplars": [{"role": "medoid", "row": c * 20, "z": 0.0, "key": ["arxiv/%d" % (c * 20), c * 20, 0]}]} for c in range(3)}
-    summ = {0: {"title": "t", "model": "x", "summary": " ".join("sentence number %d." % i for i in range(400))}}
-    with pytest.raises(ValueError, match="would be clipped"):
-        m.render(recs, st, ex, summ)
-    m.render(recs, st, ex, {})                                     # without the oversized summary it renders
-    assert (tmp_path / "x.png").exists()
 
 
 def _rec(text, ref=False, junk=None):
@@ -221,44 +192,236 @@ def test_persist_writes_vectors_communities_assignments_and_exemplars_on_the_liv
         m.persist(ords, mean, E, st, ex, label=label, conn=conn)
 
 
-def _cards(n_sentences):
+def _chunk(doc, si, ci, text, junk=False, ref=False):
+    return {"doc_id": doc, "section_idx": si, "chunk_idx": ci, "section_title": "Long results" if doc.endswith("0001") else "Other",
+            "is_reference": ref, "is_junk": junk, "text": text}
+
+
+def test_section_groups_orders_chunks_by_chunk_idx_and_leaves_junk_out():
+    recs = [_chunk("arxiv/a", 0, 2, "c2"), _chunk("arxiv/a", 0, 0, "c0"), _chunk("arxiv/a", 0, 1, "c1", junk=True),
+            _chunk("arxiv/a", 1, 0, "other"), _chunk("arxiv/b", 0, 0, "b0")]
+    assert m.section_groups(recs) == {("arxiv/a", 0): [(0, "c0"), (2, "c2")], ("arxiv/a", 1): [(0, "other")], ("arxiv/b", 0): [(0, "b0")]}
+
+
+def test_the_companion_file_holds_the_whole_section_of_every_selected_chunk_not_a_snippet(tmp_path):
+    P, Q = "arxiv/2601_0001", "arxiv/2601_0002"
+    allrecs = [_chunk(P, 0, 0, "## Long results\n\nfirst paragraph alpha"),
+               _chunk(P, 0, 1, "## Long results\n\nsecond paragraph beta"),
+               _chunk(P, 0, 2, "## Long results\n\nthird paragraph gamma ~~~ a fence inside and `` ticks"),
+               _chunk(P, 0, 3, "x\n\ny\n\nz", junk=True),
+               _chunk(Q, 1, 0, "## Other\n\nonly body"),
+               _chunk(Q, 2, 0, "## References\n\n[1] cited", ref=True)]
+    recs = [allrecs[i] for i in (0, 1, 2, 4)]                              # what the map clusters
+    ex = {0: {"size": 3, "exemplars": [{"role": "medoid", "row": 1, "z": 0.0}]},         # the MIDDLE chunk was selected
+          1: {"size": 2, "exemplars": [{"role": "medoid", "row": 3, "z": 0.0}]}}          # two sections: a community of one is not listed (A15)
+    path = str(tmp_path / "c.md")
+    assert m.write_sections_md(allrecs, recs, ex, {0: {"title": "Long results topic", "summary": "A draft summary."}}, path) == (2, 0)
+    text = Path(path).read_text(encoding="utf-8")
+    assert all(p in text for p in ("first paragraph alpha", "second paragraph beta", "third paragraph gamma"))   # the whole section
+    assert text.count("## Long results") == 1                                # the continuation headers were dropped
+    assert "x\n\ny\n\nz" not in text and "[1] cited" not in text             # junk and references are not part of it
+    assert text.index("community 0") < text.index("community 1") and "A draft summary." in text and "Long results topic" in text
+    assert "https://arxiv.org/abs/2601.0001" in text and "https://arxiv.org/abs/2601.0002" in text
+    fences = [ln for ln in text.splitlines() if ln and set(ln) == {"~"}]
+    assert len(fences) == 4 and all(len(f) >= 4 for f in fences[:2])        # longer than the ~~~ run inside the section
+
+
+def test_a_caller_that_rebinds_OUT_MD_is_honoured_and_the_chunk_maps_file_is_left_alone(tmp_path, monkeypatch):
+    """Regression, 2026-10-06: a default `path=OUT_MD` was bound at definition, so tools/section_map.py (which rebinds m.OUT_MD) overwrote the chunk
+    map's .tmp/arxiv_communities.md twice."""
+    chunk_md = tmp_path / "chunk_map.md"
+    chunk_md.write_text("the chunk map's own file", encoding="utf-8")
+    other = tmp_path / "section_map.md"
+    allrecs = [_chunk("arxiv/2601_0001", 0, 0, "## Long results\n\nonly body")]
+    ex = {0: {"size": 2, "exemplars": [{"role": "medoid", "row": 0, "z": 0.0}]}}
+    monkeypatch.setattr(m, "OUT_MD", str(other))
+    assert m.write_sections_md(allrecs, allrecs, ex, {}) == (1, 0)
+    assert "only body" in other.read_text(encoding="utf-8")
+    assert chunk_md.read_text(encoding="utf-8") == "the chunk map's own file"
+
+
+def test_a_known_paper_title_follows_the_section_heading_in_the_markdown_and_gets_a_line_on_the_card_A16(tmp_path):
+    P = "arxiv/2601_0001"
+    allrecs = [_chunk(P, 0, 0, "## Long results\n\nshared body"), _chunk("arxiv/2601_0002", 1, 0, "## Other\n\nother body")]
+    ex = {0: {"size": 2, "n_papers": 2, "top_paper": "arxiv/2601_0001", "top_share": 0.5, "exemplars": [{"role": "medoid", "row": 0, "z": 0.0}, {"role": "z=1/2", "row": 1, "z": 0.5}]}}
+    titles = {P: "A Survey of Speculative Decoding"}
+    path = str(tmp_path / "t.md")
+    m.write_sections_md(allrecs, allrecs, ex, {}, path, titles=titles)
+    text = Path(path).read_text(encoding="utf-8")
+    assert "### medoid, z=0.00: Long results — A Survey of Speculative Decoding [2601_0001](https://arxiv.org/abs/2601.0001)" in text
+    assert "### z=1/2, z=0.50: Other [2601_0002]" in text                                              # no title for this paper: the heading is as before
+    items, tot = m.card_plan(0, 0, ex[0], None, allrecs, None, None, None, titles)
+    plain, tot0 = m.card_plan(0, 0, ex[0], None, allrecs)
+    assert "A Survey of Speculative Decoding" in [t for t, *_ in items] and "A Survey of Speculative Decoding" not in [t for t, *_ in plain] and tot > tot0
+
+
+def test_a_community_of_one_section_is_not_listed_and_the_markdown_says_how_many_were_left_out_A15(tmp_path):
+    P = "arxiv/2601_0001"
+    allrecs = [_chunk(P, 0, 0, "## Long results\n\nshared body"), _chunk("arxiv/2601_0002", 1, 0, "## Other\n\nlone body"), _chunk("arxiv/2601_0003", 1, 0, "## Other\n\nsecond lone body")]
+    ex = {0: {"size": 2, "exemplars": [{"role": "medoid", "row": 0, "z": 0.0}]}, 1: {"size": 1, "exemplars": [{"role": "medoid", "row": 1, "z": 0.0}]},
+          2: {"size": 1, "exemplars": [{"role": "medoid", "row": 2, "z": 0.0}]}}
+    path = str(tmp_path / "one.md")
+    assert m.write_sections_md(allrecs, allrecs, ex, {}, path) == (1, 0)                              # one section written: the community of two
+    text = Path(path).read_text(encoding="utf-8")
+    assert "shared body" in text and "lone body" not in text and "community 1" not in text and "community 2" not in text
+    assert "2 communities of a single section are not listed" in text and m.MIN_COMMUNITY == 2
+
+
+def test_a_section_longer_than_the_cap_is_cut_with_a_note_that_says_how_much_and_how_to_read_the_rest(tmp_path):
+    big = "## Everything\n\n" + "\n\n".join("paragraph %04d of a book that came out as one section" % i for i in range(400))
+    small = "## Small\n\nshort body"
+    allrecs = [_chunk("arxiv/Book", 0, 0, big), _chunk("arxiv/2601_0001", 1, 0, small)]
+    ex = {0: {"size": 2, "exemplars": [{"role": "medoid", "row": 0, "z": 0.0}, {"role": "z=1/2", "row": 1, "z": 0.5}]}}
+    path = str(tmp_path / "c.md")
+    n, cut = m.write_sections_md(allrecs, allrecs, ex, {}, path, cap=1000)
+    text = Path(path).read_text(encoding="utf-8")
+    assert (n, cut) == (2, 1)
+    assert "paragraph 0000" in text and "paragraph 0399" not in text           # only the first `cap` characters of the long one
+    assert "SECTION CUT: 1000 of %d characters shown" % len(big) in text
+    assert "GET /section?doc_id=arxiv/Book&section_idx=0&max_chars=20000000" in text
+    assert "short body" in text                                                 # a section under the cap is whole
+    assert len(text) < 4000
+
+
+def test_windows_cut_every_text_into_consecutive_token_windows_with_a_cap_and_an_owner_A10():
+    import re
+    from transformers import AutoTokenizer
+    tok = AutoTokenizer.from_pretrained(m.MINILM)
+    short = "graphs and communities in text"
+    long = " ".join("word%d" % i for i in range(600))                        # several windows, under the cap
+    huge = " ".join("w%d" % i for i in range(m.WIN * m.MAX_WIN * 3))          # more than the cap allows
+    pieces, owner = m.windows([short, "", long, huge], tok)
+    assert owner == sorted(owner) and set(owner) == {0, 1, 2, 3}              # every text, including the empty one, has a piece
+    assert [p for p, o in zip(pieces, owner) if o == 0] == [short] and [p for p, o in zip(pieces, owner) if o == 1] == [""]
+    long_pieces = [p for p, o in zip(pieces, owner) if o == 2]
+    assert len(long_pieces) > 1 and all(len(tok(p, add_special_tokens=False)["input_ids"]) <= m.WIN for p in long_pieces)
+    nonws = lambda s: re.sub(r"\s+", "", s)
+    assert nonws("".join(long_pieces)) == nonws(long)                          # windows are consecutive: nothing lost, nothing repeated
+    assert sum(1 for o in owner if o == 3) == m.MAX_WIN                        # the cap
+
+
+def test_the_embedding_and_state_caches_have_their_own_names_so_first_window_caches_are_never_read_A10():
+    assert m.EMB.endswith("_win.npy") and m.STATE.endswith("_win.npz") and m.KNN_SWEEP.endswith("_win.npz")
+    assert {m.EMB, m.STATE, m.KNN_SWEEP} <= set(m.CACHES)                      # and the text-fingerprint purge covers them
+
+
+def _marks_world():
+    """Three communities of 20 points: 1, 2 and 3 selected exemplars."""
     rng = np.random.default_rng(0)
     N = 60
-    lab = np.repeat([0, 1, 2], 20)
-    recs = [{"doc_id": "arxiv/%d" % i, "section_idx": i, "chunk_idx": 0, "section_title": "T", "text": "## T\n\nbody"} for i in range(N)]
-    st = {"lab": lab, "XY": rng.normal(size=(N, 2)), "chosen": 3.0, "cons_ari": 0.9}
-    ex = {c: {"size": 20, "n": 1, "n_papers": 3, "top_paper": "arxiv/0", "top_share": 0.5,
-              "exemplars": [{"role": "medoid", "row": c * 20, "z": 0.0, "key": ["arxiv/%d" % (c * 20), c * 20, 0]}]} for c in range(3)}
-    summ = {1: {"title": "t", "model": "x", "summary": " ".join("sentence number %d." % i for i in range(n_sentences))}}
-    return recs, st, ex, summ
+    XY = rng.normal(size=(N, 2))
+    st = {"lab": np.repeat([0, 1, 2], 20), "XY": XY, "chosen": 3.0, "cons_ari": 0.9}
+    pick = lambda c, k: [{"role": "medoid" if i == 0 else "z=%d/%d" % (i, k), "row": c * 20 + i, "z": i / k} for i in range(k)]
+    ex = {0: {"exemplars": pick(0, 1)}, 1: {"exemplars": pick(1, 2)}, 2: {"exemplars": pick(2, 3)}}
+    return XY, st, ex
 
 
-def test_the_figure_grows_to_the_longest_card_instead_of_clipping_or_failing(tmp_path, monkeypatch):
+def test_map_marks_gives_every_community_one_star_at_its_medoid_and_a_pick_per_other_exemplar_A9():
+    XY, st, ex = _marks_world()
+    stars, picks = m.map_marks(XY, ex)
+    assert [c for c, _, _ in stars] == [0, 1, 2]
+    assert all((x, y) == tuple(XY[ex[c]["exemplars"][0]["row"]]) for c, x, y in stars)           # the star sits on the medoid
+    assert [c for c, *_ in picks] == [1, 2, 2]                                                    # 0 + 1 + 2 others: one exemplar draws no pick
+    for c, x, y, sx, sy in picks:
+        assert (sx, sy) == tuple(XY[ex[c]["exemplars"][0]["row"]]) and (x, y) != (sx, sy)         # each pick is joined to its own star
+
+
+def test_the_map_draws_every_community_as_one_square_text_free_figure_A9(tmp_path, monkeypatch):
     from PIL import Image
     monkeypatch.setattr(m, "OUT_PNG", str(tmp_path / "x.png"))
-    recs, st, ex, short = _cards(8)
-    m.render(recs, st, ex, short)
-    floor = Image.open(tmp_path / "x.png").size[1]
-    assert floor == int(m.FIG_H * 80)                                           # a short summary: the floor height
-    recs, st, ex, longer = _cards(100)                                          # needs more than the floor allows
-    items, total = m.card_plan(0, 1, ex[1], longer[1], recs)
-    assert total > m.FIG_H * 0.2175 - m.CARD_MARGIN                              # it really would not fit at the floor
-    m.render(recs, st, ex, longer)
-    assert Image.open(tmp_path / "x.png").size[1] > floor                       # so the figure grew
-    items, total = m.card_plan(0, 1, ex[1], longer[1], recs)
-    assert [t for t, *_ in items if "sentence number 99." in t]                  # the whole summary is laid out, none cut
+    XY, st, ex = _marks_world()
+    m.render(st, ex)
+    assert Image.open(tmp_path / "x.png").size == (m.FIG_IN * 80, m.FIG_IN * 80)               # no card grid to grow it: the size is fixed
+    big = {c: {"exemplars": [{"role": "medoid", "row": c % 60, "z": 0.0}]} for c in range(253)}   # the live community count
+    stars, picks = m.map_marks(XY, big)
+    assert len(stars) == 253 and picks == []                                                   # every community, none dropped
 
 
-def test_card_plan_lays_out_every_line_of_the_summary_and_every_exemplar():
-    recs, st, ex, summ = _cards(30)
-    items, total = m.card_plan(0, 1, ex[1], summ[1], recs)
-    text = " ".join(t for t, *_ in items)
-    assert all(("sentence number %d." % i) in text for i in range(30))
-    assert total == pytest.approx(items[-1][1] + 0.16 + 0.05, abs=1e-9)         # the last snippet line, then the gap after it
-    ys = [y for _, y, _, _ in items]
-    assert ys == sorted(ys)                                                    # top to bottom, never overlapping upward
-    no_summary = m.card_plan(0, 0, ex[0], None, recs)[0]
-    assert any("no summary" in t for t, *_ in no_summary)
+def test_section_lines_drop_the_header_keep_paragraphs_wrap_and_say_when_text_was_cut_A11():
+    rec = {"text": "## Heading\n\n" + "alpha " * 40 + "\n\nsecond paragraph here"}
+    lines, cut = m.section_lines(rec, width=40, chars=10_000)
+    assert not cut and "Heading" not in " ".join(lines)
+    assert "" in lines and lines[-1] == "second paragraph here"                         # a blank line separates the paragraphs, none trails
+    assert all(len(ln) <= 40 for ln in lines)
+    short, cut = m.section_lines(rec, width=40, chars=50)
+    assert cut and sum(len(ln) for ln in short) <= 50 + len(short)
+    assert m.section_lines({"text": "header only"}) == ([], False)                   # no body, nothing drawn
+
+
+def _card_world(n_comm=14, per=6, seed=1):
+    rng = np.random.default_rng(seed)
+    N = n_comm * per
+    lab = np.repeat(np.arange(n_comm), per)
+    recs = [{"doc_id": "arxiv/p%d" % (i // 2), "section_idx": i, "section_title": "Section %d" % i,
+             "text": "## Section %d\n\n%s" % (i, ("word%d " % i) * (30 + 10 * (i % 5)))} for i in range(N)]
+    ex = {c: {"size": per, "n_papers": 3, "top_paper": "arxiv/p%d" % (c * per // 2), "top_share": 0.5,
+              "exemplars": [{"role": "medoid" if j == 0 else "z=%d/2" % j, "row": c * per + j, "z": j / 2} for j in range(1 + c % 3)]} for c in range(n_comm)}
+    st = {"lab": lab, "XY": rng.normal(size=(N, 2)), "chosen": 3.0, "cons_ari": 0.9}
+    return recs, st, ex
+
+
+def test_card_plan_has_a_title_a_line_per_exemplar_and_a_total_height_A11():
+    recs, st, ex = _card_world()
+    items, total = m.card_plan(0, 5, ex[5], None, recs)
+    texts = [t for t, *_ in items]
+    assert texts[0].startswith("1  community 5  (6 %s)" % m.UNIT)
+    assert sum(1 for t in texts if t.startswith(("medoid", "z="))) == len(ex[5]["exemplars"])
+    assert total == pytest.approx(items[-1][1] + 0.05, abs=0.3) or total > items[-1][1]
+    withs, tot2 = m.card_plan(0, 5, ex[5], {"title": "A topic", "summary": "word " * 60, "model": "x"}, recs)
+    assert "A topic" in [t for t, *_ in withs] and tot2 > total                         # a summary is laid out whole and makes the card taller
+
+
+def test_dunning_terms_are_the_label_until_a_summary_title_exists_and_sit_beside_it_after_A13(tmp_path):
+    P = "arxiv/2601_0001"
+    allrecs = [_chunk(P, 0, 0, "## A\n\nalpha body"), _chunk(P, 1, 0, "## B\n\nbeta body")]
+    ex = {0: {"size": 3, "exemplars": [{"role": "medoid", "row": 0, "z": 0.0}]}, 1: {"size": 2, "exemplars": [{"role": "medoid", "row": 1, "z": 0.0}]}}
+    terms = {0: ["kv cache", "eviction", "attention"], 1: ["graph"]}
+    path = str(tmp_path / "t.md")
+    m.write_sections_md(allrecs, allrecs, ex, {1: {"title": "Graph topic", "summary": "S."}}, path, terms=terms)
+    text = Path(path).read_text(encoding="utf-8")
+    assert "## community 0 (3 %s): kv cache · eviction · attention" % m.UNIT in text                  # no summary: the terms are the label
+    assert "## community 1 (2 %s): Graph topic" % m.UNIT in text and "**Dunning terms:** graph" in text    # a summary title leads, the terms stay beside it
+    path2 = str(tmp_path / "t2.md")
+    s = {1: {"title": "Graph topic", "title_bold": "**Graph** topic", "summary": "About graph.", "summary_bold": "About **graph**.", "terms_surviving": ["graph"]}}
+    m.write_sections_md(allrecs, allrecs, ex, s, path2, terms=terms)
+    t2 = Path(path2).read_text(encoding="utf-8")
+    assert "## community 1 (2 %s): **Graph** topic" % m.UNIT in t2 and "About **graph**." in t2 and "surviving into the summary, bold there: 1 of 1" in t2
+    items, _ = m.card_plan(0, 0, {"size": 3, "n_papers": 1, "top_paper": "arxiv/p", "top_share": 1.0, "exemplars": ex[0]["exemplars"]}, None, allrecs, terms[0])
+    assert "kv cache · eviction · attention" in [t for t, *_ in items]
+
+
+def test_entities_get_their_own_line_beside_the_dunning_terms_in_the_markdown_and_on_the_card_A14(tmp_path):
+    P = "arxiv/2601_0001"
+    allrecs = [_chunk(P, 0, 0, "## A\n\nalpha body"), _chunk(P, 1, 0, "## B\n\nbeta body")]
+    ex = {0: {"size": 3, "exemplars": [{"role": "medoid", "row": 0, "z": 0.0}]}, 1: {"size": 2, "exemplars": [{"role": "medoid", "row": 1, "z": 0.0}]}}
+    path = str(tmp_path / "e.md")
+    stats = {0: "2 of 3 sections mention an entity", 1: "0 of 2 sections mention an entity"}
+    m.write_sections_md(allrecs, allrecs, ex, {}, path, terms={0: ["kv cache"]}, entities={0: ["harness 512", "verifier 169"]}, entity_stats=stats)
+    text = Path(path).read_text(encoding="utf-8")
+    assert "**Entities:** harness 512 · verifier 169 (2 of 3 sections mention an entity)" in text                      # names with their section counts, then the aggregate
+    assert "**Entities:** none characteristic (0 of 2 sections mention an entity)" in text and text.count("**Entities:**") == 2   # a community with stats and no entity says so
+    path_b = str(tmp_path / "e2.md")
+    m.write_sections_md(allrecs, allrecs, ex, {}, path_b, terms={0: ["kv cache"]}, entities={0: ["harness"]})
+    assert "**Entities:** harness\n" in Path(path_b).read_text(encoding="utf-8") and Path(path_b).read_text(encoding="utf-8").count("**Entities:**") == 1      # no stats given: names only; none for community 1
+    card = {"size": 3, "n_papers": 1, "top_paper": "arxiv/p", "top_share": 1.0, "exemplars": ex[0]["exemplars"]}
+    with_e, tot_e = m.card_plan(0, 0, card, None, allrecs, ["kv cache"], ["harness 512", "verifier 169"], "2 of 3 sections mention an entity")
+    without, tot = m.card_plan(0, 0, card, None, allrecs, ["kv cache"])
+    texts = [t for t, *_ in with_e]
+    assert "entities: harness 512 · verifier 169" in texts and "2 of 3 sections mention an entity" in texts and tot_e > tot
+    assert not [t for t, *_ in without if t.startswith("entities:")]
+
+
+def test_render_cards_draws_the_map_and_the_twelve_largest_as_cards_in_a_figure_that_grows_A11(tmp_path, monkeypatch):
+    from PIL import Image
+    monkeypatch.setattr(m, "OUT_PNG", str(tmp_path / "cards.png"))
+    monkeypatch.setattr(m, "UNIT", "sections")
+    recs, st, ex = _card_world(n_comm=14)
+    out = m.render_cards(recs, st, ex, {})
+    w, h = Image.open(out).size
+    assert out == str(tmp_path / "cards.png") and w == m.FIG_W * 80 and h >= m.FIG_H * 80      # the floor height, grown when a card needs it
+    with pytest.raises(ValueError):
+        monkeypatch.setattr(m, "MAX_FIG_H", 3)                                                  # a cap too small for the longest card is an error, not a clipped card
+        m.render_cards(recs, st, ex, {})
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="the failure is Windows' refusal to truncate a memory-mapped file")

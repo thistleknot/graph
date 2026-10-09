@@ -43,7 +43,15 @@ S7  The sibling fires every 15 minutes (WATCH_INTERVAL_S = 900) and its minute d
     after one of its cycles (a 15-minute sibling has no unique "15 minutes after": +15 lands on its
     next cycle, +17 on two minutes after it).
 
-Run:  python -u tools\\arxiv_graph_service.py --watch | --once | --rebuild
+S9  Entities are opt-in per build. `--freeze-entities` derives an inventory from the live build's retrievable chunks
+    (entity_derive, guards AE1-AE14), stores it in lex_entity, records the tokenizer version and the parameters in
+    lex_build.params["entities"], and matches every retrievable chunk. A cycle then matches each newly ingested
+    retrievable chunk against that frozen inventory and changes no statistic (AE11). A build with no inventory does
+    nothing here; a full rebuild creates a new build and, only if the one it replaces had an inventory, re-freezes
+    with the same parameters. An inventory whose tokenizer version differs from the code's is never matched against.
+    Task T131; spec: the approved plan derive-arxiv-entities-with-information-theory.md.
+
+Run:  python -u tools\\arxiv_graph_service.py --watch | --once | --rebuild | --freeze-entities
 """
 from __future__ import annotations
 
@@ -66,6 +74,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 import numpy as np
 
+import entity_derive as ed
 import sparsevec_store as ss
 from domain_corpora import chunk_arxiv, load_arxiv_papers, with_junk_flag
 from ingest_arxiv_sparsevec import doc_row
@@ -76,6 +85,8 @@ CACHE = ROOT / ".tmp" / "arxiv_section_chunks.pkl"
 MAP_DIR = ROOT / ".tmp"             # where tools/arxiv_community_map.py writes its PNG
 HOLD, LOCK = ROOT / ".tmp" / "arxiv_graph_hold", ROOT / ".tmp" / "arxiv_graph.lock"
 SIBLING_LOG = Path(r"D:\c\arxiv_id_lists\.tmp\watch.log")
+ENTITY_PARAMS = ed.Params(drop=frozenset({"bh"}), df_floor=2, uni_quota=None)    # S9: chosen by the T132 sweep's pre-registered rule (two disjoint paper samples, tuning half); held-out: matches 1.36 -> 0.14 per no-entity sentence, recall 14/43 -> 11/43 (McNemar p=0.45)
+ENTITY_K = 40_000                   # S9: inventory size for the 2,521-paper corpus; pre-registered rule over k in {5k..80k}, tuning half: recall 7/41 at 5k, 26/41 at 40k and 80k, matches per no-entity sentence 0.92 at 40k vs 2.69 at 80k. k does NOT carry over to a corpus of another size.
 REBUILD_FRACTION = 0.05             # S6: a starting constant
 VRAM_DEFER_FRAC = 0.5               # S5: the sibling's own rule
 INTERVAL_MIN, SIBLING_PERIOD_MIN, OFFSET_MIN, GRACE_MIN = 30, 15, 15, 2
@@ -165,8 +176,59 @@ def frozen(conn, label: str = LABEL) -> dict:
     return {"build": build, "n_chunks": n_chunks, "fit": p["fit"], "dim": p["bm25"]["dim"], "avgdl": p["bm25"]["avgdl"],
             "whales": p["bm25"]["whale_cols"], "col": {piece: c - 1 for c, piece, _ in rows},
             "idf": np.array([r[2] for r in rows], float), "mean": np.array(p["dense"]["mean"], np.float32),
-            "dense_dim": p["dense"]["dim"], "cids": [c for c, _ in cents],
+            "entities": p.get("entities"), "dense_dim": p["dense"]["dim"], "cids": [c for c, _ in cents],
             "centroids": np.array([json.loads(v) for _, v in cents], np.float32)}
+
+
+def frozen_inventory(conn, build: int, meta: dict | None) -> "ed.Inventory | None":
+    """S9. `meta` is lex_build.params["entities"]. Guarantee: the build's frozen inventory as an entity_derive.Inventory, or None
+    when none was frozen or its tokenizer version is not the code's (a different tokenizer would match different spans, AE11)."""
+    rows = ss.read_entities(conn, build) if meta else []
+    if not rows:
+        return None
+    if meta.get("tokenizer") != ed.TOKENIZER_VERSION:
+        log("inventory of build %d was frozen with tokenizer %r, code is %r: not matching" % (build, meta.get("tokenizer"), ed.TOKENIZER_VERSION))
+        return None
+    return ed.Inventory([r[1] for r in rows], [r[2] for r in rows], np.array([r[3] for r in rows], np.int64),
+                        np.array([r[4] for r in rows], float), np.array([r[5] for r in rows], np.int64),
+                        np.array([r[6] for r in rows], np.int64), np.array([r[7] for r in rows], np.int64),
+                        np.array([r[8] for r in rows], np.int64), meta["tokenizer"])
+
+
+def match_entities(conn, build: int, meta: dict | None, ords: list[int], texts: list[str], doc_ids: list[str]) -> int:
+    """S9, AE11, AE13. Guarantee: the frozen inventory's mentions of the chunks `ords` are in lex_mention (their old ones
+    replaced); returns rows written, 0 when the build has no usable inventory. No statistic is read or changed."""
+    inv = frozen_inventory(conn, build, meta)
+    if inv is None or not ords:
+        return 0
+    chunk, ent, cnt = ed.match_frozen(inv, ed.tokenize_corpus(texts, doc_ids))
+    return ss.replace_mentions(conn, build, ords, [(ords[int(c)], int(e), int(n)) for c, e, n in zip(chunk, ent, cnt)])
+
+
+def freeze_entities(conn, label: str = LABEL, params: "ed.Params | None" = None, k: int = ENTITY_K, batch: int = 4000) -> dict:
+    """S9. Guarantee: an inventory derived from the live build's retrievable chunks is stored in lex_entity with its parameters in
+    lex_build.params["entities"], and every retrievable chunk is matched against it. Replaces any inventory the build had."""
+    import dataclasses
+    params = params or ENTITY_PARAMS
+    live = ss.live_build(conn, label)
+    assert live is not None, "no live build for %r" % label
+    build = live[0]
+    ss.ensure_entity_schema(conn)
+    rows = conn.execute("SELECT ord, doc_id, text FROM lex_chunk_meta WHERE label = %s AND NOT is_reference AND NOT is_junk ORDER BY ord",
+                        (label,)).fetchall()
+    ords, doc_ids, texts = [r[0] for r in rows], [r[1] for r in rows], [r[2] for r in rows]
+    log("deriving entities from %d chunks of build %d" % (len(texts), build))
+    inv, _, _, corpus, flags = ed.derive(texts, doc_ids, params, k=k)
+    ss.write_entities(conn, build, [(i, inv.fold[i], inv.surface[i], int(inv.n[i]), float(inv.score[i]), int(inv.df_papers[i]),
+                                     int(inv.df_chunks[i]), int(inv.tf[i]), int(inv.canonical[i])) for i in range(len(inv.fold))])
+    meta = {"tokenizer": ed.TOKENIZER_VERSION, "k": k, "n": len(inv.fold), "params": {**dataclasses.asdict(params), "drop": sorted(params.drop)},
+            "cipher_papers": [corpus.papers[i] for i in np.flatnonzero(flags)]}
+    ss.update_build_params(conn, build, {"entities": meta})
+    written = 0
+    for i in range(0, len(texts), batch):
+        written += match_entities(conn, build, meta, ords[i:i + batch], texts[i:i + batch], doc_ids[i:i + batch])
+    log("froze %d entities (cipher papers left out: %d), %d mention rows" % (len(inv.fold), len(meta["cipher_papers"]), written))
+    return {"entities": len(inv.fold), "mentions": written, "cipher_papers": len(meta["cipher_papers"])}
 
 
 def ingest_new(conn, label: str, ids: list[str], docs: list[str], st: dict, embed_fn,
@@ -208,6 +270,9 @@ def ingest_new(conn, label: str, ids: list[str], docs: list[str], st: dict, embe
         ss.write_assignments(conn, st["build"], [(ords[i], int(st["cids"][c]), "nearest-centroid", None, None)
                                                  for i, c in zip(keep, nearest)])
         out["placed"] = len(keep)
+        if st.get("entities"):                                           # S9: a build without an inventory reports nothing here
+            out["mentions"] = match_entities(conn, st["build"], st["entities"], [ords[i] for i in keep],
+                                             [fresh[i]["text"] for i in keep], [fresh[i]["doc_id"] for i in keep])
     return out
 
 
@@ -309,7 +374,11 @@ def cycle(label: str = LABEL, root: str | None = None, embed_fn=None, conn=None,
     log("cycle: %s" % json.dumps(out))
     if out["rebuild"]:
         log("changed %.1f%% of the build's chunks (threshold %.0f%%): full rebuild" % (100 * out["added_fraction"], 100 * REBUILD_FRACTION))
+        prior = st.get("entities")                                # S9: only a build that had an inventory gets one again
         rebuild_fn(list(STEPS))
+        if prior:
+            out["entities"] = freeze_entities(conn, label, ed.Params(**{**prior["params"], "drop": frozenset(prior["params"].get("drop", []))}),
+                                              k=prior["k"])
     return out
 
 
@@ -346,6 +415,7 @@ def main() -> None:
     g.add_argument("--watch", action="store_true", help="loop forever on the 30-minute slots")
     g.add_argument("--once", action="store_true", help="one cycle now")
     g.add_argument("--rebuild", action="store_true", help="the full pipeline now")
+    g.add_argument("--freeze-entities", action="store_true", help="derive and store an entity inventory for the live build (S9)")
     ap.add_argument("--label", default=LABEL)
     args = ap.parse_args()
     if args.watch:
@@ -353,7 +423,10 @@ def main() -> None:
         return
     assert acquire_lock(), "another cycle holds %s" % LOCK
     try:
-        rebuild() if args.rebuild else cycle(args.label)
+        if args.freeze_entities:
+            freeze_entities(ss.connect(), args.label)
+        else:
+            rebuild() if args.rebuild else cycle(args.label)
     finally:
         release_lock()
 

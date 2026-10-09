@@ -117,3 +117,65 @@ def test_doc_row_drops_unknown_terms_but_their_length_still_counts():
     assert set(padded) == set(base) == {col["leiden"], col["bm25"]}           # the unknown term has no column
     assert all(padded[j] < base[j] for j in base)                            # but a longer document saturates less
     assert doc_row(["neverseen", "alsonew"], col, idf, avgdl, whales) == ({}, {})
+
+
+# ------------------------------------------------------------------------------------------------- A6 (BPE vocabulary)
+def _bpe_corpus():
+    rng = np.random.default_rng(4)
+    stems = ["transform", "attention", "quantiz", "gradient", "embedding", "optimi", "regulariz", "convolut"]
+    ends = ["er", "ers", "ation", "ing", "ed", "s", "al"]
+    return [[str(rng.choice(stems) + rng.choice(ends)) for _ in range(12)] for _ in range(60)]
+
+
+def _join(pieces):
+    return "".join(p[2:] if p.startswith("##") else p for p in pieces)
+
+
+def test_bpe_docs_spell_every_word_from_pieces_that_concatenate_back_to_the_word_A6():
+    from ingest_arxiv_sparsevec import bpe_docs
+    docs = _bpe_corpus()
+    out, to_pieces = bpe_docs(docs, merges=40)                                                      # a budget above the term count would merge every word whole
+    assert len(out) == len(docs)
+    for words, pieces in zip(docs[:10], out[:10]):
+        assert _join(pieces) == "".join(words)                                                     # nothing lost, nothing added
+        assert "[UNK]" not in pieces
+    assert sum(len(o) for o in out) > sum(len(d) for d in docs)                                    # rare words split: more pieces than words
+    assert not to_pieces(["transformer"])[0].startswith("##")                                      # a word starts with a bare piece
+
+
+def test_bpe_docs_spell_a_word_never_seen_and_spell_queries_as_the_index_was_spelled_A6():
+    from ingest_arxiv_sparsevec import bpe_docs
+    docs = _bpe_corpus()
+    out, to_pieces = bpe_docs(docs, merges=200)
+    unseen = to_pieces(["attentionest"])                                                            # in no document, built from characters the corpus has
+    assert _join(unseen) == "attentionest" and "[UNK]" not in unseen
+    assert "[UNK]" in to_pieces(["kiwi"])                                                           # a character no document holds: unspellable, so it matches no column
+    seen = docs[0][0]
+    n = len(to_pieces([seen]))
+    assert to_pieces([seen]) == out[0][:n]                                                          # same spelling in a document and in a query
+
+
+def test_bpe_docs_keep_an_empty_document_empty_and_still_spell_whales_and_hapaxes_A6():
+    from ingest_arxiv_sparsevec import bpe_docs
+    out, _ = bpe_docs(_bpe_corpus() + [[]], merges=200)
+    assert out[-1] == []
+    docs2 = [["everyword", "common%d" % (i % 5), "common%d" % (i % 5)] for i in range(30)] + [["hapaxonly"]]
+    _, to_pieces = bpe_docs(docs2, merges=100)                                                      # a whale and a hapax do not train the merges
+    assert _join(to_pieces(["hapaxonly"])) == "hapaxonly" and _join(to_pieces(["everyword"])) == "everyword"
+
+
+def test_a_bpe_query_is_spelled_from_words_not_from_characters_A6():
+    """The live defect: query_terms passed the query STRING to to_pieces (which takes a list of words) and spelled it from single characters,
+    so recall@50 on the BPE build was 0.001. The query side must be words first, then pieces: tok = lambda text: to_pieces(tokenize(text))."""
+    from ingest_arxiv_sparsevec import bpe_docs
+    from stoplist import tokenize
+    docs = [tokenize("transformer attention gradient embedding"), tokenize("quantization regularization convolution optimizer")] * 12
+    out, to_pieces = bpe_docs(docs, merges=60)
+    BM, TF, terms, df = bm25_matrix(out)
+    col = {str(t): j for j, t in enumerate(terms)}
+    idf = np.ones(len(terms))
+    tok = lambda text: to_pieces(tokenize(text))
+    cols, _ = query_terms("transformer attention", col, idf, tok)
+    assert cols == sorted({col[p] for p in to_pieces(["transformer", "attention"])})                # the pieces of those two words, nothing else
+    wrong, _ = query_terms("transformer attention", col, idf, to_pieces)                            # the buggy wiring: a string iterated as characters
+    assert wrong != cols

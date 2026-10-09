@@ -15,10 +15,12 @@ Skill: sparsevec-lexsem-graph (R6 query-side idf, R9 centered dense).
 Q1  A query is weighted with the live build's own vocabulary and idf. A term the build never saw carries no
     weight and is reported, not silently dropped; with no known term the sparse arm is empty and says so.
 Q2  The arms' scores are not comparable (an inner product against a cosine), so they are fused by rank.
-Q3  A section is rebuilt, not stored: its chunks in chunk_idx order, the section header the chunker prepended to
-    each continuation chunk (C7) removed so the text reads once. A chunk is keyed by its FIRST section, so a
-    small section merged into a chunk after it comes along with it. `max_chars` bounds what is returned and
-    a cut is NEVER silent: `truncated` is set and `chars_total` says what was left out.
+Q3  A section is rebuilt, not stored, by domain_corpora.reaggregate_section (C12): its chunks in chunk_idx order,
+    the header the chunker prepended to each continuation chunk dropped, NO overlap trimming (none is stored;
+    a trim would delete repeats the source contains). Junk chunks (OCR debris) are left out and counted in
+    `junk_chunks_omitted`. A chunk is keyed by its FIRST section, so a small section merged into a chunk after it
+    comes along with it. The whole section is returned: `max_chars` defaults to 200,000 (the 99.9th percentile
+    of section size is 79,000) and a cut is NEVER silent: `truncated` is set and `chars_total` says what was left out.
 Q4  Reference and junk chunks are stored and flagged (C9, C10); search leaves them out by default.
 Q5  Degradation is visible: when the dense arm cannot run, hybrid answers from the sparse arm and the response
     carries a warning; a dense-only query that cannot run returns nothing and says why.
@@ -32,7 +34,6 @@ OpenWebUI: Settings -> Tools -> add an OpenAPI tool server at http://127.0.0.1:8
 from __future__ import annotations
 
 import argparse
-import re
 import sys
 import threading
 from collections import defaultdict
@@ -49,31 +50,18 @@ from pydantic import BaseModel, Field
 
 import sparsevec_store as ss
 from arxiv_graph_service import frozen
+from domain_corpora import SECTION_DISPLAY_CAP, arxiv_url, reaggregate_section
 from ingest_arxiv_sparsevec import query_terms
 
 LABEL = "arxiv_sect"
 PORT = 8780
 RRF_K, POOL_PER_K, MAX_K = 60, 10, 20
-DEFAULT_K, DEFAULT_MAX_CHARS = 3, 20_000
+DEFAULT_K = 3
+DEFAULT_MAX_CHARS, CEILING_MAX_CHARS = SECTION_DISPLAY_CAP, 20_000_000     # sections: p50 2.7k chars, p99.9 79k, one degenerate one 16.7M
 MINILM = "sentence-transformers/all-MiniLM-L6-v2"
 
 
 # ----------------------------------------------------------------- pure parts ----
-_NEW_ID = re.compile(r"^(\d{4})_(\d{4,5})$")
-_OLD_ID = re.compile(r"^([a-z\-]+(?:\.[A-Z]{2})?)_(\d{7})$")
-
-
-def arxiv_url(doc_id: str) -> str | None:
-    """Guarantee: the arXiv abstract page of a paper, None for anything that is not an arXiv id (a book). A
-    `_methods` extract links to its paper."""
-    stem = doc_id.removeprefix("arxiv/").removesuffix("_methods")
-    if m := _NEW_ID.match(stem):
-        return "https://arxiv.org/abs/%s.%s" % m.groups()
-    if m := _OLD_ID.match(stem):
-        return "https://arxiv.org/abs/%s/%s" % m.groups()
-    return None
-
-
 def rrf(rank_lists: list[list[int]], k: int = RRF_K) -> list[tuple[int, float]]:
     """Q2. Guarantee: [(item, score)] by descending reciprocal-rank-fusion score, ties by item, over the ranked
     lists given (best first). An item in several lists outranks one in a single list at the same ranks."""
@@ -82,20 +70,6 @@ def rrf(rank_lists: list[list[int]], k: int = RRF_K) -> list[tuple[int, float]]:
         for r, item in enumerate(lst):
             score[item] += 1.0 / (k + r + 1)
     return sorted(score.items(), key=lambda kv: (-kv[1], kv[0]))
-
-
-def reconstruct(chunks: list[str]) -> str:
-    """Q3. Guarantee: the texts of ONE section's chunks, in order, as one text: a continuation chunk that opens
-    with the same header line as the first chunk loses that line (the chunker prepended it, C7); a chunk that
-    does not is kept whole. Chunks are joined by a blank line."""
-    if not chunks:
-        return ""
-    header = chunks[0].split("\n", 1)[0]
-    parts = [chunks[0]]
-    for t in chunks[1:]:
-        first, _, rest = t.partition("\n")
-        parts.append(rest.lstrip("\n") if first == header else t)
-    return "\n\n".join(parts)
 
 
 def _cut(text: str, max_chars: int | None) -> tuple[str, bool, int]:
@@ -142,10 +116,13 @@ def dense_ranked(conn, label: str, st: dict, query: str, pool: int, embed_query)
     return [r[0] for r in rows]
 
 
-def section_chunks(conn, label: str, doc_id: str, section_idx: int) -> list[tuple[int, int, str]]:
-    """Guarantee: [(ord, chunk_idx, text)] of one section in chunk order."""
-    return conn.execute("SELECT ord, chunk_idx, text FROM lex_chunk_meta WHERE label = %s AND doc_id = %s AND section_idx = %s "
-                        "ORDER BY chunk_idx", (label, doc_id, section_idx)).fetchall()
+def section_chunks(conn, label: str, doc_id: str, section_idx: int) -> tuple[list[tuple[int, int, str]], int]:
+    """Q3. Guarantee: ([(ord, chunk_idx, text)] of one section in chunk order, how many junk chunks were left out).
+    A junk chunk (C10) is extraction debris -- OCR letter soup, `, of-` repeats -- and is not part of what the
+    section says; the count is returned so the omission is never silent."""
+    rows = conn.execute("SELECT ord, chunk_idx, text, is_junk FROM lex_chunk_meta WHERE label = %s AND doc_id = %s "
+                        "AND section_idx = %s ORDER BY chunk_idx", (label, doc_id, section_idx)).fetchall()
+    return [(o, c, t) for o, c, t, junk in rows if not junk], sum(r[3] for r in rows)
 
 
 def communities_of(conn, build: int, ords: list[int]) -> dict[int, dict]:
@@ -193,21 +170,23 @@ def search(conn, label: str, st: dict, query: str, k: int = DEFAULT_K, mode: str
                         "matched_by": [a for a, lst in arms.items() if ord_ in lst]})
     comm = communities_of(conn, st["build"], [r["matched_ords"][0] for r in results])
     for r in results:
-        full = reconstruct([t for _, _, t in section_chunks(conn, label, r["doc_id"], r["section_idx"])])
-        r["text"], r["truncated"], r["chars_total"] = _cut(full, max_chars)
+        chunks, omitted = section_chunks(conn, label, r["doc_id"], r["section_idx"])
+        r["text"], r["truncated"], r["chars_total"] = _cut(reaggregate_section([(c, t) for _, c, t in chunks]), max_chars)
+        r["junk_chunks_omitted"] = omitted
         r["community"] = comm.get(r["matched_ords"][0])
     return {"query": query, "mode": mode, "build": st["build"], "results": results, "warnings": warnings}
 
 
 def get_section(conn, label: str, doc_id: str, section_idx: int, max_chars: int | None = DEFAULT_MAX_CHARS) -> dict | None:
     """Q3. Guarantee: the section as {doc_id, version, url, section_idx, section_title, text, truncated, chars_total, chunk_ords}, None if no chunk has that key."""
-    rows = conn.execute("SELECT ord, chunk_idx, text, version, section_title FROM lex_chunk_meta WHERE label = %s AND doc_id = %s "
-                        "AND section_idx = %s ORDER BY chunk_idx", (label, doc_id, section_idx)).fetchall()
-    if not rows:
+    chunks, omitted = section_chunks(conn, label, doc_id, section_idx)
+    if not chunks:
         return None
-    text, cut, total = _cut(reconstruct([r[2] for r in rows]), max_chars)
-    return {"doc_id": doc_id, "version": rows[0][3], "url": arxiv_url(doc_id), "section_idx": section_idx,
-            "section_title": rows[0][4], "text": text, "truncated": cut, "chars_total": total, "chunk_ords": [r[0] for r in rows]}
+    meta = conn.execute("SELECT version, section_title FROM lex_chunk_meta WHERE label = %s AND ord = %s", (label, chunks[0][0])).fetchone()
+    text, cut, total = _cut(reaggregate_section([(c, t) for _, c, t in chunks]), max_chars)
+    return {"doc_id": doc_id, "version": meta[0], "url": arxiv_url(doc_id), "section_idx": section_idx,
+            "section_title": meta[1], "text": text, "truncated": cut, "chars_total": total,
+            "chunk_ords": [o for o, _, _ in chunks], "junk_chunks_omitted": omitted}
 
 
 # ------------------------------------------------------------------- the API ----
@@ -232,6 +211,7 @@ class Hit(BaseModel):
     text: str = Field(description="the WHOLE section, rebuilt from its chunks")
     truncated: bool = Field(description="true when `text` was cut to max_chars; `chars_total` is the full length")
     chars_total: int
+    junk_chunks_omitted: int = Field(0, description="OCR-debris chunks inside this section that were left out of `text`")
     community: Community | None = None
 
 
@@ -253,6 +233,7 @@ class SectionResponse(BaseModel):
     truncated: bool
     chars_total: int
     chunk_ords: list[int]
+    junk_chunks_omitted: int = 0
 
 
 class CommunityRow(BaseModel):
@@ -293,7 +274,7 @@ def create_app(label: str = LABEL, dsn: str | None = None, embed_query=None) -> 
                   k: int = Query(DEFAULT_K, ge=1, le=MAX_K, description="how many sections to return"),
                   mode: Literal["hybrid", "sparse", "dense"] = Query("hybrid", description="hybrid fuses BM25 and dense retrieval"),
                   include_references: bool = Query(False, description="also return bibliography sections"),
-                  max_chars: int = Query(DEFAULT_MAX_CHARS, ge=500, le=500_000, description="longest text returned per section; a cut sets `truncated`")):
+                  max_chars: int = Query(DEFAULT_MAX_CHARS, ge=500, le=CEILING_MAX_CHARS, description="longest text returned per section (default 200,000 returns nearly every section whole); a cut sets `truncated`")):
         conn = connect()
         try:
             return search(conn, label, current(conn), query, k, mode, include_references, max_chars, embed)
@@ -303,7 +284,7 @@ def create_app(label: str = LABEL, dsn: str | None = None, embed_query=None) -> 
     @app.get("/section", operation_id="get_section", response_model=SectionResponse,
              summary="Read one whole section of a paper again")
     def section_ep(doc_id: str = Query(..., description="e.g. arxiv/2404_08634"), section_idx: int = Query(..., ge=0),
-                   max_chars: int = Query(DEFAULT_MAX_CHARS, ge=500, le=500_000)):
+                   max_chars: int = Query(DEFAULT_MAX_CHARS, ge=500, le=CEILING_MAX_CHARS)):
         conn = connect()
         try:
             got = get_section(conn, label, doc_id, section_idx, max_chars)
@@ -348,17 +329,20 @@ def say(text: str) -> None:
     print(text.encode(enc, "backslashreplace").decode(enc))
 
 
-def ask(question: str, k: int, mode: str, show_chars: int = 1500) -> None:
+def ask(question: str, k: int, mode: str, cut: int | None = None) -> None:
+    """Prints each hit's WHOLE section; `cut` shortens the display for skimming and says so."""
     conn = ss.connect()
-    out = search(conn, LABEL, frozen(conn, LABEL), question, k, mode, False, 20_000, QueryEmbedder())
+    out = search(conn, LABEL, frozen(conn, LABEL), question, k, mode, False, DEFAULT_MAX_CHARS, QueryEmbedder())
     for w in out["warnings"]:
         say("WARNING: " + w)
     for r in out["results"]:
         c = r["community"] or {}
         say("\n#%d  %s  v%d  |  %s  |  %s  |  community %s %s" % (
             r["rank"], r["doc_id"], r["version"], r["section_title"], r["url"] or "-", c.get("cid", "-"), c.get("title") or ""))
-        say("    matched by %s; %d chars%s" % ("+".join(r["matched_by"]), r["chars_total"], " (cut)" if r["truncated"] else ""))
-        say("    " + r["text"][:show_chars].replace("\n", "\n    ") + ("..." if len(r["text"]) > show_chars else ""))
+        say("    matched by %s; %d chars%s%s" % ("+".join(r["matched_by"]), r["chars_total"], " (cut at the API limit)" if r["truncated"] else "",
+                                               "; %d junk chunk(s) left out" % r["junk_chunks_omitted"] if r["junk_chunks_omitted"] else ""))
+        text = r["text"] if not cut or len(r["text"]) <= cut else r["text"][:cut] + "\n[display cut at %d of %d chars: omit --cut for the whole section]" % (cut, len(r["text"]))
+        say("    " + text.replace("\n", "\n    "))
     conn.close()
 
 
@@ -369,11 +353,12 @@ def main() -> None:
     g.add_argument("--ask", metavar="QUESTION")
     ap.add_argument("-k", type=int, default=DEFAULT_K)
     ap.add_argument("--mode", choices=("hybrid", "sparse", "dense"), default="hybrid")
+    ap.add_argument("--cut", type=int, default=None, help="--ask: show only the first N characters of each section")
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=PORT)
     args = ap.parse_args()
     if args.ask:
-        ask(args.ask, args.k, args.mode)
+        ask(args.ask, args.k, args.mode, args.cut)
         return
     import uvicorn
     uvicorn.run(create_app(), host=args.host, port=args.port, log_level="info")

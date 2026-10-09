@@ -405,3 +405,91 @@ def test_overwritten_chunks_count_toward_the_rebuild_trigger(conn):
 def _touch_md(root, **files):
     for name, body in files.items():
         (root / (name + ".md")).write_text(body, encoding="utf-8")
+
+
+# ------------------------------------------------------------------- entities ----
+def _freeze_by_hand(conn, build, *entries, tokenizer=None):
+    """An inventory stored without deriving one: entries are (fold, surface) pairs."""
+    import entity_derive as ed
+    ss.ensure_entity_schema(conn)
+    ss.write_entities(conn, build, [(i, f, s, len(f.split()), 1.0, 5, 5, 9, i) for i, (f, s) in enumerate(entries)])
+    ss.update_build_params(conn, build, {"entities": {"tokenizer": tokenizer or ed.TOKENIZER_VERSION, "k": len(entries), "n": len(entries),
+                                                       "params": {}}})
+
+
+def _mentions(conn, build):
+    return conn.execute("SELECT ord, ent_id, cnt FROM lex_mention WHERE build_id = %s ORDER BY ord, ent_id", (build,)).fetchall()
+
+
+def test_a_build_with_no_inventory_reports_no_mentions_and_stores_none_S9(conn):
+    build = make_build(conn)
+    st = svc.frozen(conn, LABEL)
+    assert st["entities"] is None
+    out = svc.ingest_new(conn, LABEL, ["arxiv/new_alpha"], [ALPHA_DOC], st, fake_embed)
+    assert "mentions" not in out
+    assert conn.execute("SELECT to_regclass('lex_mention')").fetchone()[0] is None or _mentions(conn, build) == []
+
+
+def test_new_chunks_are_matched_against_the_frozen_inventory_and_junk_and_references_are_not_S9(conn):
+    build = make_build(conn)
+    _freeze_by_hand(conn, build, ("alpha graph", "alpha graph"), ("community", "community"), ("sparse vector", "sparse vector"))
+    st = svc.frozen(conn, LABEL)
+    out = svc.ingest_new(conn, LABEL, ["arxiv/new_alpha", "arxiv/new_soup", "arxiv/new_beta"], [ALPHA_DOC, SOUP, BETA_DOC], st, fake_embed)
+    assert out["placed"] == 2 and out["mentions"] == 3
+    assert _mentions(conn, build) == [(3, 0, 1), (3, 1, 1), (5, 2, 1)]            # ord 3 alpha doc, ord 5 beta body; soup (junk) and the reference: none
+
+
+def test_an_inventory_frozen_with_another_tokenizer_version_is_never_matched_against_S9(conn):
+    build = make_build(conn)
+    _freeze_by_hand(conn, build, ("alpha graph", "alpha graph"), tokenizer="t0-old")
+    st = svc.frozen(conn, LABEL)
+    out = svc.ingest_new(conn, LABEL, ["arxiv/new_alpha"], [ALPHA_DOC], st, fake_embed)
+    assert out["mentions"] == 0 and _mentions(conn, build) == []
+
+
+def test_overwriting_a_paper_deletes_its_mentions_and_matches_the_new_chunks_AE12(conn):
+    build = make_build(conn)
+    _freeze_by_hand(conn, build, ("alpha graph", "alpha graph"), ("firstversion", "firstversion"), ("secondversion", "secondversion"))
+    st = svc.frozen(conn, LABEL)
+    v1 = "## R\n\nalpha graph firstversion paragraph\n\n" * 1
+    svc.ingest_new(conn, LABEL, ["arxiv/2601_9"], [PAPER_V1], st, fake_embed, versions={"arxiv/2601_9": 1})
+    old = [o for o, _, _ in _rows(conn, "arxiv/2601_9")]
+    assert {o for o, _, _ in _mentions(conn, build)} == set(old)                  # v1's chunks carry mentions
+    svc.ingest_new(conn, LABEL, ["arxiv/2601_9"], [PAPER_V2], svc.frozen(conn, LABEL), fake_embed,
+                   versions={"arxiv/2601_9": 2}, replace={"arxiv/2601_9"})
+    new = {o for o, _, _ in _rows(conn, "arxiv/2601_9")}
+    got = {o for o, _, _ in _mentions(conn, build)}
+    assert got == new and not (got & set(old) - new)                              # nothing left on an ord the overwrite removed
+    firstver = conn.execute("SELECT count(*) FROM lex_mention WHERE build_id = %s AND ent_id = 1", (build,)).fetchone()[0]
+    secondver = conn.execute("SELECT count(*) FROM lex_mention WHERE build_id = %s AND ent_id = 2", (build,)).fetchone()[0]
+    assert firstver == 0 and secondver >= 1
+
+
+def test_freezing_derives_an_inventory_from_the_live_build_and_matches_every_retrievable_chunk_S9(conn):
+    import entity_derive as ed
+    build = make_build(conn)
+    recs = [{"doc_id": "arxiv/p%d" % p, "section_idx": 0, "chunk_idx": c, "section_title": "T", "is_reference": False, "is_junk": False,
+             "version": 1, "text": "We apply the zorblax quantum method in %s here." % w}
+            for p, w in enumerate(["alpha", "beta", "gamma", "delta", "epsilon", "zeta"]) for c in range(2)]
+    ss.append_chunk_meta(conn, LABEL, recs, min_ord=3)
+    out = svc.freeze_entities(conn, LABEL, ed.Params(df_floor=2, ridf_floor=-1.0, closed_df_frac=5.0, uni_quota=None), k=50)
+    meta = ss.live_build(conn, LABEL)[2]["entities"]
+    assert meta["tokenizer"] == ed.TOKENIZER_VERSION and meta["n"] == out["entities"] > 0 and meta["k"] == 50
+    folds = [r[1] for r in ss.read_entities(conn, build)]
+    assert any("zorblax" in f for f in folds)
+    z = [r[0] for r in ss.read_entities(conn, build) if r[1] == "zorblax quantum"]
+    if z:
+        assert {o for o, e, _ in _mentions(conn, build) if e == z[0]} == set(range(3, 15))     # all 12 chunks hold the phrase
+    assert out["mentions"] == len(_mentions(conn, build)) > 0
+    again = svc.freeze_entities(conn, LABEL, ed.Params(df_floor=2, ridf_floor=-1.0, closed_df_frac=5.0, uni_quota=None), k=50)
+    assert again == out and out["mentions"] == len(_mentions(conn, build))                   # a second freeze replaces, never doubles
+
+
+def test_freezing_without_parameters_uses_the_sweeps_winner_and_records_it_S9(conn):
+    make_build(conn)
+    svc.freeze_entities(conn, LABEL, k=10)
+    p = ss.live_build(conn, LABEL)[2]["entities"]["params"]
+    assert p["df_floor"] == 2 and p["drop"] == ["bh"] and p["uni_quota"] is None and p["rule"] == "geomean"
+    assert p["min_tok_len"] == 2 and svc.ENTITY_K == 40_000                                   # the full-corpus k, not the 841-paper one
+    import inspect
+    assert inspect.signature(svc.freeze_entities).parameters["k"].default == svc.ENTITY_K

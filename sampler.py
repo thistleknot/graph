@@ -300,7 +300,7 @@ def select_anchors(base: list, pool: list, sources: dict, ef: int,
     return merged
 
 
-def _with_dense(conn, run, base: list, qvec, k: int, ef: int) -> list:
+def _with_dense(conn, run, base: list, qvec, k: int, ef: int, query: str = "") -> list:
     """S20: union DENSE anchors into the lexical ones. ADDITIVE, never
     displacing -- the repo has three measured wins for add-never-displace and
     none for re-ranking, and the lexical anchors are what the frozen diagnostic
@@ -327,9 +327,65 @@ def _with_dense(conn, run, base: list, qvec, k: int, ef: int) -> list:
     # high on any short conversational query -- while the first gold chunk sits
     # at dense rank 20 of 27,259. ef bounds the walk anyway (S10), so the room
     # is the honest budget.
-    extra = [r for r in gt.dense_search(conn, run, qvec, k=room + len(base))
-             if r.get("ord") not in have]
-    return base + extra[:room]
+    pool = [r for r in gt.dense_search(conn, run, qvec, k=room + len(base))
+            if r.get("ord") not in have]
+    # S20(c): allocate the dense slots by the ROUTER's own weights instead of
+    # taking a flat top-k. Dense similarity is length-biased -- short aphorisms
+    # match any short conversational query -- so a flat top-k on this corpus
+    # returned 47 `quotes` anchors out of 64 and drowned the walk, while the
+    # router had already scored the query wiki 0.964 / quotes 0.036. The router
+    # is the existing, measured answer to "which source is this question about"
+    # (S18); this just spends the dense budget according to it.
+    budget = min(room, max(4, int(ef / 4)))
+    try:
+        weights = router_weights(conn, run, query) or {}
+    except Exception:                                              # noqa: BLE001
+        weights = {}
+    if weights:
+        quota, by_src = {}, {}
+        for r in pool:
+            by_src.setdefault(r.get("source"), []).append(r)
+        tot = sum(weights.values()) or 1.0
+        for s, w in weights.items():
+            quota[s] = max(0, int(round(budget * (w / tot))))
+        extra, seen = [], set()
+        for s, rows_ in by_src.items():
+            for r in rows_[:quota.get(s, 0)]:
+                extra.append(r); seen.add(r["ord"])
+        for r in pool:                       # top up in dense order if short
+            if len(extra) >= budget:
+                break
+            if r["ord"] not in seen:
+                extra.append(r); seen.add(r["ord"])
+        extra.sort(key=lambda r: -float(r.get("score", 0.0)))
+    else:
+        extra = pool[:budget]
+    if not extra:
+        return base
+    # S20(b): BM25 scores and cosine similarities are NOT on the same scale, and
+    # ef_search normalises the whole anchor set by ONE maximum:
+    #     top = max(h["score"] for h in hits);  W = {ord: score / top}
+    # Measured on ab-section: lexical anchors score 10.159..8.814 (BM25,
+    # unbounded) while dense anchors score 0.684..0.575 (cosine, bounded) -- a
+    # 14.8x ratio. Divided by the lexical max, the BEST dense anchor enters the
+    # walk at 0.067, is immediately the worst member of W, and is evicted on the
+    # first expansion. Measured consequence: 4 gold chunks forced into the anchor
+    # set produced 0 gold in the bundle -- the walk discarded its own entry
+    # points.
+    #
+    # R3 already states the house rule for incommensurable spaces: compare by
+    # RANK, never by raw value. Map the dense rows onto the lexical anchors'
+    # score range by rank so the two enter W commensurably. Additive still: no
+    # lexical anchor's score is altered.
+    lex = [float(h.get("score", 0.0)) for h in base] or [1.0]
+    hi, lo = max(lex), min(lex)
+    span = (hi - lo) or (hi or 1.0)
+    n = len(extra)
+    for i, r in enumerate(extra):
+        # best dense anchor sits level with the best lexical one, then decays
+        # across the lexical span; ties broken by the dense order itself.
+        r["score"] = hi - (span * (i / n)) if n else hi
+    return base + extra
 
 
 def anchor_hits(conn, run: gt.RunHandle, query: str, k_anchor: int, ef: int,
@@ -353,7 +409,7 @@ def anchor_hits(conn, run: gt.RunHandle, query: str, k_anchor: int, ef: int,
     # larger fetch is prefix-stable.
     base = gt.search(conn, run, query, k=k, expand_aliases=expand_aliases)
 
-    base = _with_dense(conn, run, base, qvec, k, ef)        # S20
+    base = _with_dense(conn, run, base, qvec, k, ef, query)   # S20
 
     sources = gt.run_sources(conn, run)
     elig = {s: n for s, n in sources.items() if n > 0}

@@ -64,7 +64,7 @@ PROMPT = """You label clusters of text chunks taken from a corpus of research pa
 Below are {n} chunk(s) from ONE cluster (cluster {cid}; {size} chunks in all). They are the cluster's medoid and representative neighbours at increasing distance from it. Read all of them in full.
 
 Provenance, measured over ALL {size} chunks of the cluster: {provenance}
-
+{terms}
 Reply in exactly this form and nothing else:
 TITLE: <at most 8 words naming the topic>
 SUMMARY: <2 to 4 sentences: what the cluster is about, and what kind of text it holds (for example related-work discussion, proofs, prompt templates, result tables, method description)>
@@ -88,12 +88,18 @@ def collapse_ws(text: str) -> str:
     return out
 
 
-def build_prompt(cid: int, size: int, exemplars: list[dict], prov: str) -> str:
+TERMS_LINE = ("\nDunning terms, measured over the whole cluster (G2 against every other section): the words and phrases most over-represented here: {terms}.\n"
+              "They are measurements, not guesses. Where they fit what the chunks say, use them in the TITLE and SUMMARY exactly as written; never use one the chunks do not support.\n")
+
+
+def build_prompt(cid: int, size: int, exemplars: list[dict], prov: str, terms: list[str] | None = None) -> str:
+    """Guarantee: the prompt holding every exemplar in full; when `terms` is given (T164, section mode) the cluster's Dunning terms are in it."""
     parts = []
     for k, r in enumerate(exemplars, 1):
         parts.append('=== chunk %d of %d | paper %s | section "%s" ===\n%s'
                      % (k, len(exemplars), r["doc_id"].replace("arxiv/", ""), r["section_title"], collapse_ws(r["text"])))
-    return PROMPT.format(n=len(exemplars), cid=cid, size=size, provenance=prov, chunks="\n\n".join(parts))
+    return PROMPT.format(n=len(exemplars), cid=cid, size=size, provenance=prov, chunks="\n\n".join(parts),
+                         terms=TERMS_LINE.format(terms=", ".join(terms)) if terms else "")
 
 
 def fits(prompt_chars: int, context_length: int) -> bool:
@@ -183,7 +189,7 @@ def persist(done: dict, exem: dict, label: str = "arxiv_sect", conn=None) -> int
     return n
 
 
-def summarize_one(model: str, context_length: int, c: int, size: int, keys: list, prompt: str) -> dict:
+def summarize_one(model: str, context_length: int, c: int, size: int, keys: list, prompt: str, terms: list[str] | None = None) -> dict:
     rec = {"community": c, "size": size, "model": model, "chunk_keys": keys, "prompt_chars": len(prompt)}
     if not fits(len(prompt), context_length):
         return {**rec, "status": "not_summarized",
@@ -195,6 +201,10 @@ def summarize_one(model: str, context_length: int, c: int, size: int, keys: list
         title, summary = parse(resp["content"])
     except Exception as e:                                   # one bad community must not stop the other 134
         return {**rec, "status": "failed", "reason": "%s: %s" % (type(e).__name__, str(e)[:300])}
+    if terms:                                                # T164: the Dunning terms that SURVIVED into the model's own words, bolded for display (the raw text stays beside)
+        from term_salience import bold_terms
+        (title_b, used_t), (summary_b, used_s) = bold_terms(title, terms), bold_terms(summary, terms)
+        rec = {**rec, "terms": terms, "terms_surviving": [t for t in terms if t in used_t or t in used_s], "title_bold": title_b, "summary_bold": summary_b}
     return {**rec, "status": "draft", "title": title, "summary": summary, "provider": resp["provider"],
             "prompt_tokens": resp["prompt_tokens"], "output_tokens": resp["completion_tokens"], "cost": resp["cost"],
             "chars_per_token": round(len(prompt) / max(resp["prompt_tokens"], 1), 2), "seconds": round(time.time() - t0, 1)}
@@ -206,37 +216,47 @@ def main() -> None:
     ap.add_argument("--all", action="store_true")
     ap.add_argument("--model", default=MODEL)
     ap.add_argument("--workers", type=int, default=WORKERS)
+    ap.add_argument("--tag", default="", help="section map (.tmp/sections_<tag>_*): its exemplars and Dunning terms go in the prompt, summaries go to "
+                    ".tmp/sections_<tag>_summaries.json, and NOTHING is persisted to Postgres (T165 waits for the operator's go)")
     args = ap.parse_args()
     assert os.environ.get("OPENROUTER_API_KEY"), "OPENROUTER_API_KEY is not set"
-    recs, exem = load_inputs()
+    out, terms_of = OUT, {}
+    if args.tag:
+        import section_corpus
+        recs = section_corpus.load()
+        exem = {int(c): v for c, v in json.load(open(".tmp/sections_%s_exemplars.json" % args.tag, encoding="utf-8")).items()}
+        terms_of = {int(c): [t for t, _ in v] for c, v in json.load(open(".tmp/sections_%s_dunning_terms.json" % args.tag, encoding="utf-8")).items()}
+        out = ".tmp/sections_%s_summaries.json" % args.tag
+    else:
+        recs, exem = load_inputs()
     ids = sorted(exem) if args.all else [int(x) for x in args.ids.split(",") if x]
     done = {}
-    if os.path.exists(OUT):
-        done = {d["community"]: d for d in json.load(open(OUT, encoding="utf-8"))}
+    if os.path.exists(out):
+        done = {d["community"]: d for d in json.load(open(out, encoding="utf-8"))}
     ctx = context_length_of(args.model)
     work = []
     for c in ids:
         keys = [e["key"] for e in exem[c]["exemplars"]]
         d0 = done.get(c)
         if (d0 and d0.get("model") == args.model and d0.get("status") in ("draft", "not_summarized")
-                and d0.get("chunk_keys") == keys and d0.get("provenance") is not None):
-            continue                                   # done for THESE exemplars; a stale record is redone
+                and d0.get("chunk_keys") == keys and d0.get("provenance") is not None and d0.get("terms") == (terms_of.get(c) or None)):
+            continue                                   # done for THESE exemplars and THESE terms; a stale record is redone
         ex = [recs[e["row"]] for e in exem[c]["exemplars"]]
         prov = provenance(exem[c])
-        work.append((c, exem[c]["size"], keys, build_prompt(c, exem[c]["size"], ex, prov), prov))
+        work.append((c, exem[c]["size"], keys, build_prompt(c, exem[c]["size"], ex, prov, terms_of.get(c)), prov))
     log("%d communities to do, %d already done; model %s (context %d); %d workers"
         % (len(work), len(ids) - len(work), args.model, ctx, args.workers))
     lock, tally = threading.Lock(), {"draft": 0, "failed": 0, "not_summarized": 0}
     t_all = time.time()
     with ThreadPoolExecutor(args.workers) as ex_pool:
-        futs = {ex_pool.submit(summarize_one, args.model, ctx, c, s, keys, p): prov for c, s, keys, p, prov in work}
+        futs = {ex_pool.submit(summarize_one, args.model, ctx, c, s, keys, p, terms_of.get(c)): prov for c, s, keys, p, prov in work}
         for f in as_completed(futs):
             rec = {**f.result(), "provenance": futs[f]}
             with lock:
                 done[rec["community"]] = rec
                 tally[rec["status"]] += 1
                 json.dump(sorted(done.values(), key=lambda d: d["community"]),
-                          open(OUT, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+                          open(out, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
             if rec["status"] == "draft":
                 log("community %3d (size %4d) %6d tok  %4.1fs | %s" % (rec["community"], rec["size"], rec["prompt_tokens"], rec["seconds"], rec["title"]))
             else:
@@ -244,7 +264,8 @@ def main() -> None:
     drafts = [d for d in done.values() if d["status"] == "draft"]
     log("done in %.0fs: %s | prompt tokens %d | cost $%.4f" % (
         time.time() - t_all, tally, sum(d["prompt_tokens"] for d in drafts), sum(d["cost"] or 0 for d in drafts)))
-    persist(done, exem)
+    if not args.tag:
+        persist(done, exem)
 
 
 if __name__ == "__main__":

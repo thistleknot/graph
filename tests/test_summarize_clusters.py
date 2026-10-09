@@ -154,6 +154,35 @@ def test_one_failing_community_is_recorded_and_does_not_raise(monkeypatch):
     assert r["status"] == "failed" and "api down" in r["reason"]
 
 
+def test_the_dunning_terms_reach_the_prompt_and_only_the_ones_that_survive_into_the_reply_are_bolded_T164(monkeypatch):
+    ex = [{"doc_id": "arxiv/1", "section_title": "T", "text": "## T\n\nbody"}]
+    terms = ["retrieval", "reinforcement learning", "rag", "kv cache"]
+    p = build_prompt(3, 10, ex, "prov", terms)
+    assert "retrieval, reinforcement learning, rag, kv cache" in p and "exactly as written" in p
+    assert "Dunning" not in build_prompt(3, 10, ex, "prov")                           # no terms (chunk mode): the prompt is as it was
+    seen = {}
+    def fake(m, prompt):
+        seen["prompt"] = prompt
+        return {"content": "TITLE: Retrieval for LLMs\nSUMMARY: Covers Retrieval-augmented generation (RAG), and reinforcement learning of the retriever.",
+                "finish_reason": "stop", "prompt_tokens": 50, "completion_tokens": 20, "cost": 0.0, "provider": "p"}
+    monkeypatch.setattr(sc, "chat", fake)
+    r = sc.summarize_one("m", 1_000_000, 3, 10, _ex(), p, terms)
+    assert r["status"] == "draft" and "Dunning terms" in seen["prompt"]
+    assert r["title_bold"] == "**Retrieval** for LLMs"
+    assert r["summary_bold"] == "Covers **Retrieval**-augmented generation (**RAG**), and **reinforcement learning** of the retriever."
+    assert r["terms_surviving"] == ["retrieval", "reinforcement learning", "rag"] and "kv cache" not in r["summary_bold"]
+    assert r["summary"] == "Covers Retrieval-augmented generation (RAG), and reinforcement learning of the retriever."   # the raw text stays beside the bolded one
+
+
+def test_bold_terms_takes_whole_words_once_longest_first_and_changes_nothing_without_a_match():
+    from term_salience import bold_terms
+    assert bold_terms("graph neural networks and graph cuts", ["graph", "graph neural networks"]) == (
+        "**graph neural networks** and **graph** cuts", ["graph", "graph neural networks"])
+    assert bold_terms("paragraphs", ["graph"]) == ("paragraphs", [])                     # inside a word is not a match
+    assert bold_terms("nothing here", []) == ("nothing here", [])
+    assert bold_terms("The GNN", ["gnn"])[0] == "The **GNN**"                              # case-insensitive, shown as written
+
+
 def test_an_oversized_prompt_is_recorded_not_summarized_and_never_sent(monkeypatch):
     monkeypatch.setattr(sc, "chat", lambda m, p: pytest.fail("an oversized prompt must not be sent"))
     r = sc.summarize_one("m", 8192, 5, 10, _ex(), "x" * 100_000)

@@ -337,6 +337,65 @@ def test_load_arxiv_returns_version_stripped_ids_and_one_text_per_paper(tmp_path
     assert ids == ["arxiv/2601_0001", "arxiv/2601_0002_methods"] and docs == ["new", "m"] and srcs == ["arxiv", "arxiv"]
 
 
+def test_reaggregate_drops_the_prepended_header_by_chunk_idx_not_by_comparing_text():
+    from domain_corpora import reaggregate_section as r
+    assert r([(0, "## Results\n\nfirst"), (1, "## Results\n\nsecond"), (2, "## Results\n\nthird")]) == "## Results\n\nfirst\n\nsecond\n\nthird"
+    # a continuation whose header differs from chunk 0's (chunk 0 began an earlier merged section) is still stripped
+    assert r([(0, "## Intro\n\nshort\n\n## Results\n\nfirst"), (1, "## Results\n\nsecond")]) == "## Intro\n\nshort\n\n## Results\n\nfirst\n\nsecond"
+    # chunk_idx 0 keeps its first line even when a later chunk repeats it: that line is content, not a prepended header
+    assert r([(0, "## A\n\nx"), (0, "## A\n\ny")]) == "## A\n\nx\n\n## A\n\ny"
+    assert r([(0, "## Only\n\nbody")]) == "## Only\n\nbody" and r([]) == ""
+    assert r([(3, "## H\n\nbody")]) == "body" and r([(1, "## H")]) == ""            # a header-only continuation leaves nothing
+
+
+def _nonws(s: str) -> str:
+    import re
+    return re.sub(r"\s+", "", s)
+
+
+def _reassemble(recs, doc_id):
+    from domain_corpora import reaggregate_section
+    by_section = {}
+    for r in recs:
+        if r["doc_id"] == doc_id:
+            by_section.setdefault(r["section_idx"], []).append((r["chunk_idx"], r["text"]))
+    return "\n\n".join(reaggregate_section(sorted(by_section[s])) for s in sorted(by_section))
+
+
+def test_a_documents_sections_reassemble_to_its_markdown_exactly_without_trimming_any_overlap():
+    """The chunker de-overlaps by position (C5), so the stored chunks are disjoint and joining them is exact. Three
+    varied documents, including one whose source repeats an identical line thousands of times -- the very text a
+    reduce_overlaps pass would delete."""
+    from domain_corpora import chunk_arxiv, clean_md
+    live_fit = {"lcap": 1992, "m": 10, "hi": 151}
+    long_doc = "## Intro\n\n" + _doc(6, "intro") + "\n\n## Long results\n\n" + "\n\n".join("paragraph %d about graphs and edges and nodes" % i for i in range(500))
+    repeat_doc = "## Marks\n\n" + "\n\n".join("<!-- formula-not-decoded -->\n\nthe distinct sentence number %d follows" % i for i in range(300)) + "\n\n## After\n\n" + _doc(5, "after")
+    table_doc = "## Table\n\n" + "\n".join("| row %d | %s | %d |" % (i, "x" * 30, i) for i in range(600)) + "\n\n## Tail\n\n" + _doc(4, "tail")
+    for name, doc in (("long", long_doc), ("repeat", repeat_doc), ("table", table_doc)):
+        recs, fit, st = chunk_arxiv(["arxiv/%s" % name], [doc], fit=live_fit)
+        assert max(r["chunk_idx"] for r in recs) >= 1 or name != "long"          # the long document really was split
+        assert _nonws(_reassemble(recs, "arxiv/%s" % name)) == _nonws(clean_md(doc)), name
+
+
+def test_a_section_made_only_of_identical_pieces_loses_the_repeats_to_the_keep_identical_chunks_once_rule():
+    """Known limit, pinned: C8 keeps identical chunk texts once, so a source that is the SAME line thousands of times
+    splits into identical chunks and all but one are dropped when chunking. The re-aggregation is not the cause
+    and cannot restore them."""
+    from domain_corpora import chunk_arxiv, clean_md
+    doc = "## Marks\n\n" + "\n\n".join(["<!-- formula-not-decoded -->"] * 600) + "\n\n## After\n\n" + _doc(5, "after")
+    recs, fit, st = chunk_arxiv(["arxiv/marks"], [doc], fit={"lcap": 1992, "m": 10, "hi": 151})
+    assert st["duplicates"] > 0
+    assert 0 < len(_nonws(_reassemble(recs, "arxiv/marks"))) < len(_nonws(clean_md(doc)))
+    assert _nonws(_reassemble(recs, "arxiv/marks")).count("<!--formula-not-decoded-->") >= 1
+
+
+def test_header_less_text_reassembles_to_itself_plus_the_synthetic_doc_header():
+    from domain_corpora import chunk_arxiv, clean_md
+    doc = _doc(8, "plain")                                              # no markdown header at all
+    recs, fit, st = chunk_arxiv(["arxiv/plain"], [doc], fit={"lcap": 1992, "m": 10, "hi": 151})
+    assert _nonws(_reassemble(recs, "arxiv/plain")) == _nonws("# arxiv/plain" + clean_md(doc))      # C7: `# <doc_id>`
+
+
 def _soup(n: int) -> str:
     return "## Phase\n\n" + "\n\n".join("xyzwvutsrq"[i % 10] for i in range(n))
 
@@ -394,3 +453,52 @@ def test_the_live_cache_has_the_259_junk_chunks_the_measurement_found():
     from domain_corpora import is_junk
     recs = [r for r in pickle.load(open(cache, "rb"))["records"] if not r["is_reference"]]
     assert sum(is_junk(r["text"]) for r in recs) == 259
+
+
+# ---------------------------------------------------------------------------------------------------------- C13 (section nodes)
+def _section_doc():
+    bodies = ["word %d " % i * (10 + i) for i in range(12)]              # twelve ordinary sections of 70 to about 170 characters
+    md = "Preamble before any header.\n\n" + "\n\n".join("## Section %d\n\n%s" % (i, b) for i, b in enumerate(bodies))
+    md += "\n\n## Empty one\n\n## Short\n\nhi\n\n## References\n\n[1] a cited work with enough characters to pass any length floor\n"
+    md += "\n## Debris\n\n" + "\n".join("a" for _ in range(40))
+    md += "\n\n## Fonts\n\n" + "glyph&lt;c=18,font=/FZXHHB+TeXGyrePagellaX-Bold&gt;" * 4 + " and a few real words here"
+    md += "\n\n## Mostly prose\n\n" + "A real paragraph of ordinary words about graphs. " * 4 + "glyph&lt;c=3,font=/AAAAAB&gt;"
+    return md
+
+
+def test_section_records_keeps_every_header_block_in_order_with_header_and_body_C13():
+    from domain_corpora import section_records
+    recs = section_records(["arxiv/d"], [_section_doc()])
+    titles = [r["section_title"] for r in recs]
+    assert titles[0] == "arxiv/d" and titles[1:4] == ["Section 0", "Section 1", "Section 2"]      # the preamble gets the synthetic header
+    assert [r["section_idx"] for r in recs] == list(range(len(recs))) and all(r["chunk_idx"] == 0 for r in recs)
+    empty = next(r for r in recs if r["section_title"] == "Empty one")
+    assert empty["body_chars"] == 0 and empty["text"] == "## Empty one"
+    s3 = next(r for r in recs if r["section_title"] == "Section 3")
+    assert s3["text"] == "## Section 3\n\n" + "word 3 " * 13 and s3["body_chars"] == len("word 3 " * 13)
+    assert next(r for r in recs if r["section_title"] == "References")["is_reference"] is True
+
+
+def test_usable_sections_drops_empty_reference_short_and_junk_in_that_order_and_counts_each_C13():
+    import numpy as np
+    from scipy.stats import median_abs_deviation
+    from domain_corpora import section_records, usable_sections
+    recs = section_records(["arxiv/d"], [_section_doc()])
+    kept, st = usable_sections(recs)
+    assert st["all"] == len(recs) and st["empty"] == 1 and st["reference"] == 1 and st["junk"] == 1 and st["glyph"] == 1
+    assert st["short"] >= 1 and "Short" not in [r["section_title"] for r in kept] and "Debris" not in [r["section_title"] for r in kept]
+    titles = [r["section_title"] for r in kept]
+    assert "Fonts" not in titles and "Mostly prose" in titles                              # glyph debris goes; a section with one stray code stays
+    assert st["kept"] == len(kept) == st["all"] - st["empty"] - st["reference"] - st["short"] - st["junk"] - st["glyph"]
+    x = np.log(np.array([r["body_chars"] for r in recs if r["body_chars"] > 0 and not r["is_reference"]], float))
+    assert st["floor"] == pytest.approx(float(np.exp(np.median(x) - 2 * 1.4826 * median_abs_deviation(x))))
+    assert all(r["body_chars"] >= st["floor"] and not r["is_reference"] and not r["is_junk"] for r in kept)
+
+
+def test_glyph_share_is_the_share_of_non_space_characters_inside_glyph_codes_C13():
+    from domain_corpora import glyph_share
+    assert glyph_share("") == 0.0 and glyph_share("plain words") == 0.0
+    code = "glyph&lt;c=18,font=/ABC&gt;"
+    assert glyph_share(code) == 1.0 and glyph_share(code + " " + code) == 1.0
+    assert glyph_share(code + "x" * len(code)) == pytest.approx(0.5)
+    assert glyph_share("glyph<c=3,font=/A> and glyph[7] text") > 0                         # the bracket and angle forms count too

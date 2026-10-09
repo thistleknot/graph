@@ -226,3 +226,38 @@ def test_the_derived_rows_round_trip_and_the_checks_hold(conn):
         ss.write_summaries(conn, b, [{"community": 2, "status": "approved", "chunk_keys": []}])
     conn.execute("DELETE FROM lex_build WHERE build_id = %s", (b,))                    # the children go with the build
     assert conn.execute("SELECT count(*) FROM lex_summary WHERE build_id = %s", (b,)).fetchone()[0] == 0
+
+
+def test_an_entity_inventory_round_trips_and_a_second_write_replaces_it_and_its_mentions_V10(conn):
+    ss.ensure_entity_schema(conn)
+    ss.ensure_entity_schema(conn)                                                      # idempotent
+    b = ss.new_build(conn, LABEL + "_e", 6, {})
+    rows = [(0, "grpo", "GRPO", 1, 0.93, 36, 411, 450, 0), (1, "kv cache", "KV cache", 2, 0.91, 20, 249, 300, 1)]
+    ss.write_entities(conn, b, rows)
+    assert ss.read_entities(conn, b) == [(0, "grpo", "GRPO", 1, pytest.approx(0.93, abs=1e-6), 36, 411, 450, 0),
+                                         (1, "kv cache", "KV cache", 2, pytest.approx(0.91, abs=1e-6), 20, 249, 300, 1)]
+    assert ss.replace_mentions(conn, b, [0, 1], [(0, 0, 2), (1, 0, 1), (1, 1, 3)]) == 3
+    ss.write_entities(conn, b, rows[:1])                                               # a new inventory voids mentions of the old ids
+    assert [r[1] for r in ss.read_entities(conn, b)] == ["grpo"]
+    assert conn.execute("SELECT count(*) FROM lex_mention WHERE build_id = %s", (b,)).fetchone()[0] == 0
+    assert ss.read_entities(conn, b + 10_000) == []                                    # a build with no inventory has none
+    conn.execute("DELETE FROM lex_build WHERE build_id = %s", (b,))
+    assert conn.execute("SELECT count(*) FROM lex_entity WHERE build_id = %s", (b,)).fetchone()[0] == 0
+
+
+def test_replacing_a_chunks_mentions_never_counts_it_twice_and_deleting_the_paper_removes_them_V10(conn):
+    ss.ensure_entity_schema(conn)
+    b = ss.new_build(conn, LABEL + "_m", 6, {})
+    ss.write_entities(conn, b, [(0, "grpo", "GRPO", 1, 0.9, 3, 3, 3, 0), (1, "lora", "LoRA", 1, 0.9, 3, 3, 3, 1)])
+    ss.replace_mentions(conn, b, [0, 1, 2], [(0, 0, 1), (1, 0, 1), (2, 1, 1)])
+    ss.replace_mentions(conn, b, [1], [(1, 1, 4)])                                     # chunk 1 re-matched: grpo gone, lora 4
+    got = conn.execute("SELECT ord, ent_id, cnt FROM lex_mention WHERE build_id = %s ORDER BY ord, ent_id", (b,)).fetchall()
+    assert got == [(0, 0, 1), (1, 1, 4), (2, 1, 1)]
+    label = LABEL + "_mp"
+    ss.write_chunk_meta(conn, label, [_rec("arxiv/x", 0, 0, "one"), _rec("arxiv/y", 0, 0, "two")])
+    ords = [r[0] for r in conn.execute("SELECT ord FROM lex_chunk_meta WHERE label = %s AND doc_id = 'arxiv/x'", (label,)).fetchall()]
+    ss.replace_mentions(conn, b, ords, [(o, 0, 1) for o in ords])
+    assert ss.delete_papers(conn, label, ["arxiv/x"], build_id=b) == 1
+    assert conn.execute("SELECT count(*) FROM lex_mention WHERE build_id = %s AND ord = ANY(%s)", (b, ords)).fetchone()[0] == 0
+    conn.execute("DELETE FROM lex_chunk_meta WHERE label = %s", (label,))
+    conn.execute("DELETE FROM lex_build WHERE build_id = %s", (b,))

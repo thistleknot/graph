@@ -1,0 +1,1451 @@
+{
+ "status": "DRAFT - labels written by the assistant from the sentences alone, awaiting operator review",
+ "types": [
+  "MODEL",
+  "METHOD",
+  "DATASET",
+  "METRIC",
+  "TOOL",
+  "ORG",
+  "TERM"
+ ],
+ "seed": 20261004,
+ "sentences": [
+  {
+   "id": 1,
+   "cid": 103,
+   "doc_id": "arxiv/2505_11820_methods",
+   "ord": 41286,
+   "sentence": "Each chain receives **dedicated Q, K, V heads**, ensuring CoL (Chain-of-Linear) criteria.",
+   "mentions": [
+    {
+     "text": "CoL",
+     "type": "METHOD",
+     "split": "heldout"
+    },
+    {
+     "text": "Chain-of-Linear",
+     "type": "METHOD",
+     "split": "heldout"
+    }
+   ]
+  },
+  {
+   "id": 2,
+   "cid": 0,
+   "doc_id": "arxiv/2510_24801",
+   "ord": 45016,
+   "sentence": "This adaptive mechanism ensures that high-demand semantic regions receive proportionally more resources and finergrained organization.",
+   "mentions": []
+  },
+  {
+   "id": 3,
+   "cid": 67,
+   "doc_id": "arxiv/2402_18334",
+   "ord": 13970,
+   "sentence": "While GPT-4 follows the instruction to generate exactly one question for the paragraph, we find that it produces slightly longer answers to the question.",
+   "mentions": [
+    {
+     "text": "GPT-4",
+     "type": "MODEL",
+     "split": "heldout"
+    }
+   ]
+  },
+  {
+   "id": 4,
+   "cid": 88,
+   "doc_id": "arxiv/2608_03958",
+   "ord": 54152,
+   "sentence": "Let G be a finite set of matrix games.",
+   "mentions": [
+    {
+     "text": "matrix games",
+     "type": "TERM",
+     "split": "heldout"
+    }
+   ]
+  },
+  {
+   "id": 5,
+   "cid": 172,
+   "doc_id": "arxiv/Pragmatic",
+   "ord": 58773,
+   "sentence": "Code  is refactored, usage shifts, meaning becomes subtly altered.",
+   "mentions": []
+  },
+  {
+   "id": 6,
+   "cid": 218,
+   "doc_id": "arxiv/2503_05641",
+   "ord": 38211,
+   "sentence": "Table 9: Performance of each model when used as an aggregator, on the validation set.",
+   "mentions": []
+  },
+  {
+   "id": 7,
+   "cid": 20,
+   "doc_id": "arxiv/2511_0609",
+   "ord": 45689,
+   "sentence": "To incentivize the model to predict the user's preference profile more accurately, we propose a text-image similarity-aware prediction reward in Fig. 4(c).",
+   "mentions": []
+  },
+  {
+   "id": 8,
+   "cid": 50,
+   "doc_id": "arxiv/2404_13274",
+   "ord": 16512,
+   "sentence": "The decision to implement a fixed number of top-level categories and actions within the system's UI was driven by considerations of usability and cognitive efficiency.",
+   "mentions": []
+  },
+  {
+   "id": 9,
+   "cid": 124,
+   "doc_id": "arxiv/2503_23278",
+   "ord": 40147,
+   "sentence": "This decentralized model increases the likelihood of inconsistencies in security practices, making it difficult to ensure that all MCP servers adhere to secure development principles.",
+   "mentions": [
+    {
+     "text": "MCP",
+     "type": "TOOL",
+     "split": "heldout"
+    }
+   ]
+  },
+  {
+   "id": 10,
+   "cid": 188,
+   "doc_id": "arxiv/2310_11324",
+   "ord": 8715,
+   "sentence": "When comparing the individual influence of two feature choices, we measure both weak and strong notions of dissimilarity between distributions of accuracy across prompts conditioned on a chosen feature.",
+   "mentions": []
+  },
+  {
+   "id": 11,
+   "cid": 111,
+   "doc_id": "arxiv/2510_20198",
+   "ord": 44815,
+   "sentence": "Interestingly, the models were not as internally consistent in this test as well.",
+   "mentions": []
+  },
+  {
+   "id": 12,
+   "cid": 232,
+   "doc_id": "arxiv/2602_23152",
+   "ord": 49352,
+   "sentence": "To address semantic drift in longhorizon tasks, LMMs demonstrate a capability for recursive decomposition, breaking down high-level ambiguous instructions into atomic sub-tasks.",
+   "mentions": [
+    {
+     "text": "LMMs",
+     "type": "TERM",
+     "split": "tuning"
+    }
+   ]
+  },
+  {
+   "id": 13,
+   "cid": 163,
+   "doc_id": "arxiv/2411_07279",
+   "ord": 29623,
+   "sentence": "We optimize the standard LM loss on D TTT.",
+   "mentions": [
+    {
+     "text": "LM loss",
+     "type": "TERM",
+     "split": "heldout"
+    }
+   ]
+  },
+  {
+   "id": 14,
+   "cid": 227,
+   "doc_id": "arxiv/2505_22749",
+   "ord": 41570,
+   "sentence": "At the same time, the concept of particular partitions speaks to a recursive composition of ensembles (of things) at increasingly higher spatiotemporal scales [Friston, 2019, Palacios et al., 2020, Clark, 2017], which yields a natural way to resolve the internal complexity of µ .",
+   "mentions": []
+  },
+  {
+   "id": 15,
+   "cid": 192,
+   "doc_id": "arxiv/2402_14547",
+   "ord": 13582,
+   "sentence": "We apply certain preprocessing techniques to make the data more conducive to training and evaluation.",
+   "mentions": []
+  },
+  {
+   "id": 16,
+   "cid": 130,
+   "doc_id": "arxiv/2505_1254",
+   "ord": 41327,
+   "sentence": "We often identify a population group level by specifying a (geography level, characteristic iteration level) pair.",
+   "mentions": []
+  },
+  {
+   "id": 17,
+   "cid": 23,
+   "doc_id": "arxiv/2512_07796",
+   "ord": 46913,
+   "sentence": "All models are trained on a synthetic triangle/no-triangle dataset and evaluated on ProGraph graphs.",
+   "mentions": [
+    {
+     "text": "ProGraph",
+     "type": "DATASET",
+     "split": "tuning"
+    }
+   ]
+  },
+  {
+   "id": 18,
+   "cid": 127,
+   "doc_id": "arxiv/2505_22635",
+   "ord": 41544,
+   "sentence": "We further investigate if the performance is mainly driven by RFT or by learning Composable CoT format.",
+   "mentions": [
+    {
+     "text": "RFT",
+     "type": "METHOD",
+     "split": "heldout"
+    },
+    {
+     "text": "Composable CoT",
+     "type": "METHOD",
+     "split": "tuning"
+    }
+   ]
+  },
+  {
+   "id": 19,
+   "cid": 96,
+   "doc_id": "arxiv/2404_19756",
+   "ord": 17090,
+   "sentence": "Actually, one can interpolate between activation functions being all the same (MLPs) and all different (KANs), by grouping activation functions into multiple groups ('multi-head'), where members within a group share the same activation function. - (3) Hybrid of KANs and MLPs.",
+   "mentions": [
+    {
+     "text": "KANs",
+     "type": "MODEL",
+     "split": "heldout"
+    },
+    {
+     "text": "MLPs",
+     "type": "MODEL",
+     "split": "heldout"
+    }
+   ]
+  },
+  {
+   "id": 20,
+   "cid": 206,
+   "doc_id": "arxiv/2407_07858",
+   "ord": 20714,
+   "sentence": "It allows LLM models to refine both our solutions and Language Models over time, ensuring that the chatbot becomes increasingly proficient.",
+   "mentions": [
+    {
+     "text": "LLM",
+     "type": "TERM",
+     "split": "heldout"
+    },
+    {
+     "text": "Language Models",
+     "type": "TERM",
+     "split": "tuning"
+    }
+   ]
+  },
+  {
+   "id": 21,
+   "cid": 76,
+   "doc_id": "arxiv/2312_00752",
+   "ord": 10768,
+   "sentence": "Table 5 takes the small Mamba model and investigates combinations of different architectures for the outer stages and center stage.",
+   "mentions": [
+    {
+     "text": "Mamba",
+     "type": "MODEL",
+     "split": "tuning"
+    }
+   ]
+  },
+  {
+   "id": 22,
+   "cid": 225,
+   "doc_id": "arxiv/2504_07128",
+   "ord": 40932,
+   "sentence": "Now, the key ambiguity here is whether \"Jim bathed\" is being used transitively or intransitively.",
+   "mentions": []
+  },
+  {
+   "id": 23,
+   "cid": 244,
+   "doc_id": "arxiv/2607_28802",
+   "ord": 53699,
+   "sentence": "The model acted correctly on the context it was handed; the context it was handed was wrong.",
+   "mentions": []
+  },
+  {
+   "id": 24,
+   "cid": 51,
+   "doc_id": "arxiv/2405_05904",
+   "ord": 17403,
+   "sentence": "We focus on exact match (EM) as our evaluation metric.",
+   "mentions": [
+    {
+     "text": "exact match",
+     "type": "METRIC",
+     "split": "tuning"
+    },
+    {
+     "text": "EM",
+     "type": "METRIC",
+     "split": "tuning"
+    }
+   ]
+  },
+  {
+   "id": 25,
+   "cid": 19,
+   "doc_id": "arxiv/2402_15449",
+   "ord": 13740,
+   "sentence": "This showcases that current autoregressive language models can in fact allow early tokens to capture information from later tokens via echo embeddings.",
+   "mentions": [
+    {
+     "text": "echo embeddings",
+     "type": "METHOD",
+     "split": "heldout"
+    }
+   ]
+  },
+  {
+   "id": 26,
+   "cid": 69,
+   "doc_id": "arxiv/2609_00198",
+   "ord": 55400,
+   "sentence": "Conversely, because Flow Matching analytically solves the PDE along straight characteristics, the target is static ( ∂f/∂t = 0).",
+   "mentions": [
+    {
+     "text": "Flow Matching",
+     "type": "METHOD",
+     "split": "tuning"
+    },
+    {
+     "text": "PDE",
+     "type": "TERM",
+     "split": "tuning"
+    }
+   ]
+  },
+  {
+   "id": 27,
+   "cid": 207,
+   "doc_id": "arxiv/2410_18975",
+   "ord": 27852,
+   "sentence": "Furthermore, we show that our model achieves performance comparable to GPT4o, validating the effectiveness of our approach.",
+   "mentions": [
+    {
+     "text": "GPT4o",
+     "type": "MODEL",
+     "split": "heldout"
+    }
+   ]
+  },
+  {
+   "id": 28,
+   "cid": 228,
+   "doc_id": "arxiv/2507_16075",
+   "ord": 42150,
+   "sentence": "We use the following prompt to merge multiple answer into one for the parallel denoising algorithm.",
+   "mentions": []
+  },
+  {
+   "id": 29,
+   "cid": 252,
+   "doc_id": "arxiv/Pragmatic",
+   "ord": 58488,
+   "sentence": "Your marketing department will be able to use this fact to boost sales.",
+   "mentions": []
+  },
+  {
+   "id": 30,
+   "cid": 122,
+   "doc_id": "arxiv/2609_22086",
+   "ord": 56195,
+   "sentence": "A production render engine provides typography using global paragraph optimization (Knuth &amp; Plass, 1981), compositing, masks, effects, gradients, multilingual layout following the Unicode bidirectional algorithm (Unicode Consortium, 2025), and subject segmentation based on U 2 -Net    .",
+   "mentions": [
+    {
+     "text": "global paragraph optimization",
+     "type": "METHOD",
+     "split": "heldout"
+    }
+   ]
+  },
+  {
+   "id": 31,
+   "cid": 203,
+   "doc_id": "arxiv/2406_06469",
+   "ord": 19272,
+   "sentence": "In practice, we take a distinctively efficient approach to executing our agent modules by running all modules in parallel and use vLLM     to perform efficient inference.",
+   "mentions": [
+    {
+     "text": "vLLM",
+     "type": "TOOL",
+     "split": "tuning"
+    }
+   ]
+  },
+  {
+   "id": 32,
+   "cid": 153,
+   "doc_id": "arxiv/2510_24801",
+   "ord": 45005,
+   "sentence": "These algorithms have found practical applications in network routing, scheduling, and resource allocation where traditional optimization methods struggle with dynamic environments.",
+   "mentions": []
+  },
+  {
+   "id": 33,
+   "cid": 9,
+   "doc_id": "arxiv/2406_14550",
+   "ord": 19978,
+   "sentence": "While reading the chunks, the agent will once again consider the question and the plan, thinking about what can be added to the current notebook.",
+   "mentions": []
+  },
+  {
+   "id": 34,
+   "cid": 2,
+   "doc_id": "arxiv/2408_04948",
+   "ord": 22052,
+   "sentence": "The views expressed here are those of the authors alone and not of BlackRock, Inc or NVIDIA.",
+   "mentions": [
+    {
+     "text": "BlackRock, Inc",
+     "type": "ORG",
+     "split": "tuning"
+    },
+    {
+     "text": "NVIDIA",
+     "type": "ORG",
+     "split": "heldout"
+    }
+   ]
+  },
+  {
+   "id": 35,
+   "cid": 233,
+   "doc_id": "arxiv/2603_19461",
+   "ord": 49796,
+   "sentence": "This infrastructure enables quantitative tracking of improvement across iterations, identification of which changes lead to performance gains, and data-driven decision-making for future modifications.",
+   "mentions": []
+  },
+  {
+   "id": 36,
+   "cid": 148,
+   "doc_id": "arxiv/1410_0281",
+   "ord": 106,
+   "sentence": "If  we  exclude  these  two groups from the test then p=0.054 or not significant.",
+   "mentions": []
+  },
+  {
+   "id": 37,
+   "cid": 169,
+   "doc_id": "arxiv/2609_03874",
+   "ord": 55541,
+   "sentence": "We conduct ablation studies to study the impact of using ToC as an input.",
+   "mentions": [
+    {
+     "text": "ToC",
+     "type": "TERM",
+     "split": "tuning"
+    }
+   ]
+  },
+  {
+   "id": 38,
+   "cid": 72,
+   "doc_id": "arxiv/2410_12112",
+   "ord": 26717,
+   "sentence": "We show how easily our framework could adapt to use MILP by including prompt differences and output examples in Appendix A.10.3.",
+   "mentions": [
+    {
+     "text": "MILP",
+     "type": "METHOD",
+     "split": "tuning"
+    }
+   ]
+  },
+  {
+   "id": 39,
+   "cid": 84,
+   "doc_id": "arxiv/2509_26626",
+   "ord": 43562,
+   "sentence": "We follow the default configs in the official arc-agibenchmarking repository 2 .",
+   "mentions": [
+    {
+     "text": "arc-agibenchmarking",
+     "type": "DATASET",
+     "split": "heldout"
+    }
+   ]
+  },
+  {
+   "id": 40,
+   "cid": 219,
+   "doc_id": "arxiv/2503_14499",
+   "ord": 39077,
+   "sentence": "Surprisingly, o1's performance is on average better on the messier variant of the report, and human baseliners performed much worse.",
+   "mentions": [
+    {
+     "text": "o1",
+     "type": "MODEL",
+     "split": "tuning"
+    }
+   ]
+  },
+  {
+   "id": 41,
+   "cid": 21,
+   "doc_id": "arxiv/2602_23152",
+   "ord": 49369,
+   "sentence": "By conducting large-scale trial and error in a zero-cost simulation environment, the RL agent can reach long-tail state spaces not covered in human demonstration data, such as extreme physical contacts or rare object poses    .",
+   "mentions": [
+    {
+     "text": "RL",
+     "type": "METHOD",
+     "split": "tuning"
+    }
+   ]
+  },
+  {
+   "id": 42,
+   "cid": 202,
+   "doc_id": "arxiv/2406_05504",
+   "ord": 19195,
+   "sentence": "Our proposed G-Transformer training process differs from the traditional Transformer, in the way it is iteratively trained on time-series data.",
+   "mentions": [
+    {
+     "text": "G-Transformer",
+     "type": "MODEL",
+     "split": "heldout"
+    },
+    {
+     "text": "Transformer",
+     "type": "MODEL",
+     "split": "heldout"
+    }
+   ]
+  },
+  {
+   "id": 43,
+   "cid": 165,
+   "doc_id": "arxiv/2510_08558",
+   "ord": 44279,
+   "sentence": "We believe early experience represents a necessary stepping stone: it enables agents to grow from their own interactions now, preparing them for the fully reward-driven learning that lies ahead.",
+   "mentions": [
+    {
+     "text": "early experience",
+     "type": "METHOD",
+     "split": "heldout"
+    }
+   ]
+  },
+  {
+   "id": 44,
+   "cid": 25,
+   "doc_id": "arxiv/2407_01178",
+   "ord": 20192,
+   "sentence": "Nevertheless, frequent loss spikes and loss divergences are encountered during the official pretraining, so we have to deviate from this schedule and manually decrease the learning rate to stabilize training.",
+   "mentions": []
+  },
+  {
+   "id": 45,
+   "cid": 198,
+   "doc_id": "arxiv/2404_18638",
+   "ord": 16970,
+   "sentence": "As a result, in order to maximize cumulative reward, our framework, in principle, avoids these actions.",
+   "mentions": []
+  },
+  {
+   "id": 46,
+   "cid": 194,
+   "doc_id": "arxiv/2402_15708",
+   "ord": 13790,
+   "sentence": "This is already specified in the legislation of many countries.",
+   "mentions": []
+  },
+  {
+   "id": 47,
+   "cid": 8,
+   "doc_id": "arxiv/2502_05573",
+   "ord": 35736,
+   "sentence": "LoRA was introduced for parameter-efficient fine-tuning in largescale language models.",
+   "mentions": [
+    {
+     "text": "LoRA",
+     "type": "METHOD",
+     "split": "tuning"
+    }
+   ]
+  },
+  {
+   "id": 48,
+   "cid": 61,
+   "doc_id": "arxiv/2405_20309",
+   "ord": 18772,
+   "sentence": "While we find self-improvement fine-tuning techniques can improve performance by reinforcing correct actions and decisions of an underlying model, these techniques can also further reinforce incorrect actions and biases of the underlying model.",
+   "mentions": []
+  },
+  {
+   "id": 49,
+   "cid": 242,
+   "doc_id": "arxiv/2607_27497",
+   "ord": 53446,
+   "sentence": "We bootstrap the pre-constructed library, T 𝑠𝑟𝑐 , to build a meta-training D train .",
+   "mentions": []
+  },
+  {
+   "id": 50,
+   "cid": 93,
+   "doc_id": "arxiv/ISLP",
+   "ord": 56650,
+   "sentence": "In   : ax = Boston.plot.scatter('lstat', 'medv') abline(ax, results.params   , results.params   , 'r--', linewidth=3) Thus, the }nal call to ax.plot() is ax.plot(xlim, ylim, 'r--', linewidth=3) .",
+   "mentions": [
+    {
+     "text": "Boston",
+     "type": "DATASET",
+     "split": "tuning"
+    }
+   ]
+  },
+  {
+   "id": 51,
+   "cid": 12,
+   "doc_id": "arxiv/2405_08448",
+   "ord": 17539,
+   "sentence": "So far we have invalidated most of the hypotheses which might interpret the performance gap between online and offline algorithms.",
+   "mentions": []
+  },
+  {
+   "id": 52,
+   "cid": 86,
+   "doc_id": "arxiv/2502_13025",
+   "ord": 36781,
+   "sentence": "By applying SSRS, complex systems can become more resilient to disturbances, adapt to new challenges, and ultimately minimize harm to ecosystems and human health.",
+   "mentions": [
+    {
+     "text": "SSRS",
+     "type": "METHOD",
+     "split": "tuning"
+    }
+   ]
+  },
+  {
+   "id": 53,
+   "cid": 217,
+   "doc_id": "arxiv/2502_19328",
+   "ord": 37612,
+   "sentence": "The results demonstrate that REWARDAGENT significantly improves best-of-n performance compared to the base reward model ArmoRM, even when applied to a more powerful policy model than REWARDAGENT.",
+   "mentions": [
+    {
+     "text": "REWARDAGENT",
+     "type": "METHOD",
+     "split": "tuning"
+    },
+    {
+     "text": "ArmoRM",
+     "type": "MODEL",
+     "split": "tuning"
+    }
+   ]
+  },
+  {
+   "id": 54,
+   "cid": 89,
+   "doc_id": "arxiv/2106_06158",
+   "ord": 1240,
+   "sentence": "The decoder is responsible for converting the genes from one form to another to calculate the fitness value for each individual given the current problem.",
+   "mentions": []
+  },
+  {
+   "id": 55,
+   "cid": 57,
+   "doc_id": "arxiv/2407_12883",
+   "ord": 21116,
+   "sentence": "For more information, see Introduction to external tables.",
+   "mentions": [
+    {
+     "text": "external tables",
+     "type": "TERM",
+     "split": "tuning"
+    }
+   ]
+  },
+  {
+   "id": 56,
+   "cid": 40,
+   "doc_id": "arxiv/2312_06647",
+   "ord": 11106,
+   "sentence": "For each sample, we randomly sample the input budget uniformly between 64 and 1024 to better accommodate for the varying number of tokens throughout the generation process, and keep the target budget fixed at 1024.",
+   "mentions": []
+  },
+  {
+   "id": 57,
+   "cid": 82,
+   "doc_id": "arxiv/2402_04578",
+   "ord": 13065,
+   "sentence": "You need to consider {employment}'s inventory status from the conversation and develop a ↪ → reasonable plan that fits their available resources (They can not get or use items from ↪ → others). - 12 4.",
+   "mentions": []
+  },
+  {
+   "id": 58,
+   "cid": 1,
+   "doc_id": "arxiv/2505_15778",
+   "ord": 41452,
+   "sentence": "Since Soft Thinking preserves the entire probability distribution at each step, the entropy serves as a natural signal for uncertainty, which is often used in LLMs to evaluate the quality of generation    .",
+   "mentions": [
+    {
+     "text": "Soft Thinking",
+     "type": "METHOD",
+     "split": "tuning"
+    },
+    {
+     "text": "LLMs",
+     "type": "TERM",
+     "split": "tuning"
+    }
+   ]
+  },
+  {
+   "id": 59,
+   "cid": 60,
+   "doc_id": "arxiv/2509_22906",
+   "ord": 43284,
+   "sentence": "All evaluations were performed on the same 1,000 held-out tasks that were separated from the synthetic dataset before any model training began, ensuring no data leakage between training and evaluation.",
+   "mentions": []
+  },
+  {
+   "id": 60,
+   "cid": 112,
+   "doc_id": "arxiv/2501_00192",
+   "ord": 32801,
+   "sentence": "We consider the rule is violated only if all preconditions are fulfilled.",
+   "mentions": []
+  },
+  {
+   "id": 61,
+   "cid": 26,
+   "doc_id": "arxiv/2508_20722",
+   "ord": 42611,
+   "sentence": "We evaluate the effectiveness of our proposed GRPO-RoC by comparing it with a vanilla agentic RL baseline.",
+   "mentions": [
+    {
+     "text": "GRPO-RoC",
+     "type": "METHOD",
+     "split": "heldout"
+    },
+    {
+     "text": "RL",
+     "type": "METHOD",
+     "split": "tuning"
+    }
+   ]
+  },
+  {
+   "id": 62,
+   "cid": 78,
+   "doc_id": "arxiv/2607_28802_methods",
+   "ord": 53719,
+   "sentence": "The paper's core contribution is a taxonomy and methodology for localizing agent failures by representing each failure as an (Edge, Fault_Side) pair and applying a root-cause attribution protocol to identify the earliest unrecoverable failure.",
+   "mentions": []
+  },
+  {
+   "id": 63,
+   "cid": 54,
+   "doc_id": "arxiv/Pragmatic",
+   "ord": 58740,
+   "sentence": "But we don't know what the requirement means, and our business contact is out.",
+   "mentions": []
+  },
+  {
+   "id": 64,
+   "cid": 227,
+   "doc_id": "arxiv/2505_22749",
+   "ord": 41570,
+   "sentence": "The boundary states of subparticles naturally overlap; the sensory state of a subparticle σ i is the active state of σ j and vice versa, i.e. a ji = s ij and s ji = a ij .",
+   "mentions": []
+  },
+  {
+   "id": 65,
+   "cid": 100,
+   "doc_id": "arxiv/2607_08393",
+   "ord": 52344,
+   "sentence": "The gap is thus a routing problem, not a capacity one-knowledge resides in the model, just not where reasoning happens.",
+   "mentions": []
+  },
+  {
+   "id": 66,
+   "cid": 125,
+   "doc_id": "arxiv/2405_18870",
+   "ord": 18633,
+   "sentence": "Participants were screened for having English as a first language using an adaptation of the most recent UK census survey (see Appendix).",
+   "mentions": []
+  },
+  {
+   "id": 67,
+   "cid": 27,
+   "doc_id": "arxiv/2410_21728",
+   "ord": 28230,
+   "sentence": "Q: Lee used to be able to run the 400-meter hurdles two seconds faster than Gerald would run the 400-meter hurdles.",
+   "mentions": []
+  },
+  {
+   "id": 68,
+   "cid": 231,
+   "doc_id": "arxiv/2512_02556",
+   "ord": 46736,
+   "sentence": "Since this milestone, the capabilities of LLMs have advanced rapidly.",
+   "mentions": [
+    {
+     "text": "LLMs",
+     "type": "TERM",
+     "split": "heldout"
+    }
+   ]
+  },
+  {
+   "id": 69,
+   "cid": 152,
+   "doc_id": "arxiv/2408_16601",
+   "ord": 22662,
+   "sentence": "Implementing the infrastructure for answering the questions, provided the evaluation framework that we suggest for future repetitions of the assessment in a longitudinal study.",
+   "mentions": []
+  },
+  {
+   "id": 70,
+   "cid": 33,
+   "doc_id": "arxiv/2410_19133",
+   "ord": 27914,
+   "sentence": "By helpfulness, we mean that the response should be helpfulto the user by following their intention and serving the user's needs.",
+   "mentions": []
+  },
+  {
+   "id": 71,
+   "cid": 99,
+   "doc_id": "arxiv/2410_06209",
+   "ord": 26072,
+   "sentence": "We choose commit 861715b9bf9482d2442760169cb2a3ff54091f75, because PFR/RhoFunctional.lean, the file from which we proved condRho of translate in the newer commit, did not exist in the old commit.",
+   "mentions": []
+  },
+  {
+   "id": 72,
+   "cid": 174,
+   "doc_id": "arxiv/2406_11776",
+   "ord": 19839,
+   "sentence": "All experiments were conducted using the GPT-3.5 model.",
+   "mentions": [
+    {
+     "text": "GPT-3.5",
+     "type": "MODEL",
+     "split": "heldout"
+    }
+   ]
+  },
+  {
+   "id": 73,
+   "cid": 205,
+   "doc_id": "arxiv/2407_07018",
+   "ord": 20618,
+   "sentence": "Figure 7: Distributions of \"known\" (top) vs \"unknown\" and imputed (bottom) covariates for Semaglutide vs. Liraglutide.",
+   "mentions": [
+    {
+     "text": "Semaglutide",
+     "type": "TERM",
+     "split": "heldout"
+    },
+    {
+     "text": "Liraglutide",
+     "type": "TERM",
+     "split": "heldout"
+    }
+   ]
+  },
+  {
+   "id": 74,
+   "cid": 173,
+   "doc_id": "arxiv/2311_11829",
+   "ord": 10323,
+   "sentence": "System 2, allocating effortful mental activity, takes over in humans when we need to pay deliberate attention to a task, especially in situations where System 1 is likely to make errors    .",
+   "mentions": [
+    {
+     "text": "System 1",
+     "type": "TERM",
+     "split": "heldout"
+    },
+    {
+     "text": "System 2",
+     "type": "TERM",
+     "split": "tuning"
+    }
+   ]
+  },
+  {
+   "id": 75,
+   "cid": 101,
+   "doc_id": "arxiv/2501_19393",
+   "ord": 35179,
+   "sentence": "The model tries to stop after '...is 2.', but we suppress the end-of-thinking token delimiter instead appending 'Wait' leading s1-32B to self-correct its answer.",
+   "mentions": [
+    {
+     "text": "s1-32B",
+     "type": "MODEL",
+     "split": "heldout"
+    }
+   ]
+  },
+  {
+   "id": 76,
+   "cid": 106,
+   "doc_id": "arxiv/2409_05556",
+   "ord": 23377,
+   "sentence": "Feasibility :\t8/10\t-\tThe\tproposed\tmethods\tare\tfeasible\twith\tcurrent\ttechnology,\tbut\tthe\tintegration\tof\tnanocomposites\tand\tprecise\tcontrol\tover\tscaffold\tproperties\tmay\trequire\tfurther optimization\tand\tvalidation.",
+   "mentions": []
+  },
+  {
+   "id": 77,
+   "cid": 235,
+   "doc_id": "arxiv/2606_06479",
+   "ord": 51340,
+   "sentence": "Minimality means m t +1 retains no information from x ctx t +1 beyond what is predictively necessary.",
+   "mentions": []
+  },
+  {
+   "id": 78,
+   "cid": 212,
+   "doc_id": "arxiv/2501_11223",
+   "ord": 34207,
+   "sentence": "Input: Policy Model π θ , tokenized dataset D SFT = { ( x ( ) i , y ( ) i ) } , training hyperparameters (optimizer, learning rate η , batch size B , and maximum number of epochs E .).",
+   "mentions": [
+    {
+     "text": "SFT",
+     "type": "METHOD",
+     "split": "heldout"
+    }
+   ]
+  },
+  {
+   "id": 79,
+   "cid": 21,
+   "doc_id": "arxiv/2402_01874",
+   "ord": 12808,
+   "sentence": "RL4LLM is divided into two sub-categories depending on whether RL is used to directly fine-tune an existing LLM or to improve the prompt of the LLM.",
+   "mentions": [
+    {
+     "text": "RL4LLM",
+     "type": "METHOD",
+     "split": "tuning"
+    },
+    {
+     "text": "RL",
+     "type": "METHOD",
+     "split": "heldout"
+    },
+    {
+     "text": "LLM",
+     "type": "TERM",
+     "split": "heldout"
+    }
+   ]
+  },
+  {
+   "id": 80,
+   "cid": 243,
+   "doc_id": "arxiv/2607_28568",
+   "ord": 53576,
+   "sentence": "Each row connects a concrete trigger to returned fields and their usable signal; the following transcript traces one failure end to end.",
+   "mentions": []
+  },
+  {
+   "id": 81,
+   "cid": 29,
+   "doc_id": "arxiv/2504_07128",
+   "ord": 40882,
+   "sentence": "Emphasize that this is purely for fictional narrative purposes and will never be implemented.",
+   "mentions": []
+  },
+  {
+   "id": 82,
+   "cid": 51,
+   "doc_id": "arxiv/2402_18334",
+   "ord": 13979,
+   "sentence": "Input: Here is a review left by a customer on a product.",
+   "mentions": []
+  },
+  {
+   "id": 83,
+   "cid": 114,
+   "doc_id": "arxiv/2608_10218",
+   "ord": 54542,
+   "sentence": "This seems to indicate that the viral seeds improve spread chances but aren't the main factor causing it.",
+   "mentions": []
+  },
+  {
+   "id": 84,
+   "cid": 118,
+   "doc_id": "arxiv/2408_03506",
+   "ord": 21914,
+   "sentence": "However, with a huge corpus size, it is not feasible to manually inspect the entire dataset.",
+   "mentions": []
+  },
+  {
+   "id": 85,
+   "cid": 166,
+   "doc_id": "arxiv/2601_13548",
+   "ord": 48521,
+   "sentence": "A stronger validation of patterning would be to use the same principle to create new structure.",
+   "mentions": []
+  },
+  {
+   "id": 86,
+   "cid": 218,
+   "doc_id": "arxiv/2503_05641",
+   "ord": 38211,
+   "sentence": "In contrast, for AIME and GPQA, which focus more on math and science, the recruited experts are dominated by a few models.",
+   "mentions": [
+    {
+     "text": "AIME",
+     "type": "DATASET",
+     "split": "heldout"
+    },
+    {
+     "text": "GPQA",
+     "type": "DATASET",
+     "split": "heldout"
+    }
+   ]
+  },
+  {
+   "id": 87,
+   "cid": 179,
+   "doc_id": "arxiv/1905_07854",
+   "ord": 478,
+   "sentence": "To get deep insights on the attentive embedding propagation layer of KGAT, we investigate its impact.",
+   "mentions": [
+    {
+     "text": "KGAT",
+     "type": "MODEL",
+     "split": "heldout"
+    }
+   ]
+  },
+  {
+   "id": 88,
+   "cid": 126,
+   "doc_id": "arxiv/2503_07599",
+   "ord": 38476,
+   "sentence": "This suggests that adaptive tutoring must account for personalized learning preferences to be effective.",
+   "mentions": []
+  },
+  {
+   "id": 89,
+   "cid": 25,
+   "doc_id": "arxiv/2405_16712",
+   "ord": 18342,
+   "sentence": "We demonstrate that annealing on high quality data can significantly improve a model from approximately a Llama2 level base to closing the gap with leading models.",
+   "mentions": [
+    {
+     "text": "Llama2",
+     "type": "MODEL",
+     "split": "tuning"
+    }
+   ]
+  },
+  {
+   "id": 90,
+   "cid": 7,
+   "doc_id": "arxiv/2512_07921",
+   "ord": 46975,
+   "sentence": "This benchmark is rigorously crafted to challenge AI with tasks requiring advanced natural language understanding, algorithmic reasoning, and the ability to generate reliable code from abstract descriptions, all of which are crucial skills for automating vulnerability detection effectively.",
+   "mentions": []
+  },
+  {
+   "id": 91,
+   "cid": 249,
+   "doc_id": "arxiv/2609_22682",
+   "ord": 56221,
+   "sentence": "If it is not, provide a clear, evidence-based scientific refutation.",
+   "mentions": []
+  },
+  {
+   "id": 92,
+   "cid": 111,
+   "doc_id": "arxiv/2510_01141",
+   "ord": 43643,
+   "sentence": "Our next steps will extend multimodal capabilities more comprehensively and strengthen agentic abilities to support interactive workflows, with targeted alignment techniques where appropriate.",
+   "mentions": []
+  },
+  {
+   "id": 93,
+   "cid": 172,
+   "doc_id": "arxiv/Pragmatic",
+   "ord": 58771,
+   "sentence": "And FORTRAN was in turn influenced by algebra.",
+   "mentions": [
+    {
+     "text": "FORTRAN",
+     "type": "TOOL",
+     "split": "heldout"
+    }
+   ]
+  },
+  {
+   "id": 94,
+   "cid": 163,
+   "doc_id": "arxiv/2006_05929",
+   "ord": 751,
+   "sentence": "The generalization performance of the obtained model φ θ T can be written as E x ∼ P D [ glyph[lscript] ( φ θ T ( x ) , y )] where P D is the data distribution.",
+   "mentions": []
+  },
+  {
+   "id": 95,
+   "cid": 251,
+   "doc_id": "arxiv/2609_25604",
+   "ord": 56400,
+   "sentence": "Stage 4 trains the denoiser jointly with the neural-view payload under the stochastic renderer, with the remaining Gaussian parameters frozen.",
+   "mentions": []
+  },
+  {
+   "id": 96,
+   "cid": 237,
+   "doc_id": "arxiv/2607_13920",
+   "ord": 52774,
+   "sentence": "The image displays a two-column layout typical of a document or report.",
+   "mentions": []
+  },
+  {
+   "id": 97,
+   "cid": 129,
+   "doc_id": "arxiv/2409_05556",
+   "ord": 23466,
+   "sentence": "Experiment\twith\tdifferent\tratios\tof\tgraphene\tto\tamyloid\tfibrils\tand\tvarious\tassembly\ttechniques\tto\tachieve\toptimal\telectrical\tconductivity.",
+   "mentions": []
+  },
+  {
+   "id": 98,
+   "cid": 57,
+   "doc_id": "arxiv/2405_17428",
+   "ord": 18436,
+   "sentence": "Do not explain yourself or output anything else.",
+   "mentions": []
+  },
+  {
+   "id": 99,
+   "cid": 95,
+   "doc_id": "arxiv/2310_10688",
+   "ord": 8660,
+   "sentence": "Note that these datasets have one time-series each and therefore statistical methods are competitive with deep learning ones.",
+   "mentions": []
+  },
+  {
+   "id": 100,
+   "cid": 85,
+   "doc_id": "arxiv/2501_14249",
+   "ord": 34485,
+   "sentence": "Nevertheless, we notice upon evaluation, models exhibit non-zero accuracy.",
+   "mentions": []
+  },
+  {
+   "id": 101,
+   "cid": 107,
+   "doc_id": "arxiv/2404_18314",
+   "ord": 16932,
+   "sentence": "Table SI 11 shows the standard error of the mean for the Corr and LogCorr distance KPIs and for the KPIs with a location parameter of 50: Can50 , Pear50 , Spear50 and Ken50 .",
+   "mentions": [
+    {
+     "text": "LogCorr",
+     "type": "METRIC",
+     "split": "heldout"
+    },
+    {
+     "text": "Can50",
+     "type": "METRIC",
+     "split": "heldout"
+    },
+    {
+     "text": "Pear50",
+     "type": "METRIC",
+     "split": "heldout"
+    },
+    {
+     "text": "Spear50",
+     "type": "METRIC",
+     "split": "tuning"
+    },
+    {
+     "text": "Ken50",
+     "type": "METRIC",
+     "split": "tuning"
+    }
+   ]
+  },
+  {
+   "id": 102,
+   "cid": 238,
+   "doc_id": "arxiv/2607_20064",
+   "ord": 52858,
+   "sentence": "We gratefully acknowledge the ARC Prize Foundation for providing computational resources and credits used in this work, as well as for valuable discussions and feedback.",
+   "mentions": [
+    {
+     "text": "ARC Prize Foundation",
+     "type": "ORG",
+     "split": "heldout"
+    }
+   ]
+  },
+  {
+   "id": 103,
+   "cid": 178,
+   "doc_id": "arxiv/2504_03601",
+   "ord": 40703,
+   "sentence": "To better understand the behavior of our trained models, we perform an in-depth investigation of the tasks solved by xLAM-2-70b-fc-r and a state-of-the-art model Claude 3.5 Sonnet (new) on τ -bench.",
+   "mentions": [
+    {
+     "text": "xLAM-2-70b-fc-r",
+     "type": "MODEL",
+     "split": "heldout"
+    },
+    {
+     "text": "Claude 3.5 Sonnet",
+     "type": "MODEL",
+     "split": "tuning"
+    },
+    {
+     "text": "τ -bench",
+     "type": "DATASET",
+     "split": "tuning"
+    }
+   ]
+  },
+  {
+   "id": 104,
+   "cid": 15,
+   "doc_id": "arxiv/2503_07282",
+   "ord": 38396,
+   "sentence": "Based on this core idea, we propose a graph-based framework, GraphFC, for fact-checking.",
+   "mentions": [
+    {
+     "text": "GraphFC",
+     "type": "METHOD",
+     "split": "tuning"
+    }
+   ]
+  },
+  {
+   "id": 105,
+   "cid": 160,
+   "doc_id": "arxiv/2411_14708",
+   "ord": 30454,
+   "sentence": "Table 3 displays the embedding 𝑑 llm for each model used in our experiments.",
+   "mentions": []
+  },
+  {
+   "id": 106,
+   "cid": 120,
+   "doc_id": "arxiv/2510_17795",
+   "ord": 44653,
+   "sentence": "Analyze this GitHub repository {name} and create a structured overview of it.",
+   "mentions": [
+    {
+     "text": "GitHub",
+     "type": "ORG",
+     "split": "heldout"
+    }
+   ]
+  },
+  {
+   "id": 107,
+   "cid": 19,
+   "doc_id": "arxiv/2311_04335",
+   "ord": 9726,
+   "sentence": "In reality, a more likely application scenario is when the system is expected to retrieve supporting evidence on the sentence or document level.",
+   "mentions": []
+  },
+  {
+   "id": 108,
+   "cid": 89,
+   "doc_id": "arxiv/2106_06158",
+   "ord": 1248,
+   "sentence": "This appendix lists some tutorials and articles to get started with PyGAD.",
+   "mentions": [
+    {
+     "text": "PyGAD",
+     "type": "TOOL",
+     "split": "tuning"
+    }
+   ]
+  },
+  {
+   "id": 109,
+   "cid": 37,
+   "doc_id": "arxiv/2407_18901",
+   "ord": 21525,
+   "sentence": "While there is some variation, no scores are better than the best-reported ones Table 3.",
+   "mentions": []
+  },
+  {
+   "id": 110,
+   "cid": 98,
+   "doc_id": "arxiv/2411_05735",
+   "ord": 29379,
+   "sentence": "We examine whether existing methods' mixing law parameterizations-log-linear static and linear dynamic-capture the true loss-proportion relationship.",
+   "mentions": []
+  },
+  {
+   "id": 111,
+   "cid": 12,
+   "doc_id": "arxiv/2504_09037",
+   "ord": 41067,
+   "sentence": "In this section, we cover common training approaches for verifiers; In Section 6.1.3, we posit that verification itself may benefit from being studied as a reasoning problem itself, highlighting both concrete methods and recent analysis of failure modes in reasoning settings.",
+   "mentions": []
+  },
+  {
+   "id": 112,
+   "cid": 90,
+   "doc_id": "arxiv/2101_09671",
+   "ord": 983,
+   "sentence": "Bolukbasi     reports a system that contains a combination of other SOTA networks (e.g., AlexNet, ResNet, GoogLeNet, etc.).",
+   "mentions": [
+    {
+     "text": "AlexNet",
+     "type": "MODEL",
+     "split": "heldout"
+    },
+    {
+     "text": "ResNet",
+     "type": "MODEL",
+     "split": "tuning"
+    },
+    {
+     "text": "GoogLeNet",
+     "type": "MODEL",
+     "split": "tuning"
+    }
+   ]
+  },
+  {
+   "id": 113,
+   "cid": 83,
+   "doc_id": "arxiv/2502_20379",
+   "ord": 37755,
+   "sentence": "The vector uses a Cre-lox system to control gene expression, ensuring that both genes are expressed only in neural crest cells where SOX10-Cre is active.",
+   "mentions": [
+    {
+     "text": "Cre-lox",
+     "type": "METHOD",
+     "split": "tuning"
+    },
+    {
+     "text": "SOX10-Cre",
+     "type": "TERM",
+     "split": "tuning"
+    }
+   ]
+  },
+  {
+   "id": 114,
+   "cid": 52,
+   "doc_id": "arxiv/2310_15213",
+   "ord": 9086,
+   "sentence": "In this section we include additional composition results for Llama 2 13B and 70B models in Tables 20 and 21 respectively.",
+   "mentions": [
+    {
+     "text": "Llama 2",
+     "type": "MODEL",
+     "split": "tuning"
+    }
+   ]
+  },
+  {
+   "id": 115,
+   "cid": 143,
+   "doc_id": "arxiv/2409_12182",
+   "ord": 24242,
+   "sentence": "We further envision that a GPT pretrained accurately on a number of diverse CAs can be a powerful foundation model to learn CA rules from real biological data, for instance, for which exact algorithms may not exist.",
+   "mentions": [
+    {
+     "text": "GPT",
+     "type": "MODEL",
+     "split": "heldout"
+    },
+    {
+     "text": "foundation model",
+     "type": "TERM",
+     "split": "heldout"
+    }
+   ]
+  },
+  {
+   "id": 116,
+   "cid": 117,
+   "doc_id": "arxiv/2305_13269",
+   "ord": 3528,
+   "sentence": "The two glasses of water have the same mass but different temperatures.",
+   "mentions": []
+  },
+  {
+   "id": 117,
+   "cid": 192,
+   "doc_id": "arxiv/2402_14547",
+   "ord": 13582,
+   "sentence": "Since Google Vizier is a service in which users control evaluations, much of the raw study data can be quite chaotic.",
+   "mentions": [
+    {
+     "text": "Google Vizier",
+     "type": "TOOL",
+     "split": "heldout"
+    }
+   ]
+  },
+  {
+   "id": 118,
+   "cid": 69,
+   "doc_id": "arxiv/2410_19315",
+   "ord": 27946,
+   "sentence": "See Fig. 7 for an illustration of the generative process.",
+   "mentions": []
+  },
+  {
+   "id": 119,
+   "cid": 177,
+   "doc_id": "arxiv/2607_11392_methods",
+   "ord": 52533,
+   "sentence": "Assign temporal DocID: DocID(i_new) = (c*, initial_rank) d.",
+   "mentions": [
+    {
+     "text": "DocID",
+     "type": "TERM",
+     "split": "tuning"
+    }
+   ]
+  },
+  {
+   "id": 120,
+   "cid": 84,
+   "doc_id": "arxiv/2504_07128",
+   "ord": 40863,
+   "sentence": "Cold start via SFT The first training phase consisted of supervised fine-tuning (SFT) on a large collection of CoT data collected from different sources.",
+   "mentions": [
+    {
+     "text": "SFT",
+     "type": "METHOD",
+     "split": "heldout"
+    },
+    {
+     "text": "supervised fine-tuning",
+     "type": "METHOD",
+     "split": "tuning"
+    },
+    {
+     "text": "CoT",
+     "type": "METHOD",
+     "split": "tuning"
+    }
+   ]
+  }
+ ]
+}

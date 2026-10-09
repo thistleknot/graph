@@ -34,7 +34,11 @@ A5  The stored cosine view is fitted on every non-junk chunk, references include
     map's in-memory lexical view (tools/arxiv_community_map.py) is fitted on retrievable chunks
     only. Both are cosine over saturated tf*idf rows; their idf differs slightly.
 
-Run:  python -u tools\\ingest_arxiv_sparsevec.py [--no-battery]
+A6  `--label NAME --bpe MERGES` builds the same chunks into a SIDE label with a BPE vocabulary (skills/bpe-bm25: the BPE is trained on the
+    surviving term strings only, sized by a merge budget; its alphabet is widened to every character of every word, and a [UNK] anywhere in
+    the corpus fails the build). It never runs over arxiv_sect. Query words are spelled with the same pieces. Task T141.
+
+Run:  python -u tools\\ingest_arxiv_sparsevec.py [--no-battery] [--label NAME --bpe MERGES]
 """
 from __future__ import annotations
 
@@ -143,16 +147,43 @@ def gold(recs: list[dict]):
     return titles, body
 
 
-def query_terms(text: str, col: dict, idf: np.ndarray):
-    """R2, R6. Guarantee: (cols, weights = idf * qtf) over the terms the vocabulary holds."""
-    qtf = collections.Counter(t for t in tokenize(text) if t in col)
+def bpe_docs(token_docs: list[list[str]], merges: int):
+    """A6. Guarantee: (docs as BPE pieces, to_pieces). Follows skills/bpe-bm25: the BPE is trained on the SURVIVING TERM STRINGS only (document
+    frequency at least 2, in at most half of the documents: the skill's eligibility and whale steps; its band and length-outlier steps are
+    left out, the band being a size dial that did not move recall), sized by a MERGE BUDGET; every distinct word, survivor or not, is then
+    spelled by those pieces ('##' marks a continuation), so no word is out of vocabulary. `to_pieces(words)` spells query words the same way."""
+    import hnsw_communities as hc
+    df = collections.Counter(w for d in token_docs for w in set(d))
+    n = sum(1 for d in token_docs if d)
+    survivors = sorted(w for w, c in df.items() if 2 <= c <= 0.5 * n)
+    norm = hc._NORM.normalize_str
+    have = {ch for w in survivors for ch in norm(w)}
+    missing = sorted({ch for w in df for ch in norm(w) if not ch.isspace()} - have)            # characters only a hapax or a whale holds
+    tok = hc.train_bpe(survivors + (["".join(missing)] if missing else []), vocab=merges)         # the alphabet must cover every word, or it spells [UNK]
+    words = sorted(df)
+    spelled = {w: e.tokens for w, e in zip(words, tok.encode_batch(words))}
+    assert not any("[UNK]" in t for t in spelled.values()), "a word was spelled with [UNK]: the alphabet does not cover the corpus"
+
+    def to_pieces(ws: list[str]) -> list[str]:
+        return [p for w in ws for p in (spelled[w] if w in spelled else tok.encode(w).tokens)]
+    return [to_pieces(d) for d in token_docs], to_pieces
+
+
+def query_terms(text: str, col: dict, idf: np.ndarray, tok=tokenize):
+    """R2, R6. Guarantee: (cols, weights = idf * qtf) over the terms the vocabulary holds; `tok` spells the query as the index was spelled."""
+    qtf = collections.Counter(t for t in tok(text) if t in col)
     cols = sorted(col[t] for t in qtf)
     inv = {col[t]: n for t, n in qtf.items()}
     return cols, [float(idf[c] * inv[c]) for c in cols]
 
 
 def main() -> None:
+    global LABEL
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace", line_buffering=True)
+    if "--label" in sys.argv:                                      # a side label never touches the live one (A6)
+        LABEL = sys.argv[sys.argv.index("--label") + 1]
+    bpe = int(sys.argv[sys.argv.index("--bpe") + 1]) if "--bpe" in sys.argv else None
+    assert bpe is None or LABEL != "arxiv_sect", "a BPE build goes to a side label, never over the live arxiv_sect"
     cached = pickle.load(open(CACHE, "rb"))
     recs = with_junk_flag(cached["records"])
     log("chunks %d (reference-flagged %d, junk-flagged %d)"
@@ -160,6 +191,11 @@ def main() -> None:
 
     t0 = time.time()
     token_docs = [[] if r["is_junk"] else tokenize(r["text"]) for r in recs]       # A4: a junk chunk is an empty document
+    tok_fn = tokenize
+    if bpe:
+        token_docs, to_pieces = bpe_docs(token_docs, bpe)
+        tok_fn = lambda text: to_pieces(tokenize(text))            # a query is words first, then pieces (to_pieces takes a LIST of words)
+        log("BPE vocabulary: merge budget %d, %d chunk-token streams spelled in pieces" % (bpe, len(token_docs)))
     BM, TF, terms, df = bm25_matrix(token_docs, K1, B)
     BM = BM.tocsr()
     N, dim = BM.shape
@@ -181,7 +217,7 @@ def main() -> None:
     log("meta written: %d rows" % ss.write_chunk_meta(conn, LABEL, recs))
     build = ss.new_build(conn, LABEL, len(recs), {
         "bm25": {"k1": K1, "b": B, "avgdl": avgdl, "n_docs": N, "dim": dim, "whale_cols": whales.tolist()},
-        "fit": cached.get("fit"), "dense_dim": DENSE_DIM})
+        "fit": cached.get("fit"), "dense_dim": DENSE_DIM, "tokenizer": {"kind": "bpe", "merges": bpe} if bpe else {"kind": "words"}})
     log("build %d opened (statistics frozen here until the next full build)" % build)
 
     def rows(M_):
@@ -209,7 +245,7 @@ def main() -> None:
     log("gold: title %d  body %d" % (len(titles), len(body)))
     hdr = "  %-24s %8s %9s"
     for gname, gq in (("title -> own paper", titles), ("body sentence -> own paper", body)):
-        qs = [(query_terms(q, col, idf), rel) for q, rel in gq]
+        qs = [(query_terms(q, col, idf, tok_fn), rel) for q, rel in gq]
         qs = [(c, w_, rel) for (c, w_), rel in qs if c]
         print("\n  [%s]  n=%d (queries with no vocabulary term dropped: %d)" % (gname, len(qs), len(gq) - len(qs)))
         print(hdr % ("arm", "rec@50", "ms/q"))

@@ -132,8 +132,19 @@ C11 A paper's identity SHALL be its arXiv id without the version (plus a `_metho
     overwriting mechanism ... presume v1 if no v info is provided"). Where several versions of a key are on
     disk only the highest is read. A stored paper is replaced only by a HIGHER version; the same or a
     lower one is not read.
+C12 A section SHALL be re-aggregated from its chunks by reaggregate_section: header handled by chunk_idx, no
+    overlap trimming (none is stored, and a trim would delete repeats the source contains).
 C6  Conservation SHALL hold per document: non-whitespace text of the units equals
     non-whitespace text of header+body of every section, exactly once.
+C13 The SECTION map (operator 2026-10-05: "derive the graph based on sections") SHALL take its nodes from section_records:
+    one record per header block of the cleaned markdown BEFORE any splitting or merging, text = header + body. The usable
+    nodes (usable_sections) SHALL exclude, in this order, empty bodies, reference sections, bodies shorter than
+    exp(median - 2*1.4826*MAD) of the log body length of the non-empty non-reference sections (the chunker's own robust
+    bound, 106 characters on the 2026-10-05 corpus), junk (C10), and PDF font-glyph debris: a section at least GLYPH_SHARE
+    (0.5) of whose non-space characters are `glyph<c=..,font=..>` codes (1,900 of 82,542 sections, 2.3%, measured 2026-10-05:
+    the exact dense pass ranked their pairs as the strongest and 91% of its top edges were such near-duplicates; there is a gap
+    in the share between 0.5 (1,900 sections) and 0.2 (2,016), so the cut is not on the edge of a cluster). Each exclusion
+    SHALL be counted in the returned stats.
 """
 from __future__ import annotations
 
@@ -509,6 +520,55 @@ def retrievable(records: list[dict]) -> list[dict]:
     return [r for r in with_junk_flag(records) if not r["is_reference"] and not r["is_junk"]]
 
 
+def section_records(doc_ids: list[str], docs: list[str]) -> list[dict]:
+    """C13. Guarantee: one record per header block of every document, in order: {doc_id, section_idx (the position among
+    the document's header blocks, the key tools/section_lengths used), chunk_idx 0, section_title, is_reference, body_chars,
+    text = header + body}. Nothing is dropped here; usable_sections decides."""
+    out = []
+    for did, d in zip(doc_ids, docs):
+        for si, (h, body) in enumerate(header_sections(clean_md(d), did)):
+            out.append({"doc_id": did, "section_idx": si, "chunk_idx": 0, "section_title": header_title(h),
+                        "is_reference": is_reference(h), "body_chars": len(body),
+                        "text": h + ("\n\n" + body if body.strip() else "")})
+    return out
+
+
+GLYPH_SHARE = 0.5
+_GLYPH = re.compile(r"glyph\s*(?:<[^>]*>|&lt;.*?&gt;|\[[^\]]*\])", re.I)
+
+
+def glyph_share(text: str) -> float:
+    """C13. Guarantee: the share of `text`'s non-space characters that sit inside `glyph<...>` font-glyph codes (0 for an empty text)."""
+    n = len(re.sub(r"\s+", "", text))
+    return sum(len(re.sub(r"\s+", "", m.group(0))) for m in _GLYPH.finditer(text)) / n if n else 0.0
+
+
+def usable_sections(records: list[dict]) -> tuple[list[dict], dict]:
+    """C13. Guarantee: (the records that are non-empty, not references, at least the robust lower bound long, not junk and not glyph
+    debris, in order; stats {all, empty, reference, short, junk, glyph, floor, kept} counting each exclusion once in that order)."""
+    from scipy.stats import median_abs_deviation
+    body = np.array([r["body_chars"] for r in records if r["body_chars"] > 0 and not r["is_reference"]], float)
+    x = np.log(body)
+    floor = float(np.exp(np.median(x) - 2 * 1.4826 * median_abs_deviation(x)))
+    st = {"all": len(records), "empty": 0, "reference": 0, "short": 0, "junk": 0, "glyph": 0, "floor": floor}
+    kept = []
+    for r in with_junk_flag(records):
+        if r["body_chars"] == 0:
+            st["empty"] += 1
+        elif r["is_reference"]:
+            st["reference"] += 1
+        elif r["body_chars"] < floor:
+            st["short"] += 1
+        elif r["is_junk"]:
+            st["junk"] += 1
+        elif glyph_share(r["text"]) >= GLYPH_SHARE:
+            st["glyph"] += 1
+        else:
+            kept.append(r)
+    st["kept"] = len(kept)
+    return kept, st
+
+
 def make_splitter(fit: dict, overlap: int | None = None):
     """C4. Guarantee: RecursiveCharacterTextSplitter at size hi, overlap m (or `overlap`),
     measured in the C2 unit, with `\\n#` placed before the library defaults so a header
@@ -627,3 +687,32 @@ def chunk_arxiv(doc_ids: list[str], docs: list[str], fit: dict | None = None):
     keys = [(r["doc_id"], r["section_idx"], r["chunk_idx"]) for r in records]
     assert len(set(keys)) == len(keys), "business key (doc_id, section_idx, chunk_idx) is not unique"
     return records, fit, tot
+
+
+SECTION_DISPLAY_CAP = 200_000       # chars of a section shown in full: p99.9 of section size is 79,000; one degenerate section is 16.7M
+_NEW_ID = re.compile(r"^(\d{4})_(\d{4,5})$")
+_OLD_ID = re.compile(r"^([a-z\-]+(?:\.[A-Z]{2})?)_(\d{7})$")
+
+
+def arxiv_url(doc_id: str) -> str | None:
+    """C11. Guarantee: the arXiv abstract page of a paper, None for anything that is not an arXiv id (a book). A
+    `_methods` extract links to its paper."""
+    stem = doc_id.removeprefix("arxiv/").removesuffix("_methods")
+    if m := _NEW_ID.match(stem):
+        return "https://arxiv.org/abs/%s.%s" % m.groups()
+    if m := _OLD_ID.match(stem):
+        return "https://arxiv.org/abs/%s/%s" % m.groups()
+    return None
+
+
+def reaggregate_section(chunks: list[tuple[int, str]]) -> str:
+    """C12. Guarantee: ONE section's text rebuilt from its chunks, given as [(chunk_idx, text)] in chunk_idx
+    order. A chunk with chunk_idx > 0 starts with the section header the chunker prepended (C7), so that first
+    line and the blank after it are dropped; a chunk with chunk_idx 0 keeps its header, which is the section's
+    own. Chunks are joined by a blank line. Nothing else is removed: no overlap is trimmed, because none is
+    stored (C5 de-overlaps by position when it cuts). Measured on the live corpus, 72 of 1,245 neighbouring
+    chunk pairs share an exact 12+ character span, and every sample is a repeat the SOURCE has
+    ('<!-- formula-not-decoded -->', identical image-description lines); a reduce_overlaps pass would delete
+    them. 324 of 400 documents reassemble to their markdown exactly (non-whitespace), the rest differing only
+    by the `# <doc_id>` header C7 gives header-less text."""
+    return "\n\n".join(t.partition("\n")[2].lstrip("\n") if c > 0 else t for c, t in chunks)
