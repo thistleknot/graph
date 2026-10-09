@@ -58,7 +58,7 @@ retrieval step yet. The agent's answer quality is not yet measured against plain
 
 One card per community, largest first, with its Dunning terms, its top entities, its exemplar sections and the
 paper each came from. [`docs/section_map/community_map.png`](docs/section_map/community_map.png) is the
-picture; [`docs/section_map/communities.md`](docs/section_map/communities.md) is the same content as text
+picture, with the three example questions drawn as a strip under the cards (hops taken, subgraph size, entity composition per query); [`docs/section_map/communities.md`](docs/section_map/communities.md) is the same content as text
 (every exemplar section, with links to arXiv). Both are copies of what `src/section_render.py` writes to `.tmp/`.
 
 ![community map](docs/section_map/community_map.png)
