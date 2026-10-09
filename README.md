@@ -14,6 +14,36 @@ docstrings of [chunkgraph.py](chunkgraph.py) and
 [salient_grams.py](salient_grams.py); the docstrings ARE the spec for the code
 they sit above.
 
+## arXiv section map — start here
+
+The current work is a map over whole **sections** of 2,521 arXiv papers (80,642 usable sections), kept in Postgres
+(`chunkgraph-pg`, host port 5433, user/db/password `graph`). Each stage is its own module; run them in this order
+from the repo root (`python -u tools\<file>.py`). `.tmp/` holds every intermediate and output.
+
+| Step | Entrypoint | What it does |
+|---|---|---|
+| 1 | `tools/section_corpus.py` | cut the extracted papers into sections, keep the usable ones |
+| 2 | `tools/section_embed.py`, `tools/section_sparse.py` | dense (jina v5 nano through model2vec) and sparse (BPE + adjacent pair) vectors |
+| 3 | `tools/section_map.py` | exact correlation edges in both spaces, one fused graph, Leiden communities, exemplars, UMAP layout |
+| 4 | `tools/section_store.py --tag xpa` | write the build to Postgres: `sect_node`, `sect_edge`, `sect_community` |
+| 4b | `tools/section_store.py --tag xpa --entities` | match the frozen entity inventory onto the sections into `sect_mention` (about 6 minutes) |
+| 5 | `tools/summarize_clusters.py --all` | LLM draft summary per community (resumes from its JSON) |
+| 6 | `tools/arxiv_titles.py` | paper titles into `paper_title`, prefilled from the CSVs in `C:/Users/user/arxiv_id_lists`, the arXiv API for gaps |
+| 7 | `tools/section_render.py --tag xpa` | **the picture**: labelled community PNG and markdown (Dunning terms, entities, paper titles) |
+| 8 | `tools/section_query_panel.py` | ask a question: hybrid retrieval, community view, and the hop-planning ReAct agent, drawn as a strip |
+
+Library modules, imported not run: `section_graphrag.py` (hybrid GraphRAG and the agent), `section_graph.py` (edges),
+`arxiv_community_map.py` (exemplars and the card/markdown writers), `term_salience.py` (Dunning terms), `section_genre.py`.
+`entity_derive.py` (repo root) derives entities with no tagger: n-grams filtered by NPMI, closed-class, nesting and residual-IDF rules.
+
+Three layers stay apart. **Vector edges** join section to section (`sect_edge`; communities come from these).
+**Mentions** join a section to an entity (`sect_mention`). **Co-mention edges** join entity to entity
+(`sect_entity_edge`, `kind = 'co_mention'`, NPMI > 0 over at least 5 shared sections). Co-mention edges feed no
+retrieval step yet. The agent's answer quality is not yet measured against plain retrieval.
+
+`louvain_pg.py` and `psql_graph.md` are the reference for running Louvain over a Postgres property graph; the section
+map follows their idea (graph and communities in Postgres) but uses Leiden over `sect_edge`.
+
 ## Where things are documented
 
 | Topic | Where |
