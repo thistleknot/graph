@@ -41,6 +41,56 @@ Three layers stay apart. **Vector edges** join section to section (`sect_edge`; 
 (`sect_entity_edge`, `kind = 'co_mention'`, NPMI > 0 over at least 5 shared sections). Co-mention edges feed no
 retrieval step yet. The agent's answer quality is not yet measured against plain retrieval.
 
+### What the map looks like
+
+One card per community, largest first, with its Dunning terms, its top entities, its exemplar sections and the
+paper each came from. [`examples/section_map/community_map.png`](examples/section_map/community_map.png) is the
+picture; [`examples/section_map/communities.md`](examples/section_map/communities.md) is the same content as text
+(every exemplar section, with links to arXiv). Both are copies of what `tools/section_render.py` writes to `.tmp/`.
+
+![community map](examples/section_map/community_map.png)
+
+### How edges are decided (section to section)
+
+Two representations of every section, compared **exactly**, all pairs, no approximate index:
+
+| Space | Vector | Reads as |
+|---|---|---|
+| dense | jina-embeddings-v5-text-nano through model2vec (256 dims), centred on the corpus mean | meaning |
+| sparse | BPE pieces plus adjacent pairs, unit rows | shared wording (this is where terms enter the edges) |
+
+1. For each space, the cosine of every pair is turned into a z-score against a Box-Cox-normalised null of all pairs.
+2. A pair is an edge in that space when **z >= 2.0 and it is in the node's exact top 15**.
+3. Every node also keeps its top 2 neighbours per space (the backbone), at a tiny floor weight, so none is isolated.
+4. The two spaces fuse by union; the edge weight is the mean z over the spaces that saw the pair (clipped at 0) plus the floor.
+5. Leiden runs over the fused matrix: a resolution sweep, a plateau pick, three-run consensus, and a seed-stability gate (ARI >= 0.8).
+   Communities of one section are dropped and left as unassigned nodes.
+
+Terms never make an edge on their own. The Dunning terms on each card are **labels**: for each community, the words and
+word pairs whose share inside it is most over-represented against the whole corpus (Dunning log-likelihood G2).
+
+### How entities and entity edges are decided
+
+Entities are derived from the text by information theory, with no tagger, no NER and no pretrained model
+(`entity_derive.py`, guards AE1 to AE15):
+
+1. Candidates are n-grams of up to 4 tokens inside one sentence, never across math, a citation or a table cell.
+2. A candidate must occur in enough **papers** (not chunks), so one broken book cannot create entities.
+3. It scores zero, and is dropped, if its weakest split has NPMI <= 0; if it starts or ends with a closed-class word
+   (derived from the corpus, no stop list); if a longer gram accounts for most of its occurrences; if its residual IDF is
+   low (spread evenly, so vocabulary rather than an entity); or if every token is a single character (math left outside `$...$`).
+4. Acronym and expansion pairs (`LLM`, `large language model`) are merged into one entity.
+5. The survivors form a frozen inventory of about 40,000 entities, built on the chunk map and matched, longest first with no
+   overlap, onto the section bodies. That is `sect_mention` (section to entity, with a count).
+
+Entity edges (`sect_entity_edge`, `kind = 'co_mention'`) join two entities that occur together in at least 5 sections, both
+in at most 2,000 sections, kept only when NPMI = ln(p_ab / (p_a p_b)) / -ln(p_ab) is positive. The `kind` column keeps this
+evidence apart from vector edges: entities are never nodes of `sect_edge`, and an entity vector is never an edge.
+`rel:<class>` (DIRT-style relation edges) is reserved and not built.
+
+Entities per community on a card are chosen by Dunning G2 against the corpus; the entities shown for a question's subgraph
+are ranked by sections x ln(N / df), with hubs over 2,000 sections out and subset or superset names merged.
+
 `louvain_pg.py` and `psql_graph.md` are the reference for running Louvain over a Postgres property graph; the section
 map follows their idea (graph and communities in Postgres) but uses Leiden over `sect_edge`.
 
