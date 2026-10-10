@@ -57,38 +57,42 @@ def test_column_has_the_global_view_whole_then_the_subgraph_with_keys_and_weight
     assert "The final LLM answer" in lines[pos[1] + 1][1] and lines[pos[2] - 1][0] == "b"
 
 
-def test_a_traversal_adds_the_hops_the_size_the_entities_and_one_group_per_later_hop_P3():
+def test_a_traversal_adds_the_hops_the_size_the_entities_each_querys_walk_and_one_group_per_agent_query_P3():
     res, rows, comm = world()
-    res["traversal"] = {"hops": 3, "size": 5, "per_hop": [2, 2, 0, 1], "read": 2, "stop": "answered", "queries": 3, "entities": [("harness", 4), ("verifier", 2)],
+    res["traversal"] = {"hops": 3, "size": 5, "per_hop": [2, 2, 0, 1], "read": 2, "stop": "answered", "queries": 3, "entities": [("harness", 4), ("verifier", 2)], "per_query": 13,
+                        "walks": [{"query": 1, "words": "q", "held": 13, "pool": 47, "masked": 0}, {"query": 2, "words": "kv cache", "held": 9, "pool": 9, "masked": 4}],
                         "by_community": [{"cid": 5, "n": 3, "entities": [("harness", 3), ("verifier", 2)]}, {"cid": 7, "n": 2, "entities": []}]}
-    res["nodes"] = [{"ord": 0, "key": "arxiv/2401_1#3", "hop": 0}, {"ord": 2, "key": "arxiv/2402_9#7", "hop": 1}, {"ord": 4, "key": "arxiv/2404_8#1", "hop": 3}]
+    res["nodes"] = [{"ord": 0, "key": "arxiv/2401_1#3", "hop": 0, "query": 1}, {"ord": 2, "key": "arxiv/2402_9#7", "hop": 1, "query": 1}, {"ord": 4, "key": "arxiv/2404_8#1", "hop": 3, "query": 2, "words": "kv cache"}]
     res["shown_communities"] = 24
     lines = qp.column_lines(res, rows, comm)
     heads = [l for s, l in lines if s == "h"]
     text = "\n".join(l for _, l in lines)
     assert heads == ["GLOBAL  - LLM summary of the 1 of 3 candidate communities that answered", "ANSWER  - LLM over question + global summary + ▸ ◆ sections",
-                     "TRAVERSAL  - ReAct agent: 3 hops, 5 sections seen, 2 read", "ENTITIES BY COMMUNITY  (sections of the subgraph mentioning each)",
-                     "SUBGRAPH  - 2 retrieved, 2 neighbours in 3 communities  (▸ = given to the LLM)",
-                     "HOP 3  - 1 sections", "TYPICAL SECTION of each top community (◆ = given to the LLM)"] and all(len(h) <= 80 for h in heads)
+                     "TRAVERSAL  - ReAct agent: 3 hops asked of each query, 5 sections seen, 2 read", "ENTITIES BY COMMUNITY  (sections of the subgraph mentioning each)",
+                     "SUBGRAPH  - 3 sections in 2 queries, 2 communities  (▸ = given to the LLM)", 'QUERY 1  "how does it work"  - 2 sections',
+                     'QUERY 2  "kv cache"  - 1 sections', "TYPICAL SECTION of each top community (◆ = given to the LLM)"] and all(len(h) <= 80 for h in heads)
+    assert "▸★ h0 2401_1#3  c5  Draft then verify" in text and "· h1 2402_9#7  c6  Neighbour" in text                  # P5: query 1's own sections are listed, each with its hop
     assert "sections per hop  h0 2 · h1 2 · h2 0 · h3 1" in text and "stopped: the agent chose ANSWER; 3 queries run; 24 communities shown to it" in text
+    assert "query 1  13 of 13 shown  pool 47  0 already-shown met" in text and "query 2  9 of 13 shown  pool 9  4 already-shown met" in text           # a short query says so: 9 of 13
     assert "entities of the subgraph (sections mentioning each): harness 4 · verifier 2" in text
-    assert "▸· 2404_8#1  c5  Typical of five" in text                                                     # a hop-3 section the LLM was given
+    assert "▸· h3 2404_8#1  c5  Typical of five" in text                                                  # a hop-3 section of query 2 the LLM was given
     assert "c5  Speculative decoding  3 of 5 sections" in text and "    harness 3 · verifier 2" in text      # the subgraph broken out by community, with the community's own title
     assert "c7  (no summary)  2 of 5 sections" in text and "    no entity" in text                       # a community without a title or an entity says so
     res["traversal"]["stop"], res["traversal"]["entities"] = "done", []
-    assert "stopped: every planned hop and round was used" in "\n".join(l for _, l in qp.column_lines(res, rows, comm)) and "none" in "\n".join(l for _, l in qp.column_lines(res, rows, comm))
+    assert "stopped: every search and round was used" in "\n".join(l for _, l in qp.column_lines(res, rows, comm)) and "none" in "\n".join(l for _, l in qp.column_lines(res, rows, comm))
 
 
 def test_a_known_paper_title_follows_the_section_heading_on_every_section_line_P4():
     res, rows, comm = world()
     res["traversal"] = {"hops": 3, "size": 5, "per_hop": [2, 2, 0, 1], "read": 0, "stop": "done", "entities": [], "by_community": []}
-    res["nodes"] = [{"ord": 4, "key": "arxiv/2404_8#1", "hop": 3}]
+    res["nodes"] = [{"ord": 0, "key": "arxiv/2401_1#3", "hop": 0, "query": 1}, {"ord": 1, "key": "arxiv/2401_2#1", "hop": 0, "query": 1}, {"ord": 2, "key": "arxiv/2402_9#7", "hop": 1, "query": 1},
+                    {"ord": 4, "key": "arxiv/2404_8#1", "hop": 3, "query": 2, "words": "w"}]
     titles = {"arxiv/2401_1": "Speculative Decoding: A Survey of Draft-and-Verify Methods for LLM Inference", "arxiv/2404_8": "Memory for Agents", "arxiv/2402_9": "Neighbour Paper"}
     text = "\n".join(l for _, l in qp.column_lines(res, rows, comm, titles))
-    assert "▸★ 2401_1#3  c5  Draft then verify | " + qp.shorten(titles["arxiv/2401_1"], qp.PAPER_CHARS) in text and len(qp.shorten(titles["arxiv/2401_1"], qp.PAPER_CHARS)) == 40      # heading whole (it fits 24), the long title cut to 40 with an ellipsis
-    line = next(l for l in text.splitlines() if " ★ 2401_2#1" in l)
-    assert line == " ★ 2401_2#1  c5  " + qp.shorten("A" * 80)                                                                  # no title for this paper: its heading keeps the 46-character cut and gets no ' | '
-    assert "· 2402_9#7  c6  w2.8  Neighbour | Neighbour Paper" in text and "· 2404_8#1  c5  Typical of five | Memory for Agents" in text and "◆ 2404_8#1  c5  Typical of five | Memory for Agents" in text
+    assert "▸★ h0 2401_1#3  c5  Draft then verify | " + qp.shorten(titles["arxiv/2401_1"], qp.PAPER_CHARS) in text and len(qp.shorten(titles["arxiv/2401_1"], qp.PAPER_CHARS)) == 40      # heading whole (it fits 24), the long title cut to 40 with an ellipsis
+    line = next(l for l in text.splitlines() if " ★ h0 2401_2#1" in l)
+    assert line == " ★ h0 2401_2#1  c5  " + qp.shorten("A" * 80)                                                                  # no title for this paper: its heading keeps the 46-character cut and gets no ' | '
+    assert "· h1 2402_9#7  c6  Neighbour | Neighbour Paper" in text and "· h3 2404_8#1  c5  Typical of five | Memory for Agents" in text and "◆ 2404_8#1  c5  Typical of five | Memory for Agents" in text
     plain = "\n".join(l for _, l in qp.column_lines(res, rows, comm))
     assert "Draft then verify" in plain and "|" not in plain.split("SUBGRAPH")[1].split("TYPICAL")[0]               # no titles given: the lines are as before
 

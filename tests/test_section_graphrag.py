@@ -118,19 +118,13 @@ def test_cluster_tags_never_reach_the_answer_or_agent_prompt_but_section_keys_do
 def test_parse_action_reads_the_first_line_strips_key_brackets_and_finds_the_why():
     assert g.parse_action("ACTION: READ [arxiv/2401_1#7]\nWHY: the method is described here") == ("READ", "arxiv/2401_1#7", "the method is described here")
     assert g.parse_action("action: read `a#1`\n\nwhy: more like it") == ("READ", "a#1", "more like it")
-    assert g.parse_action("ACTION: PLAN\nHOP 3: EXPAND a#1\nWHY: spread") == ("PLAN", "", "spread")
+    assert g.parse_action("ACTION: SEARCH  kv cache eviction  \nWHY: spread") == ("SEARCH", "kv cache eviction", "spread")        # a search keeps its words whole, quotes and brackets included
     assert g.parse_action("ACTION: ANSWER") == ("ANSWER", "", "")
 
 
 def test_parse_action_rejects_anything_not_an_action_on_the_first_line():
-    for bad in ["I will read the first one.\nACTION: READ a#1", "ACTION: DELETE a#1", "ACTION: EXPAND a#1", "READ a#1", ""]:      # a move is only ever part of a plan
+    for bad in ["I will read the first one.\nACTION: READ a#1", "ACTION: DELETE a#1", "ACTION: EXPAND a#1", "ACTION: PLAN\nHOP 3: EXPAND a#1", "READ a#1", ""]:      # hops are not the agent's to plan any more
         assert g.parse_action(bad) == (None, bad, "")
-
-
-def test_parse_plan_reads_hop_lines_moves_and_keyless_spreads():
-    plan = g.parse_plan("ACTION: PLAN\nhop 4: EXPAND [a#1] | ENTITY `b#2` | search kv cache words | nonsense\nHOP 5: EXPAND | ENTITY\nHOP 6:\nWHY: x")
-    assert plan == {4: [("EXPAND", "a#1"), ("ENTITY", "b#2"), ("SEARCH", "kv cache words")], 5: [("EXPAND", ""), ("ENTITY", "")], 6: []}
-    assert g.parse_plan("ACTION: READ a#1") == {}
 
 
 def test_boxcox_weights_sum_to_one_give_singletons_nothing_and_flatten_the_giants():
@@ -166,7 +160,7 @@ def test_communities_block_keeps_earlier_rounds_and_marks_the_newest():
     assert g.communities_block([one, two], facts).splitlines() == ["      1630 sections | Agent runtimes | harness 512 · verifier 169", "(new) 336 sections | Uncertainty"]      # a community with no facts has none
 
     node = {"key": "a#1", "hop": 0, "topic": "t", "sim": 0.5, "via": "retrieved", "snippet": "s"}
-    p = g.agent_prompt("q", "", {"a#1": node}, {}, [], 1, (3,), 3, [one], facts)
+    p = g.agent_prompt("q", "", {"a#1": node}, {}, [], 1, True, 3, [one], facts)
     assert "1630 sections | Agent runtimes | harness 512 · verifier 169" in p and "the entities most characteristic of it" in p
 
 
@@ -177,12 +171,11 @@ def test_working_and_read_blocks_mark_what_was_read_and_cut_a_long_read_visibly(
     assert w[0] == 'QUERY 1: "" -> 2 sections' and w[1] == "*[a#1] hop 0 | Topic A | similarity 0.50 | retrieved | first words" and w[2].startswith(" [b#2] hop 2 | (no summary) | similarity 0.25 | vector edge from [a#1]")
 
 
-def test_explorer_tags_nodes_with_their_query_and_remembers_it_for_sections_that_spread_from_them():
+def test_explorer_tags_nodes_with_their_query():
     ex = g.Explorer(None, {"question": "q"})
     out = ex.tag([{"key": "a#1", "ord": 1}, {"key": "b#2", "ord": 2}], 2, "kv cache")
     assert out == [{"key": "a#1", "ord": 1, "query": 2, "query_text": "kv cache"}, {"key": "b#2", "ord": 2, "query": 2, "query_text": "kv cache"}]
-    assert ex.qof == {"a#1": (2, "kv cache"), "b#2": (2, "kv cache")}
-    assert ex.tag([{"key": "c#3"}], *ex.qof["a#1"])[0]["query"] == 2 and ex.queries == 1             # a section reached from a#1 joins query 2; the counter is only advanced by a SEARCH
+    assert ex.queries == 1 and (ex.hops, ex.per_query) == (3, 18) and "2401_12345" not in g.ANSWER_PROMPT                                      # the counter is only advanced by a SEARCH; the defaults are 3 hops and 13 sections
 
 
 def test_a_section_line_names_its_paper_when_the_title_is_known_G12():
@@ -207,13 +200,12 @@ def test_working_block_groups_sections_by_the_query_that_found_them_in_query_ord
 
 
 class FakeTools:
-    """Four database actions over a four-section world: a#1 (seed) links to b#2 and c#3, b#2 to d#4."""
-    EDGES = {"a#1": ["b#2", "c#3"], "b#2": ["d#4", "a#1"]}
+    """The agent's two database actions over a five-section world; a search finds e#5 (then f#6) and none already seen."""
+    SIM = {"a#1": 0.9, "b#2": 0.6, "c#3": 0.3, "d#4": 0.5, "e#5": 0.2, "f#6": 0.1}
+    FOUND = ["e#5", "f#6"]
 
     def __init__(self):
         self.calls = []
-
-    SIM = {"a#1": 0.9, "b#2": 0.6, "c#3": 0.3, "d#4": 0.5, "e#5": 0.2}
 
     def node(self, key, via, hop=None):
         n = {"key": key, "ord": ord(key[0]), "topic": "t", "sim": self.SIM[key], "via": via, "snippet": "s"}
@@ -223,17 +215,10 @@ class FakeTools:
         self.calls.append(("read", key))
         return "full text of " + key
 
-    def expand(self, key, seen):
-        self.calls.append(("expand", key))
-        return [self.node(k, "edge from " + key) for k in self.EDGES.get(key, []) if k not in seen]
-
-    def entity(self, key, seen):
-        self.calls.append(("entity", key))
-        return []
-
     def search(self, words, seen):
         self.calls.append(("search", words))
-        return [self.node("e#5", "found by searching '%s'" % words) | {"query": 2, "query_text": words}] if "e#5" not in seen else []
+        left = [k for k in self.FOUND if k not in seen]
+        return [self.node(left[0], "found by searching '%s'" % words, 0) | {"query": 2 + len(self.FOUND) - len(left), "query_text": words}] if left else []
 
 
 def scripted(*replies):
@@ -251,46 +236,43 @@ def start(tools):
     return [tools.node("a#1", "retrieved", 0), tools.node("b#2", "vector edge from a retrieved section", 1)]
 
 
-def test_agent_plans_hop_3_then_hops_4_and_5_together_reads_between_and_stops_in_the_closing_round():
+def test_agent_reads_then_searches_each_round_and_reads_and_stops_in_the_closing_round():
     tools = FakeTools()
-    ask = scripted("ACTION: READ a#1\nWHY: the seed", "ACTION: PLAN\nHOP 3: EXPAND a#1\nWHY: spread",
-                   "ACTION: PLAN\nHOP 4: EXPAND b#2\nHOP 5: EXPAND | SEARCH new words\nWHY: more",
-                   "ACTION: READ d#4\nWHY: the new one", "ACTION: ANSWER\nWHY: enough")
-    run = g.run_agent("q?", "global", start(tools), tools, ask, catalogue=CAT, seed=3)
-    assert run["stop"] == "answered" and {k: n["hop"] for k, n in run["nodes"].items()} == {"a#1": 0, "b#2": 1, "c#3": 3, "d#4": 4, "e#5": 5}
-    assert list(run["read"]) == ["a#1", "d#4"]
-    assert [t["result"] for t in run["trace"]] == ["read in full: 16 characters", "hop 3: added 1: [c#3]", "hop 4: added 1: [d#4]; hop 5: added 1: [e#5]", "read in full: 16 characters", "stopped"]
-    assert tools.calls == [("read", "a#1"), ("expand", "a#1"), ("expand", "b#2"), ("expand", "d#4"), ("search", "new words"), ("read", "d#4")]      # the key-less EXPAND of hop 5 spread from hop 4's d#4
-    assert len(run["shown"]) == 2 and not {c[0] for c in run["shown"][0]} & {c[0] for c in run["shown"][1]}                                    # a fresh batch per planning round, none repeated
-    assert "Replies left this round: 3" in ask.prompts[0] and "Plan hop 3 now" in ask.prompts[0] and "[c#3]" not in ask.prompts[0]          # hop 3 does not exist before it is planned
-    assert "LAST REPLY THIS ROUND" not in ask.prompts[0] and "LAST REPLY THIS ROUND" not in ask.prompts[1]                                    # replies left 3 and 2
-    assert g.agent_prompt("q", "", {}, {}, [], 1, (3,), 1).count("THIS IS YOUR LAST REPLY THIS ROUND") == 1 and "LAST REPLY" not in g.agent_prompt("q", "", {}, {}, [], 3, (), 1)      # only in a planning round, only at the last reply
-    assert "Plan hop 4 and hop 5 now" in ask.prompts[2] and "Hop 5 will run without you seeing hop 4." in ask.prompts[2] and "[c#3] hop 3" in ask.prompts[2]
-    first, second = run["shown"]
-    assert ask.prompts[0].count("(new)") == 0 and ask.prompts[2].count("(new) ") == len(second)                                           # round 2 marks only its own batch
-    assert all(("      %d sections | %s" % (size, title)) in ask.prompts[2] for _, size, title in first)                                    # and keeps the first round's, unmarked
-    assert "No more hops." in ask.prompts[3] and "round 2: PLAN" in ask.prompts[3] and "*[a#1] hop 0" in ask.prompts[3] and "full text of a#1" in ask.prompts[3]
-    summary = g.traversal_summary(run, [("harness", 3)])
-    assert summary == {"hops": 5, "size": 5, "per_hop": [1, 1, 0, 1, 1, 1], "read": 2, "stop": "answered", "entities": [("harness", 3)], "by_community": [], "queries": 2}      # the question and one SEARCH
-    assert 'QUERY 2: "new words" -> 1 sections' in ask.prompts[3] and "QUERY 1:" in ask.prompts[3]                                  # the closing round sees the search as its own query
+    ask = scripted("ACTION: READ a#1\nWHY: the seed", "ACTION: SEARCH kv cache words\nWHY: new angle",
+                   "ACTION: SEARCH second words\nWHY: another", "ACTION: ANSWER\nWHY: enough")
+    run = g.run_agent("q?", "global", start(tools), tools, ask, queries=2, catalogue=CAT, seed=3)
+    assert run["stop"] == "answered" and list(run["nodes"]) == ["a#1", "b#2", "e#5", "f#6"] and list(run["read"]) == ["a#1"]
+    assert [t["result"] for t in run["trace"]] == ["read in full: 16 characters", "search 2: added 1: [e#5]", "search 3: added 1: [f#6]", "stopped"]
+    assert tools.calls == [("read", "a#1"), ("search", "kv cache words"), ("search", "second words")]
+    assert len(run["shown"]) == 2 and not {c[0] for c in run["shown"][0]} & {c[0] for c in run["shown"][1]}      # a fresh batch per search round, none repeated
+    assert "search round 1 of 2" in ask.prompts[0] and "Replies left this round: 3" in ask.prompts[0] and "[e#5]" not in ask.prompts[0]      # the search does not exist before it is made
+    assert "LAST REPLY THIS ROUND" not in ask.prompts[0] and "LAST REPLY THIS ROUND" not in ask.prompts[1]                                   # replies left 3 and 2
+    assert g.agent_prompt("q", "", {}, {}, [], 1, True, 1).count("THIS IS YOUR LAST REPLY THIS ROUND") == 1 and "LAST REPLY" not in g.agent_prompt("q", "", {}, {}, [], 3, False, 1)
+    assert ask.prompts[0].count("(new)") == 0 and ask.prompts[2].count("(new) ") == len(run["shown"][1])                                      # round 2 marks only its own batch
+    assert 'QUERY 2: "kv cache words" -> 1 sections' in ask.prompts[2] and "round 1: SEARCH kv cache words" in ask.prompts[2]               # the next round sees the search as its own query
+    assert "ACTION: PLAN" not in ask.prompts[0] and "EXPAND" not in ask.prompts[0] and "hop 3, %d in all" % g.PER_QUERY in ask.prompts[0]                  # no plan, no move: only READ, SEARCH, ANSWER
+    walks = {2: {"words": "kv cache words", "held": 1, "pool": 4, "masked": 2}}
+    summary = g.traversal_summary(run, [("harness", 3)], None, walks)
+    assert summary == {"hops": 3, "size": 4, "per_hop": [3, 1, 0, 0], "read": 1, "stop": "answered", "entities": [("harness", 3)], "by_community": [], "queries": 3,
+                       "walks": [{"query": 2, "words": "kv cache words", "held": 1, "pool": 4, "masked": 2}], "per_query": g.PER_QUERY}
     by = [{"cid": 5, "n": 3, "entities": [("harness", 3)]}]
     assert g.traversal_summary(run, [("harness", 3)], by)["by_community"] == by
 
 
-def test_agent_loses_attempts_moves_and_a_whole_planning_chance_and_is_told_so():
+def test_agent_loses_replies_and_a_whole_search_and_is_told_so():
     tools = FakeTools()
-    ask = scripted("let me think", "ACTION: READ z#9\nWHY: x", "ACTION: PLAN\nHOP 3: EXPAND a#1 | EXPAND z#9\nWHY: x",
-                   "ACTION: READ a#1\nWHY: x", "ACTION: READ a#1\nWHY: again", "ACTION: EXPAND a#1\nWHY: not a plan",
-                   "ACTION: PLAN\nHOP 4: EXPAND a#1\nWHY: closing has no hops", "ACTION: ANSWER\nWHY: done")
-    run = g.run_agent("q?", "", start(tools), tools, ask)
+    ask = scripted("let me think", "ACTION: READ a#1\nWHY: x", "ACTION: SEARCH\nWHY: no words",
+                   "ACTION: READ a#1\nWHY: again", "ACTION: SEARCH words in the closing round\nWHY: none left", "ACTION: ANSWER\nWHY: done")
+    run = g.run_agent("q?", "", start(tools), tools, ask, queries=1)
     assert [t["result"] for t in run["trace"]] == [
-        "your reply was not in one of the ACTION forms; nothing was done", "[z#9] is not one of the sections seen; nothing was done",
-        "hop 3: added 1: [c#3] (EXPAND z#9: no source ([z#9] is not a section seen))",
-        "read in full: 16 characters", "you have already read [a#1]; nothing was done", "your reply was not in one of the ACTION forms; nothing was done",
-        "no plan: hop 4 and 5 did not run", "there is no hop to plan now; nothing was done", "stopped"]
-    assert tools.calls == [("expand", "a#1"), ("read", "a#1")] and run["stop"] == "answered"       # nothing the agent got wrong reached the database
-    assert "round 2: no plan was made, so hop 4 and 5 did not run" in ask.prompts[6]
+        "your reply was not in one of the ACTION forms; nothing was done", "read in full: 16 characters", "SEARCH had no words; nothing was done", "no search: this round's search was lost",
+        "you have already read [a#1]; nothing was done", "there is no search left; nothing was done", "stopped"]
+    assert tools.calls == [("read", "a#1")] and run["stop"] == "answered"                            # nothing the agent got wrong reached the database
+    assert "round 1: no search was made" in ask.prompts[3] and "No more searches." in ask.prompts[3]
     assert run["shown"] == []                                                                       # no catalogue given: nothing sampled, nothing shown
+    other = g.run_agent("q?", "", start(FakeTools()), FakeTools(), scripted("ACTION: READ z#9\nWHY: x", "ACTION: PLAN\nWHY: gone", "ACTION: READ a#1\nWHY: x", "ACTION: ANSWER\nWHY: y"), queries=0)
+    assert [t["result"] for t in other["trace"]][:3] == ["[z#9] is not one of the sections seen; nothing was done", "your reply was not in one of the ACTION forms; nothing was done",
+                                                         "read in full: 16 characters"] and other["stop"] == "done"      # queries=0: only the closing round, three replies, no ANSWER reached
 
 
 def test_agent_may_stop_at_its_first_reply():
@@ -299,25 +281,71 @@ def test_agent_may_stop_at_its_first_reply():
     assert run["stop"] == "answered" and tools.calls == [] and len(run["trace"]) == 1 and run["nodes"].keys() == {"a#1", "b#2"} and len(run["shown"]) == 1
 
 
-class Wide:
-    """Every expand and search returns 8 new sections, so the caps are what bind."""
-    def __init__(self):
-        self.n = 0
-
-    def batch(self):
-        self.n += 8
-        return [{"key": "w%d#1" % i, "ord": i, "topic": "t", "sim": 1 / (1 + i), "via": "v", "snippet": "s"} for i in range(self.n - 8, self.n)]
-
-    expand = entity = lambda self, key, seen: self.batch()
-    search = lambda self, words, seen: self.batch()
+def test_a_search_that_finds_nothing_new_still_spends_the_round():
+    tools = FakeTools()
+    tools.FOUND = []
+    run = g.run_agent("q?", "", start(tools), tools, scripted("ACTION: SEARCH x\nWHY: try", "ACTION: ANSWER\nWHY: done"), queries=1)
+    assert [t["result"] for t in run["trace"]] == ["search 2: nothing new", "stopped"] and run["nodes"].keys() == {"a#1", "b#2"}
 
 
-def test_a_hop_adds_at_most_15_sections_and_runs_at_most_3_moves():
-    nodes = {"a#1": {"key": "a#1", "hop": 2, "sim": 0.9}}
-    text, new = g.apply_hop(3, [("SEARCH", "a"), ("SEARCH", "b"), ("SEARCH", "c"), ("SEARCH", "d")], nodes, Wide())
-    assert len(new) == 15 and text.startswith("added 15:") and all(nodes[k]["hop"] == 3 for k in new)      # 3 moves x 8 = 24 offered, 15 kept; the 4th move never ran
-    w = Wide()
-    g.apply_hop(3, [("SEARCH", "a"), ("SEARCH", "b"), ("SEARCH", "c"), ("SEARCH", "d")], {"a#1": {"key": "a#1", "hop": 2, "sim": 0.9}}, w)
-    assert w.n == 24
-    assert g.apply_hop(3, [], {"a#1": {"key": "a#1", "hop": 2, "sim": 0.9}}, Wide())[0] == "no move given"
-    assert g.apply_hop(4, [("EXPAND", "")], {"a#1": {"key": "a#1", "hop": 2, "sim": 0.9}}, Wide())[0] == "nothing new (EXPAND : no source (the previous hop added nothing))"
+# the masked walk: a graph of 12 sections in a line-and-fan, so hops are countable
+def ring_neigh(ords):
+    """Section n is joined to n+1..n+4 (weight falling with the gap) and n-1..n-4: the strongest first."""
+    return {s: [{"ord": s + d, "weight": 10.0 - d} for d in (1, 2, 3, 4)] + [{"ord": s - d, "weight": 5.0 - d} for d in (1, 2, 3, 4) if s - d >= 0] for s in ords}
+
+
+def test_hop_pool_walks_outward_one_hop_at_a_time_and_caps_each_hop():
+    pool, skipped = g.hop_pool([10], ring_neigh, 1, 3, set())
+    assert [p["ord"] for p in pool] == [11, 12, 13] and {p["hop"] for p in pool} == {1} and skipped == 0                  # four neighbours above, cap 3: the strongest three
+    pool, _ = g.hop_pool([10], ring_neigh, 2, 3, set())
+    assert [p["hop"] for p in pool] == [1, 1, 1, 2, 2, 2] and not {p["ord"] for p in pool if p["hop"] == 2} & {10, 11, 12, 13}   # hop 2 spreads from hop 1's three and repeats none
+    assert len(g.hop_pool([10], ring_neigh, 3, 3, set())[0]) == 9 and g.hop_pool([10], ring_neigh, 0, 3, set()) == ([], 0)
+
+
+def test_hop_pool_never_returns_a_masked_section_walks_past_it_and_counts_it():
+    pool, skipped = g.hop_pool([10], ring_neigh, 2, 4, {11, 12})
+    assert not {11, 12} & {p["ord"] for p in pool} and skipped >= 2                                                     # masked ones are skipped, and the walk still fills its cap
+    assert [p["ord"] for p in pool if p["hop"] == 1] == [13, 14, 9, 8]                                                  # the next strongest after the two masked
+    assert g.hop_pool([10], lambda ords: {s: [] for s in ords}, 3, 5, set()) == ([], 0)                                 # a seed with no edges: an empty pool, not an error
+
+
+def test_top_up_keeps_the_new_part_of_the_natural_subgraph_and_adds_as_many_as_overlapped_hopping_from_all_of_it():
+    natural = [10, 11, 12, 13]
+    chosen, depth, k = g.top_up(natural, {11, 13}, ring_neigh, 4)
+    assert k == 2 and chosen[:2] == [10, 12] and len(chosen) == 4                                   # the new two stay, in order; two more are added
+    assert not {11, 13} & set(chosen) and not set(natural) & set(depth) and set(depth) == set(chosen[2:])      # nothing occupied or natural is added; the added ones are the ones with a depth
+    assert set(depth.values()) == {1} and all(abs(o - 11.5) < 6 for o in chosen[2:])               # one hop was enough, and it is near the natural subgraph
+    assert g.top_up(natural, set(), ring_neigh, 4) == (natural, {}, 0)                              # no overlap: nothing added, k = 0
+    chosen, depth, k = g.top_up(natural, set(natural), ring_neigh, 4)
+    assert k == 4 and len(chosen) == 4 and not set(natural) & set(chosen)                          # everything overlapped: the whole result is hopped to, from the natural subgraph
+    deeper, depth, _ = g.top_up([10], {10}, ring_neigh, 9)
+    assert len(deeper) == 9 and max(depth.values()) >= 2                                            # more needed than one hop holds: it goes deeper only as far as needed
+    assert g.top_up([5], {5}, lambda ords: {s: [] for s in ords}, 3) == ([], {}, 1)                 # nowhere to hop: fewer than asked, never padded
+
+
+def test_the_final_evidence_is_the_whole_traversal_read_first_then_centrepoints_then_nearest_the_question_G14():
+    nodes = {"a#1": {"ord": 1, "query": 1, "hop": 0}, "b#2": {"ord": 2, "query": 1, "hop": 1}, "c#3": {"ord": 3, "query": 2, "hop": 0}, "d#4": {"ord": 4, "query": 2, "hop": 2},
+             "e#5": {"ord": 5, "query": 3, "hop": 1}}
+    sim = {1: 0.4, 2: 0.9, 3: 0.7, 4: 0.2, 5: 0.7}
+    out = g.subgraph_order(nodes, {"d#4": "full text"}, {7: 3, 8: 99}, [(7, 2), (8, 1)], sim)
+    assert [o["key"] for o in out] == ["d#4", "c#3", "b#2", "e#5", "a#1"]                            # read first, the centrepoint c#3 second, the rest by similarity (c#3 and e#5 tie: key order)
+    assert out[0]["role"] == "read by the agent" and out[1]["role"].startswith("typical section of a community that holds 2 of the 5 sections seen")      # centre 8 is not in the traversal: skipped
+    assert out[2]["role"] == "query 1, hop 1, similarity 0.90" and out[4]["role"] == "query 1, hop 0, similarity 0.40"
+    assert {o["key"] for o in out} == set(nodes) and len(out) == 5                                    # nothing the traversal saw is left out, nothing twice
+    away = g.subgraph_order(nodes, {"d#4": "full text"}, {7: 3, 8: 99}, [(7, 2), (8, 1)], sim | {99: 0.0}, {99: "z#9"})
+    assert [o["key"] for o in away][:3] == ["d#4", "c#3", "z#9"] and len(away) == 6                   # a centrepoint the traversal never saw is still evidence (2 of 3 were dropped once)
+    assert [o["key"] for o in g.subgraph_order(nodes, {}, {}, [], sim)] == ["b#2", "c#3", "e#5", "a#1", "d#4"]
+
+
+def test_each_section_gets_the_whole_6000_while_the_budget_holds_then_an_even_share_never_under_the_floor():
+    assert g.answer_chars(10) == g.READ_CHARS and g.answer_chars(g.ANSWER_BUDGET_CHARS // g.READ_CHARS) == g.READ_CHARS
+    assert g.answer_chars(70) == 2000 and g.answer_chars(54) == 2592                                  # an even share of the 140,000: the memory question's 54 sections
+    assert g.answer_chars(200) == g.MIN_SECTION_CHARS == 1200                                         # the even share (700) is under the floor, so the floor binds
+    assert g.answer_chars(500) == g.MIN_SECTION_CHARS and g.answer_chars(0) == g.READ_CHARS
+
+
+def test_two_walks_with_the_first_one_masked_share_no_section():
+    first, _ = g.hop_pool([10], ring_neigh, 2, 5, set())
+    taken = {10} | {p["ord"] for p in first}
+    second, _ = g.hop_pool([30], ring_neigh, 2, 5, taken)
+    assert not taken & {p["ord"] for p in second}

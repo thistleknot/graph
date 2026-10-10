@@ -43,7 +43,7 @@ from the repo root (`python -u src\<file>.py`). `.tmp/` holds every intermediate
 | 5 | `src/summarize_clusters.py --all` | LLM draft summary per community (resumes from its JSON) |
 | 6 | `src/arxiv_titles.py` | paper titles into `paper_title`, prefilled from the CSVs in `C:/Users/user/arxiv_id_lists`, the arXiv API for gaps |
 | 7 | `src/section_render.py --tag xpa` | **the picture**: labelled community PNG and markdown (Dunning terms, entities, paper titles) |
-| 8 | `src/section_query_panel.py` | ask a question: hybrid retrieval, community view, and the hop-planning ReAct agent, drawn as a strip |
+| 8 | `src/section_query_panel.py` | ask a question: hybrid retrieval, community view, and the search-planning ReAct agent, drawn as a strip (`--hops 1-3`, `--queries 1-3`) |
 
 Library modules, imported not run: `section_graphrag.py` (hybrid GraphRAG and the agent), `section_graph.py` (edges),
 `arxiv_community_map.py` (exemplars and the card/markdown writers), `term_salience.py` (Dunning terms), `section_genre.py`.
@@ -54,11 +54,28 @@ Three layers stay apart. **Vector edges** join section to section (`sect_edge`; 
 (`sect_entity_edge`, `kind = 'co_mention'`, NPMI > 0 over at least 5 shared sections). Co-mention edges feed no
 retrieval step yet. The agent's answer quality is not yet measured against plain retrieval.
 
+### How a question is answered (`section_graphrag.py`)
+
+1. **Global view.** Hybrid search (dense plus full text, fused by RRF) finds seed sections; each candidate community's summary is asked
+   "does this answer the question?" (map step), and the YES partials are reduced to one global answer.
+2. **The question's subgraph.** The 3 best seeds plus their vector neighbours out to `HOPS` hops (default 3, tunable 1 to 3; at most 15
+   sections per hop, strongest edge first); the 18 nearest the question by dense similarity are shown (`PER_QUERY`).
+3. **The agent** sees that subgraph, the global answer and a Box-Cox-weighted sample of the communities (with their top entities), and may
+   make up to `AGENT_QUERIES` more searches (default 3, tunable 1 to 3), each its own subgraph kept apart from the earlier ones: `topup`
+   (default: its natural subgraph minus what is already shown, plus as many more as overlapped, hopped from the whole natural subgraph)
+   or `mask`. It can READ a section whole and may stop at any reply. It never extends the graph by hops itself.
+4. **The final answer** interprets every section the traversal saw, in the light of the global answer: sections the agent read, the typical
+   section of each top community (always included), then all the rest nearest the question first; each cut to fit a 140,000-character budget, and every cut says so.
+
+Measured (`.tmp/hop_grid_stage_a.log`, `.tmp/mask_vs_topup.log`, 200 queries each): the graph walk does **not** beat plain hybrid retrieval on
+finding the source section of a sentence (0.445 to 0.450 against 0.555; second query 0.41 against 0.505), hops 1, 2 and 3 score the same, and
+`topup` ties `mask`. That test cannot see whether hops improve an answer; answer quality is not measured.
+
 ### What the map looks like
 
 One card per community, largest first, with its Dunning terms, its top entities, its exemplar sections and the
 paper each came from. [`docs/section_map/community_map.png`](docs/section_map/community_map.png) is the
-picture, with the three example questions drawn as a strip under the cards (hops taken, subgraph size, entity composition per query); [`docs/section_map/communities.md`](docs/section_map/communities.md) is the same content as text
+picture, with the three example questions drawn as a strip under the cards (every section each query saw, hops, subgraph size, entity composition per query); [`docs/section_map/communities.md`](docs/section_map/communities.md) is the same content as text
 (every exemplar section, with links to arXiv). Both are copies of what `src/section_render.py` writes to `.tmp/`.
 
 ![community map](docs/section_map/community_map.png)

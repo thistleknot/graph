@@ -18,10 +18,13 @@ P2  The strip is as wide as the base graphic and as tall as its longest column n
 P4  (operator 2026-10-08: "we need to get the paper name if we're going to show 'conclusion' 'introduction'") WHEN the paper's title is known (section_store.paper_titles) every section line of the
     SUBGRAPH, HOP and TYPICAL lists ends with it after the heading, the heading cut to SECTION_WITH_PAPER characters and the title to PAPER_CHARS; a book or a paper without a title shows the heading
     alone, as before.
-P3  (operator 2026-10-08: "update the bottom queries based on these hops and show the # of hops and the size of the total subgraph selected for and its mini composition for entities")
-    WHEN a result carries a ReAct traversal (`traversal`, `nodes`) the column gains a TRAVERSAL block after the ANSWER: the hops reached, the sections seen, how many each hop holds, the sections
-    read, why it stopped, the communities shown to the agent, and the entities that most characterise the subgraph (the sections mentioning each); the SUBGRAPH list gains one group per hop
-    beyond 1 and the map lights each hop in its own colour. A result without a traversal renders as before.
+P3  (operator 2026-10-08: "update the bottom queries based on these hops and show the # of hops and the size of the total subgraph selected for and its mini composition for entities";
+    2026-10-09: hops and agent queries are parameters, each query a masked subgraph of 13) WHEN a result carries a ReAct traversal (`traversal`, `nodes`) the column gains a TRAVERSAL block after
+    the ANSWER: the hops each query walked, the sections seen, how many each hop holds, the sections read, why it stopped, the communities shown to the agent, one line per query (how many of the
+    13 it holds, its pool, the already-shown sections it met and skipped), and the entities that most characterise the subgraph (the sections mentioning each); the SUBGRAPH list gains one group
+    per query (the question is query 1) with each section's hop, and the map lights each agent query in its own colour. A result without a traversal renders as before.
+P5  (operator 2026-10-09: "all sections in subgraph should be seen") WHEN a result's nodes carry their query, the SUBGRAPH list is every section the traversal saw, one group per query, query 1
+    (the question) first, each line its hop and ▸ when the LLM was given it; the count in the heading is the traversal's, not the first retrieval's.
 """
 from __future__ import annotations
 
@@ -43,8 +46,8 @@ QUESTIONS = ["how does speculative decoding speed up inference",
 TITLE_CHARS, WRAP, LINE_IN, PAD_IN = 46, 92, 0.165, 1.0
 SECTION_WITH_PAPER, PAPER_CHARS = 24, 40                       # P4: a section heading and its paper's title share one line
 TINTS = ["#1f77b4", "#2ca02c", "#9467bd", "#8c564b", "#17becf"]
-HOP_COLOURS = {2: "#e6c200", 3: "#7fbf3f", 4: "#3f9fbf", 5: "#7f3fbf"}              # P3: hop 1 is the orange of the neighbours, hop 0 the red star
-STOP_TEXT = {"answered": "the agent chose ANSWER", "done": "every planned hop and round was used"}
+QUERY_COLOURS = {2: "#e6c200", 3: "#7fbf3f", 4: "#3f9fbf"}                         # P3: query 1 is the red stars and orange neighbours; each search of the agent has a colour
+STOP_TEXT = {"answered": "the agent chose ANSWER", "done": "every search and round was used"}
 
 
 def shorten(s: str, n: int = TITLE_CHARS) -> str:
@@ -71,19 +74,18 @@ def column_lines(res: dict, rows: dict, comm: dict, titles: dict[str, str] | Non
     out += wrapped((res.get("final") or "").strip() or "(no answer was generated for this question)")
     tr = res.get("traversal")
     if tr:
-        out.append(("h", "TRAVERSAL  - ReAct agent: %d hops, %d sections seen, %d read" % (tr["hops"], tr["size"], tr["read"])))
+        out.append(("h", "TRAVERSAL  - ReAct agent: %d hops asked of each query, %d sections seen, %d read" % (tr["hops"], tr["size"], tr["read"])))
         out.append(("k", "sections per hop  " + " · ".join("h%d %d" % (h, n) for h, n in enumerate(tr["per_hop"]))))
         out.append(("k", "stopped: %s; %d %s run; %d communities shown to it" % (STOP_TEXT.get(tr["stop"], tr["stop"]), tr.get("queries", 1), "query" if tr.get("queries", 1) == 1 else "queries",
                                                                                   res.get("shown_communities", 0))))
+        for w in tr.get("walks", []):
+            out.append(("k", "query %d  %d of %d shown  pool %d  %d already-shown met" % (w["query"], w["held"], tr.get("per_query", 13), w["pool"], w["masked"])))
         out += wrapped("entities of the subgraph (sections mentioning each): " + (" · ".join("%s %d" % (s, n) for s, n in tr["entities"]) or "none"))
         if tr.get("by_community"):
             out.append(("h", "ENTITIES BY COMMUNITY  (sections of the subgraph mentioning each)"))
             for bc in tr["by_community"]:
                 out.append(("k", "c%d  %s  %d of %d sections" % (bc["cid"], shorten(comm.get(bc["cid"], {}).get("title", "(no summary)"), 40), bc["n"], tr["size"])))
                 out += [("k", "    " + ln) for ln in textwrap.wrap(" · ".join("%s %d" % (s, n) for s, n in bc["entities"]) or "no entity", WRAP - 6)]
-    n_nb = len(res["subgraph"])
-    out.append(("h", "SUBGRAPH  - %d retrieved, %d neighbours in %d communities  (▸ = given to the LLM)" % (
-        len(res["seeds"]), n_nb, len({rows[o]["community"] for o in res["seeds"] + [s["ord"] for s in res["subgraph"]]}))))
     key = lambda o: "%s#%s" % (rows[o]["doc_id"].replace("arxiv/", ""), rows[o]["section_idx"])
     mark = lambda o: "▸" if o in shown else " "
 
@@ -93,15 +95,24 @@ def column_lines(res: dict, rows: dict, comm: dict, titles: dict[str, str] | Non
         t = (titles or {}).get(rows[o]["doc_id"])
         return shorten(rows[o]["section_title"], SECTION_WITH_PAPER if t else n) + (" | " + shorten(t, PAPER_CHARS) if t else "")
 
-    for o in res["seeds"]:
-        out.append(("k", "%s★ %s  c%d  %s" % (mark(o), key(o), rows[o]["community"], named(o, TITLE_CHARS))))
-    for s in res["subgraph"]:
-        out.append(("k", "%s· %s  c%d  w%.1f  %s" % (mark(s["ord"]), key(s["ord"]), rows[s["ord"]]["community"], s["weight"], named(s["ord"], 36))))
-    for hop in sorted({n["hop"] for n in res.get("nodes", []) if n["hop"] >= 2}):
-        here = [n["ord"] for n in res["nodes"] if n["hop"] == hop]
-        out.append(("h", "HOP %d  - %d sections" % (hop, len(here))))
-        for o in here:
-            out.append(("k", "%s· %s  c%d  %s" % (mark(o), key(o), rows[o]["community"], named(o, TITLE_CHARS))))
+    nodes = res.get("nodes") or []
+    if any("query" in n for n in nodes):                                    # P5: every section of every query, query 1 (the question) included
+        queries = sorted({n.get("query", 1) for n in nodes})
+        out.append(("h", "SUBGRAPH  - %d sections in %d %s, %d communities  (▸ = given to the LLM)" % (
+            len(nodes), len(queries), "query" if len(queries) == 1 else "queries", len({rows[n["ord"]]["community"] for n in nodes}))))
+        for q in queries:
+            here = [n for n in nodes if n.get("query", 1) == q]
+            out.append(("h", 'QUERY %d  "%s"  - %d sections' % (q, shorten(res["question"] if q == 1 else here[0].get("words", ""), 60), len(here))))
+            for n in here:
+                o = n["ord"]
+                out.append(("k", "%s%s h%d %s  c%d  %s" % (mark(o), "★" if n["hop"] == 0 else "·", n["hop"], key(o), rows[o]["community"], named(o, TITLE_CHARS))))
+    else:
+        out.append(("h", "SUBGRAPH  - %d retrieved, %d neighbours in %d communities  (▸ = given to the LLM)" % (
+            len(res["seeds"]), len(res["subgraph"]), len({rows[o]["community"] for o in res["seeds"] + [s["ord"] for s in res["subgraph"]]}))))
+        for o in res["seeds"]:
+            out.append(("k", "%s★ %s  c%d  %s" % (mark(o), key(o), rows[o]["community"], named(o, TITLE_CHARS))))
+        for s in res["subgraph"]:
+            out.append(("k", "%s· %s  c%d  w%.1f  %s" % (mark(s["ord"]), key(s["ord"]), rows[s["ord"]]["community"], s["weight"], named(s["ord"], 36))))
     typical = [e for e in ev if e["role"].startswith("typical")]
     if typical:
         out.append(("h", "TYPICAL SECTION of each top community (◆ = given to the LLM)"))
@@ -134,10 +145,10 @@ def draw_strip(results: list[dict], rows_all: list[dict], comm_all: list[dict], 
         for t, (c, _) in enumerate(r["partials"]):
             m = lab == c
             ax.scatter(XY[m, 0], XY[m, 1], s=1.5, c=TINTS[t % len(TINTS)], alpha=0.55, linewidths=0, rasterized=True)
-        nb = [s["ord"] for s in r["subgraph"]]
+        nb = [n["ord"] for n in r["nodes"] if n.get("query", 1) == 1 and n["hop"] >= 1] if any("query" in n for n in r.get("nodes", [])) else [s["ord"] for s in r["subgraph"]]
         ax.scatter(XY[nb, 0], XY[nb, 1], s=34, c="#f28e00", edgecolors="black", linewidths=0.6, zorder=3)
-        for hop, colour in HOP_COLOURS.items():                                                # P3: each later hop in its own colour
-            far = [n["ord"] for n in r.get("nodes", []) if n["hop"] == hop]
+        for q, colour in QUERY_COLOURS.items():                                                # P3: each search of the agent in its own colour
+            far = [n["ord"] for n in r.get("nodes", []) if n.get("query", 1) == q]
             if far:
                 ax.scatter(XY[far, 0], XY[far, 1], s=34, c=colour, edgecolors="black", linewidths=0.6, zorder=3)
         ax.scatter(XY[r["seeds"], 0], XY[r["seeds"], 1], s=260, marker="*", c="#d62728", edgecolors="black", linewidths=0.8, zorder=4)
@@ -159,6 +170,8 @@ def main() -> None:
     ap.add_argument("--base", default=None)
     ap.add_argument("--from-json", action="store_true")
     ap.add_argument("--agent-model", default="anthropic/claude-haiku-5.5", help="the ReAct agent's model; the pipeline's own model stays the default for every other call (flash-lite did not traverse, 2026-10-08)")
+    ap.add_argument("--hops", type=int, default=None, choices=(1, 2, 3), help="hops each query walks out from its seeds (default section_graphrag.HOPS)")
+    ap.add_argument("--queries", type=int, default=None, choices=(1, 2, 3), help="searches the agent may make (default section_graphrag.AGENT_QUERIES)")
     a = ap.parse_args()
     os.chdir(ROOT)
     import section_graphrag as g
@@ -175,9 +188,10 @@ def main() -> None:
         sg = g.SectionGraph(conn, a.tag)
         results = []
         for q in QUESTIONS:
-            r = g.agent_answer(sg, q, k=3, agent_model=a.agent_model)
+            r = g.agent_answer(sg, q, k=3, agent_model=a.agent_model, hops=a.hops or g.HOPS, queries=a.queries or g.AGENT_QUERIES)
             results.append({k: r[k] for k in ("question", "seeds", "subgraph", "candidates", "partials", "global_answer", "final", "evidence", "traversal")}
-                           | {"nodes": [{"ord": n["ord"], "key": k, "hop": n["hop"]} for k, n in r["agent"]["nodes"].items()], "shown_communities": sum(len(b) for b in r["agent"]["shown"]),
+                           | {"nodes": [{"ord": n["ord"], "key": k, "hop": n["hop"], "query": n.get("query", 1), "words": n.get("query_text", "")} for k, n in r["agent"]["nodes"].items()],
+                              "shown_communities": sum(len(b) for b in r["agent"]["shown"]),
                               "trace": r["agent"]["trace"]})
         json.dump(results, open(jpath, "w", encoding="utf-8"))
     need = lambda r: r["seeds"] + [s["ord"] for s in r["subgraph"]] + [e["ord"] for e in r.get("evidence", [])] + [n["ord"] for n in r.get("nodes", [])]
