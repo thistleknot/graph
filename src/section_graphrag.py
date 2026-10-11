@@ -107,7 +107,7 @@ GLOBAL view:
 SUBGRAPH view (each section has a key in square brackets; after every claim you take from it, cite that key exactly as printed, the document id AND the # and section number, in square brackets, in the form [<document id>#<section number>]):
 {sections}
 
-Write ONE answer to the question, in at most four short paragraphs, for a reader who has not seen the context. Every bracketed citation must exactly match a section key printed in the SUBGRAPH. The [c12]-style tags in the GLOBAL view are cluster tags, never cite them or replace them with labels such as [GLOBAL view]. If a global claim has no supporting subgraph section, omit it. Do not describe the views ("the GLOBAL view says") and print no heading or label; begin with the answer. The GLOBAL view frames the answer and can miss things: cover the distinct approaches or findings the sections report, including those it does not mention. When a section explicitly names a taxonomy or set of types, preserve every named category and state the set together; do not replace it with a different taxonomy. Mention an evidence gap only when it concerns an explicit part of the question that the context does not answer. Do not add generic caveats about unrelated topics, or say that the text does not specify details the question did not ask for. End after answering. Use nothing but the two kinds of context."""
+Write ONE answer to the question, in at most four short paragraphs, for a reader who has not seen the context. Every bracketed citation must exactly match a section key printed in the SUBGRAPH. The [c12]-style tags in the GLOBAL view are cluster tags, never cite them or replace them with labels such as [GLOBAL view]. If a global claim has no supporting subgraph section, omit it. Do not describe the views ("the GLOBAL view says") and print no heading or label; begin with the answer. Before drafting, map the question's requested dimensions to evidence. For a question about methods or approaches, distinguish what the approaches do (their operations, workflows, or mechanisms) from how sources classify their variants (named families, taxonomies, or other organizing axes). Include other dimensions when the question asks for them or they materially distinguish the approaches. A taxonomy is an organizing view of the methods, not a substitute for describing them; preserve its useful hierarchy and named members. Keep independent dimensions distinct and explain how they relate. Prefer a source's systematic account over an isolated example. Mention an evidence gap only when it concerns an explicit part of the question that the context does not answer. Do not add generic caveats about unrelated topics, or say that the text does not specify details the question did not ask for. End after answering. Use nothing but the two kinds of context."""
 AGENT_PROMPT = """You search a graph of sections from research papers to answer a question. You choose the words of each new search, and you may stop as soon as you have enough.
 Sections are nodes. A VECTOR edge joins two sections that read alike. Every search returns a subgraph: the sections best matching its words plus their neighbours out to hop {hops}, {per_query} in all. A section an earlier search already showed is never shown again, so a new search always returns new sections.
 
@@ -119,7 +119,7 @@ Framing, a synthesis over summaries of related sections (it can miss the answer)
 Topics the corpus holds, a sample of its communities of sections: size, title, and the entities most characteristic of it with the number of its sections that mention each. Each round adds a new sample and the earlier ones stay. Use them to choose where to look next:
 {communities}
 
-Sections seen so far, grouped by the query that found them (query 1 is the question; a SEARCH of yours is the next query), one per line: [key] hop | topic of its community | similarity to that query | how it was reached | the first words. A * marks a section you have read in full. A ! marks a section whose heading may list a taxonomy. For questions about approaches, types, categories, or classification, you MUST READ at least one ! section before ANSWER if one is shown. Each query shows what its words returned: use what an earlier query returned to word a better next one, and use the entities in the topics to choose words.
+Sections seen so far, grouped by the query that found them (query 1 is the question; a SEARCH of yours is the next query), one per line: [key] hop | topic of its community | similarity to that query | how it was reached | the first words. A * marks a section you have read in full. Each query shows what its words returned: use what an earlier query returned to word a better next one, and use the entities in the topics to choose words.
 {working}
 
 Sections you have read in full:
@@ -138,7 +138,7 @@ or
 or
   ACTION: ANSWER
   WHY: one sentence.
-When asked for main approaches, types, categories, or a classification, first scan the sections already shown for titles or opening lines that signal a taxonomy. If any is marked !, READ at least one before you ANSWER. If none is shown, SEARCH for one. Distinguish different taxonomies instead of substituting one for another. The first words of a section are not evidence: read a section before you rely on it. Replies left this round: {left}."""
+Choose reads and searches to cover the information dimensions the question asks for. For a methods or approaches question, track both what the approaches do (operations, workflows, mechanisms) and how sources classify their variants (named families, taxonomies, other organizing axes); also track any additional dimensions explicit in the question. A classification is one view of the methods, not a replacement for the methods themselves. Search for a meaningful uncovered dimension rather than another example of one already covered. Where sources give a hierarchy, check whether useful subtypes are represented before treating a broad category as complete. Prefer systematic accounts when available. Before answering, compare the evidence across dimensions and preserve distinct classifications and levels. The first words of a section are clues, not evidence; read it before relying on its claims. Replies left this round: {left}."""
 ROUND_SEARCH = "You are in search round {round} of {queries}. You may READ up to {reads} sections first, then SEARCH once; the search runs and you see its sections next round. If what you have is already enough, ANSWER."
 ROUND_CLOSE = "No more searches. You may READ up to {reads} more sections, then ANSWER."
 
@@ -254,7 +254,7 @@ def keep_grounded_sentences(text: str, items: list[dict]) -> str:
     paragraphs = []
     for paragraph in (text or "").splitlines():
         kept = []
-        for sentence in re.split(r"(?<=[.!?])\s+", paragraph.strip()):
+        for sentence in re.split(r"(?<=[.!?])\s+(?=[A-Z0-9*])", paragraph.strip()):
             if not sentence:
                 continue
             refs = re.findall(r"\[([^\[\]]+)\]", sentence)
@@ -281,28 +281,16 @@ def parse_action(reply: str) -> tuple[str | None, str, str]:
     return action, arg, why
 
 
-TAXONOMY_HEADING = re.compile(r"\b(?:[A-Z][a-z-]+\s+){0,3}(?:Memory\s+)?(?:Mechanisms|Types|Categories|Taxonomy|Classification)\.")
-
-
-def taxonomy_candidates(nodes: dict[str, dict]) -> list[str]:
-    """Keys whose opening snippet names a likely taxonomy, highest query similarity first."""
-    return sorted((k for k, n in nodes.items() if TAXONOMY_HEADING.search(n.get("snippet", ""))),
-                  key=lambda k: (-nodes[k].get("sim", 0.0), k))
-
-
-def working_block(nodes: dict[str, dict], read: dict[str, str], prioritize_taxonomy: bool = False) -> str:
+def working_block(nodes: dict[str, dict], read: dict[str, str]) -> str:
     """G8, G11. Guarantee: the sections seen, grouped by the query that found them (query 1 is the question), each group headed `QUERY n: "words" -> k sections` and each section one line in the
     order seen: `*` when read, [key], hop, community topic, similarity, how it was reached, the first words. A node without a `query` belongs to query 1."""
     groups: dict[int, list[tuple[str, dict]]] = {}
     for k, n in nodes.items():
         groups.setdefault(n.get("query", 1), []).append((k, n))
-    is_overview = lambda n: bool(TAXONOMY_HEADING.search(n.get("snippet", "")))
     out = []
     for q in sorted(groups):
-        if prioritize_taxonomy:
-            groups[q].sort(key=lambda kn: (not is_overview(kn[1]), -kn[1].get("sim", 0.0), kn[0]))
         out.append('QUERY %d: "%s" -> %d sections' % (q, groups[q][0][1].get("query_text", ""), len(groups[q])))
-        out += ["%s[%s]%s hop %d | %s | similarity %.2f | %s | %s" % ("*" if k in read else "!" if prioritize_taxonomy and is_overview(n) else " ", k, ' "%s"' % n["paper"] if n.get("paper") else "", n["hop"], n["topic"], n["sim"], n["via"],
+        out += ["%s[%s]%s hop %d | %s | similarity %.2f | %s | %s" % ("*" if k in read else " ", k, ' "%s"' % n["paper"] if n.get("paper") else "", n["hop"], n["topic"], n["sim"], n["via"],
                                                                     n["snippet"]) for k, n in groups[q]]
     return "\n".join(out)
 
@@ -393,7 +381,7 @@ def agent_prompt(question: str, global_answer: str, nodes: dict[str, dict], read
     if searching and left == 1:                                             # observed 2026-10-08: a third READ used up the round and the search was lost
         round_text += " THIS IS YOUR LAST REPLY THIS ROUND: reply SEARCH or ANSWER now; anything else loses the search for good."
     return AGENT_PROMPT.format(question=question, global_answer=strip_cluster_tags(global_answer).strip() or "(no community summary bore on the question)",
-                               communities=communities_block(batches or [], facts), working=working_block(nodes, read, prioritize_taxonomy=bool(re.search(r"\b(approaches?|types?|categories|taxonomy|classification)\b", question, re.I))), read=read_block(read), history="\n".join(history) or "(nothing yet)",
+                               communities=communities_block(batches or [], facts), working=working_block(nodes, read), read=read_block(read), history="\n".join(history) or "(nothing yet)",
                                round_text=round_text, hops=hops, per_query=per_query, left=left)
 
 
@@ -410,31 +398,15 @@ def run_agent(question: str, global_answer: str, initial: list[dict], tools, ask
     trace: list[dict] = []
     batches: list[list] = []
     shown: set[int] = set()
-    taxonomy_q = bool(re.search(r"\b(approaches?|types?|categories|taxonomy|classification)\b", question, re.I))
     for rnd in range(1, queries + 2):
-        reserved_read = False
-        if taxonomy_q and not any(TAXONOMY_HEADING.search(nodes[k].get("snippet", "")) for k in read):
-            candidates = taxonomy_candidates(nodes)
-            if candidates:
-                key = candidates[0]
-                read[key] = tools.read(key)
-                reserved_read = True
-                result = "reserved taxonomy read: %d characters" % len(read[key])
-                trace.append({"round": rnd, "action": "READ", "arg": key, "why": "Read a shown taxonomy section before spending the round's read budget.", "result": result, "new": []})
-                history.append("round %d: READ %s -> %s" % (rnd, key, result))
         searching = rnd <= queries
         if catalogue and searching:
             batches.append(sample_communities(catalogue, k, seed + rnd, shown, mode))
             shown |= {c[0] for c in batches[-1]}
-        searched, reads = False, int(reserved_read)
+        searched, reads = False, 0
         for left in range(MAX_READS + 1, 0, -1):
             reply = ask(agent_prompt(question, global_answer, nodes, read, history, rnd, searching, left, batches, facts, queries, hops, per_query))
             action, arg, why = parse_action(reply)
-            if action == "ANSWER" and taxonomy_q:
-                marked = [k for k in taxonomy_candidates(nodes) if k not in read]
-                if marked:
-                    arg = max(marked, key=lambda k: (nodes[k].get("sim", 0.0), k))
-                    action, why = "READ", "A shown section signals a named taxonomy; read it before answering."
             new: list[str] = []
             if action == "ANSWER":
                 trace.append({"round": rnd, "action": action, "arg": "", "why": why, "result": "stopped", "new": []})
