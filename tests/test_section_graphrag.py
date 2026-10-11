@@ -104,6 +104,10 @@ def test_sections_block_cuts_visibly_never_silently_and_prints_no_community_numb
 def test_answer_prompt_says_so_when_no_summary_bore_on_the_question():
     p = g.answer_prompt("q", "  ", [{"key": "k#1", "community": 1, "role": "retrieved", "text": "body"}])
     assert "(no community summary bore on the question)" in p and "[k#1]" in p
+    assert "preserve every named category" in p and "do not replace it with a different taxonomy" in p
+    agent = g.agent_prompt("q", "", {}, {}, [], 1, (3,), 3)
+    assert "first scan the sections already shown" in agent
+    assert "READ at least one before you ANSWER" in agent
 
 
 def test_cluster_tags_never_reach_the_answer_or_agent_prompt_but_section_keys_do():
@@ -162,6 +166,17 @@ def test_communities_block_keeps_earlier_rounds_and_marks_the_newest():
     node = {"key": "a#1", "hop": 0, "topic": "t", "sim": 0.5, "via": "retrieved", "snippet": "s"}
     p = g.agent_prompt("q", "", {"a#1": node}, {}, [], 1, True, 3, [one], facts)
     assert "1630 sections | Agent runtimes | harness 512 · verifier 169" in p and "the entities most characteristic of it" in p
+
+
+def test_working_block_promotes_and_marks_named_memory_taxonomy_for_approach_questions():
+    nodes = {
+        "a#1": {"query": 1, "query_text": "main approaches", "hop": 0, "topic": "memory", "sim": 0.9, "via": "seed", "snippet": "Memory retrieval methods ..."},
+        "b#19": {"query": 1, "query_text": "main approaches", "hop": 1, "topic": "memory", "sim": 0.2, "via": "edge", "snippet": "## 6 Related Work Textual Memory Mechanisms. Textual memory mechanisms externalize ..."},
+    }
+    out = g.working_block(nodes, {}, prioritize_taxonomy=True)
+    assert out.index("![b#19]") < out.index(" [a#1]")
+    agent = g.agent_prompt("main approaches to memory", "", nodes, {}, [], 1, True, 3)
+    assert "A ! marks a section whose heading may list a taxonomy" in agent
 
 
 def test_working_and_read_blocks_mark_what_was_read_and_cut_a_long_read_visibly():
@@ -281,6 +296,17 @@ def test_agent_may_stop_at_its_first_reply():
     assert run["stop"] == "answered" and tools.calls == [] and len(run["trace"]) == 1 and run["nodes"].keys() == {"a#1", "b#2"} and len(run["shown"]) == 1
 
 
+def test_agent_reads_a_shown_taxonomy_section_before_answering_taxonomy_questions():
+    tools = FakeTools()
+    nodes = start(tools)
+    nodes.append(tools.node("c#3", "vector edge from a retrieved section", 1) | {"snippet": "Textual Memory Mechanisms. This passage names three types."})
+    run = g.run_agent("what are the main approaches to memory?", "", nodes, tools,
+                      scripted("ACTION: ANSWER\\nWHY: enough", "ACTION: ANSWER\\nWHY: now enough"), queries=0)
+    assert tools.calls == [("read", "c#3")]
+    assert run["trace"][0]["action"] == "READ" and run["trace"][0]["arg"] == "c#3"
+    assert run["stop"] == "answered"
+
+
 def test_a_search_that_finds_nothing_new_still_spends_the_round():
     tools = FakeTools()
     tools.FOUND = []
@@ -339,8 +365,8 @@ def test_the_final_evidence_is_the_whole_traversal_read_first_then_centrepoints_
 
 def test_each_section_gets_the_whole_6000_while_the_budget_holds_then_an_even_share_never_under_the_floor():
     assert g.answer_chars(10) == g.READ_CHARS and g.answer_chars(g.ANSWER_BUDGET_CHARS // g.READ_CHARS) == g.READ_CHARS
-    assert g.answer_chars(70) == 2000 and g.answer_chars(54) == 2592                                  # an even share of the 140,000: the memory question's 54 sections
-    assert g.answer_chars(200) == g.MIN_SECTION_CHARS == 1200                                         # the even share (700) is under the floor, so the floor binds
+    assert g.answer_chars(72) == 3750                                                            # max traversal: enough for the 3,644-character taxonomy section
+    assert g.answer_chars(100) == 2700 and g.answer_chars(200) == 1350
     assert g.answer_chars(500) == g.MIN_SECTION_CHARS and g.answer_chars(0) == g.READ_CHARS
 
 

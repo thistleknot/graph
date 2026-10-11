@@ -65,7 +65,7 @@ retrieval step yet. The agent's answer quality is not yet measured against plain
    (default: its natural subgraph minus what is already shown, plus as many more as overlapped, hopped from the whole natural subgraph)
    or `mask`. It can READ a section whole and may stop at any reply. It never extends the graph by hops itself.
 4. **The final answer** interprets every section the traversal saw, in the light of the global answer: sections the agent read, the typical
-   section of each top community (always included), then all the rest nearest the question first; each cut to fit a 140,000-character budget, and every cut says so.
+   section of each top community (always included), then all the rest nearest the question first; each cut to fit a 270,000-character budget, and every cut says so. When an approaches or types question has a shown section whose opening signals a taxonomy, the agent must read at least one such section before answering.
 
 Measured (`.tmp/hop_grid_stage_a.log`, `.tmp/mask_vs_topup.log`, 200 queries each): the graph walk does **not** beat plain hybrid retrieval on
 finding the source section of a sentence (0.445 to 0.450 against 0.555; second query 0.41 against 0.505), hops 1, 2 and 3 score the same, and
@@ -75,8 +75,7 @@ finding the source section of a sentence (0.445 to 0.450 against 0.555; second q
 
 One card per community, largest first, with its Dunning terms, its top entities, its exemplar sections and the
 paper each came from. [`docs/section_map/community_map.png`](docs/section_map/community_map.png) is the
-picture, with the three example questions drawn as a strip under the cards (every section each query saw, hops, subgraph size, entity composition per query); [`docs/section_map/communities.md`](docs/section_map/communities.md) is the same content as text
-(every exemplar section, with links to arXiv). Both are copies of what `src/section_render.py` writes to `.tmp/`.
+picture, with the three example questions drawn as a strip under the cards (every section each query saw, hops, subgraph size, entity composition per query); [`docs/section_map/communities.md`](docs/section_map/communities.md) contains every exemplar section with links to arXiv, followed by the three answers and traversal receipts. The community cards and text are written by `src/section_render.py`; the query strip is rendered by `src/section_query_panel.py`.
 
 ![community map](docs/section_map/community_map.png)
 

@@ -76,7 +76,7 @@ import section_store as st
 SEARCH_N, SNIPPET_CHARS, READ_CHARS, MAX_READS = 3, 160, 6000, 2                                    # G8, G13: seeds per query
 HOPS, AGENT_QUERIES, PER_QUERY, HOP_CAP, HOP_NEIGHBOURS = 3, 3, 18, 15, 10                           # G8, G13: the two tunable depths (tried at 1, 2, 3), the sections shown per query (18: 13 dropped the survey section, see G13), the cap per hop
 CATALOGUE_K = 12                                                                                     # G10
-ANSWER_BUDGET_CHARS, MIN_SECTION_CHARS = 140000, 1200                                                # G14: the final prompt's evidence budget, about 35,000 tokens (the old evidence ran 15,000 to 38,812 characters; 60,000 cut the survey section at 1,200 of its 3,644 characters and lost two of its three categories)
+ANSWER_BUDGET_CHARS, MIN_SECTION_CHARS = 270000, 1200                                                # G14: at the maximum 72 sections, allocate 3,750 characters each so the 3,644-character memory taxonomy fits whole
 ACTIONS, KEY_ACTIONS = ("READ", "SEARCH", "ANSWER"), ("READ",)
 RRF_K, POOL, PER_SEED, MAX_CANDIDATES = 60, 100, 5, 12
 CENTRE_K, CLOSEST_K, MIN_MEMBERS = 3, 6, 2      # G7: typical sections of the top 3 communities holding >= 2 subgraph sections, then the 6 subgraph sections nearest the question
@@ -108,7 +108,7 @@ SUBGRAPH view (each section has a key in square brackets; after every claim you 
 {sections}
 
 Write ONE answer to the question, in at most four short paragraphs, for a reader who has not seen the context. Cite section keys only: the [c12]-style tags in the GLOBAL view are cluster
-tags, never cite them and never invent new ones. Do not describe the views ("the GLOBAL view says") and print no heading or label; begin with the answer. The GLOBAL view frames the answer and can miss things: cover the distinct approaches or findings the sections report, including those it does not mention. Where the evidence does not support part of the question, say so in one
+tags, never cite them and never invent new ones. Do not describe the views ("the GLOBAL view says") and print no heading or label; begin with the answer. The GLOBAL view frames the answer and can miss things: cover the distinct approaches or findings the sections report, including those it does not mention. When a section explicitly names a taxonomy or set of types, preserve every named category and state the set together; do not replace it with a different taxonomy. Where the evidence does not support part of the question, say so in one
 closing sentence. Use nothing but the two kinds of context."""
 AGENT_PROMPT = """You search a graph of sections from research papers to answer a question. You choose the words of each new search, and you may stop as soon as you have enough.
 Sections are nodes. A VECTOR edge joins two sections that read alike. Every search returns a subgraph: the sections best matching its words plus their neighbours out to hop {hops}, {per_query} in all. A section an earlier search already showed is never shown again, so a new search always returns new sections.
@@ -121,7 +121,7 @@ Framing, a synthesis over summaries of related sections (it can miss the answer)
 Topics the corpus holds, a sample of its communities of sections: size, title, and the entities most characteristic of it with the number of its sections that mention each. Each round adds a new sample and the earlier ones stay. Use them to choose where to look next:
 {communities}
 
-Sections seen so far, grouped by the query that found them (query 1 is the question; a SEARCH of yours is the next query), one per line: [key] hop | topic of its community | similarity to that query | how it was reached | the first words. A * marks a section you have read in full. Each query shows what its words returned: use what an earlier query returned to word a better next one, and use the entities in the topics to choose words.
+Sections seen so far, grouped by the query that found them (query 1 is the question; a SEARCH of yours is the next query), one per line: [key] hop | topic of its community | similarity to that query | how it was reached | the first words. A * marks a section you have read in full. A ! marks a section whose heading may list a taxonomy. For questions about approaches, types, categories, or classification, you MUST READ at least one ! section before ANSWER if one is shown. Each query shows what its words returned: use what an earlier query returned to word a better next one, and use the entities in the topics to choose words.
 {working}
 
 Sections you have read in full:
@@ -140,7 +140,7 @@ or
 or
   ACTION: ANSWER
   WHY: one sentence.
-The first words of a section are not evidence: read a section before you rely on it. Replies left this round: {left}."""
+When asked for main approaches, types, categories, or a classification, first scan the sections already shown for titles or opening lines that signal a taxonomy. If any is marked !, READ at least one before you ANSWER. If none is shown, SEARCH for one. Distinguish different taxonomies instead of substituting one for another. The first words of a section are not evidence: read a section before you rely on it. Replies left this round: {left}."""
 ROUND_SEARCH = "You are in search round {round} of {queries}. You may READ up to {reads} sections first, then SEARCH once; the search runs and you see its sections next round. If what you have is already enough, ANSWER."
 ROUND_CLOSE = "No more searches. You may READ up to {reads} more sections, then ANSWER."
 
@@ -264,16 +264,20 @@ def parse_action(reply: str) -> tuple[str | None, str, str]:
     return action, arg, why
 
 
-def working_block(nodes: dict[str, dict], read: dict[str, str]) -> str:
+def working_block(nodes: dict[str, dict], read: dict[str, str], prioritize_taxonomy: bool = False) -> str:
     """G8, G11. Guarantee: the sections seen, grouped by the query that found them (query 1 is the question), each group headed `QUERY n: "words" -> k sections` and each section one line in the
     order seen: `*` when read, [key], hop, community topic, similarity, how it was reached, the first words. A node without a `query` belongs to query 1."""
     groups: dict[int, list[tuple[str, dict]]] = {}
     for k, n in nodes.items():
         groups.setdefault(n.get("query", 1), []).append((k, n))
+    overview = re.compile(r"\b(?:[A-Z][a-z-]+\s+){0,3}(?:Memory\s+)?(?:Mechanisms|Types|Categories|Taxonomy|Classification)\.")
+    is_overview = lambda n: bool(overview.search(n.get("snippet", "")))
     out = []
     for q in sorted(groups):
+        if prioritize_taxonomy:
+            groups[q].sort(key=lambda kn: (not is_overview(kn[1]), -kn[1].get("sim", 0.0), kn[0]))
         out.append('QUERY %d: "%s" -> %d sections' % (q, groups[q][0][1].get("query_text", ""), len(groups[q])))
-        out += ["%s[%s]%s hop %d | %s | similarity %.2f | %s | %s" % ("*" if k in read else " ", k, ' "%s"' % n["paper"] if n.get("paper") else "", n["hop"], n["topic"], n["sim"], n["via"],
+        out += ["%s[%s]%s hop %d | %s | similarity %.2f | %s | %s" % ("*" if k in read else "!" if prioritize_taxonomy and is_overview(n) else " ", k, ' "%s"' % n["paper"] if n.get("paper") else "", n["hop"], n["topic"], n["sim"], n["via"],
                                                                     n["snippet"]) for k, n in groups[q]]
     return "\n".join(out)
 
@@ -364,7 +368,7 @@ def agent_prompt(question: str, global_answer: str, nodes: dict[str, dict], read
     if searching and left == 1:                                             # observed 2026-10-08: a third READ used up the round and the search was lost
         round_text += " THIS IS YOUR LAST REPLY THIS ROUND: reply SEARCH or ANSWER now; anything else loses the search for good."
     return AGENT_PROMPT.format(question=question, global_answer=strip_cluster_tags(global_answer).strip() or "(no community summary bore on the question)",
-                               communities=communities_block(batches or [], facts), working=working_block(nodes, read), read=read_block(read), history="\n".join(history) or "(nothing yet)",
+                               communities=communities_block(batches or [], facts), working=working_block(nodes, read, prioritize_taxonomy=bool(re.search(r"\b(approaches?|types?|categories|taxonomy|classification)\b", question, re.I))), read=read_block(read), history="\n".join(history) or "(nothing yet)",
                                round_text=round_text, hops=hops, per_query=per_query, left=left)
 
 
@@ -390,6 +394,12 @@ def run_agent(question: str, global_answer: str, initial: list[dict], tools, ask
         for left in range(MAX_READS + 1, 0, -1):
             reply = ask(agent_prompt(question, global_answer, nodes, read, history, rnd, searching, left, batches, facts, queries, hops, per_query))
             action, arg, why = parse_action(reply)
+            taxonomy_q = bool(re.search(r"\b(approaches?|types?|categories|taxonomy|classification)\b", question, re.I))
+            if action == "ANSWER" and taxonomy_q:
+                marked = [k for k, n in nodes.items() if re.search(r"\b(?:[A-Z][a-z-]+\s+){0,3}(?:Memory\s+)?(?:Mechanisms|Types|Categories|Taxonomy|Classification)\.", n.get("snippet", "")) and k not in read]
+                if marked:
+                    arg = max(marked, key=lambda k: (nodes[k].get("sim", 0.0), k))
+                    action, why = "READ", "A shown section signals a named taxonomy; read it before answering."
             new: list[str] = []
             if action == "ANSWER":
                 trace.append({"round": rnd, "action": action, "arg": "", "why": why, "result": "stopped", "new": []})

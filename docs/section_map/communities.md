@@ -27994,3 +27994,53 @@ The pre-training hyper-parameters for different OpenELM configurations are given
 
 Table 9. Pre-training details for different variants of OpenELM.
 ~~~
+
+## Example question results (2026-10-11)
+
+The answers below come from the three query runs shown below the map. Section citations link to arXiv papers; the keys identify source sections.
+
+### Query 1: how does speculative decoding speed up inference
+
+Speculative decoding accelerates inference by using a smaller, faster "draft" model to propose multiple potential next tokens. A larger, more powerful "target" model then verifies these proposed tokens in parallel. This parallel verification is key, as the target model can process several draft tokens in the time it would normally take to generate just one token autoregressively. The process continues by accepting all draft tokens that match the target model's predictions and then repeating the drafting and verification cycle for the subsequent tokens. This approach significantly reduces the number of sequential forward passes required by the target model, leading to faster inference. [arxiv/2602_06036#1], [arxiv/2404_11912#2], [arxiv/2411_04975#2]
+
+The speedup is achieved by increasing the expected number of accepted tokens per cycle or by reducing the overhead of generating draft tokens. If the draft model proposes many tokens that are subsequently accepted by the target model, the overall inference time is reduced. Conversely, if the draft model's proposals are frequently rejected, the speedup diminishes. Therefore, a crucial aspect is the acceptance rate of the drafted tokens. [arxiv/2602_06036#8]
+
+Some methods enhance speculative decoding by employing tree-based speculation, which generates multiple candidate token sequences to boost the acceptance rate. This allows the target model more options to choose from, increasing the likelihood of finding an acceptable sequence and thus improving efficiency. [arxiv/2407_16207#1], [arxiv/2404_11912#2]
+
+The provided context does not detail specific attention sparsity patterns or how they are utilized for efficient GPU computation.
+
+Traversal: 3 hops, 3 queries, 54 sections seen, 2 sections read; stopped: answered.
+
+Sections read: `arxiv/2602_06036#7`, `arxiv/2404_11912#4`
+
+### Query 2: what are the main approaches to long-term memory for LLM agents
+
+The main approaches to long-term memory for LLM agents involve methods for memory construction and retrieval, aiming to enable agents to maintain continuity and personalization across sessions. These approaches can be broadly categorized into passive retrieval and active memory navigation. Frameworks are designed to integrate memory natively into AI models for storing, recalling, and utilizing past information. [arxiv/2607_05794#2]
+
+Memory can be stored in different forms, including parametric memory, which is encoded within the model's parameters, and non-parametric memory, which exists externally in structured databases or retrieval mechanisms. [arxiv/2504_15965#8] [arxiv/2411_0489#16] Long-term memory is also conceptualized through analogies to human memory, encompassing episodic memory (recording specific events), semantic memory (storing general knowledge), and procedural memory (learned skills and routines). [arxiv/2411_0489#26] [arxiv/2504_01990#43]
+
+Approaches to memory management include storing memory as textual entries, summaries, or retrievable documents, or in latent rather than textual form. [arxiv/2605_12357#19] Some systems utilize hierarchical memory structures, such as memory pyramids, to organize information at different abstraction levels. [arxiv/2607_05794#2] Active memory navigation allows agents to proactively search memory tools to find sufficient evidence before answering queries, contrasting with passive retrieval where memory is reduced to pre-selected context. [arxiv/2607_05794#2]
+
+The provided text does not specify what aspects of memory construction and retrieval are considered "main" beyond these general categories.
+
+Traversal: 3 hops, 3 queries, 54 sections seen, 4 sections read; stopped: answered.
+
+Sections read: `arxiv/2607_05794#2`, `arxiv/2504_15965#8`, `arxiv/2411_0489#16`, `arxiv/2605_12357#19`
+
+### Query 3: how do researchers evaluate the safety of language models
+
+Researchers evaluate the safety of language models through various methods, including adversarial testing, fine-tuning with safety data, and developing defensive strategies against attacks. These approaches aim to identify and mitigate potential harms, ensuring models behave responsibly.
+
+One common evaluation method involves crowdsourcing prompts designed to elicit unsafe content across predefined categories such as self-harm, violence, hate speech, and criminal planning [arxiv/2405_09818#34]. Models' responses to these prompts are then labeled by annotators as safe or unsafe [arxiv/2405_09818#34]. Researchers also employ interactive sessions where internal "red teams" probe models with adversarial prompts, including multi-turn interactions, to assess their resilience [arxiv/2405_09818#34].
+
+Safety fine-tuning is another crucial aspect of evaluation. This involves supervised safety fine-tuning using adversarial prompts and safe demonstrations [arxiv/2307_09288#22]. Additionally, safety is integrated into Reinforcement Learning from Human Feedback (RLHF) pipelines, which includes training safety-specific reward models and gathering more challenging adversarial prompts for fine-tuning [arxiv/2307_09288#22]. Context distillation is also used, where a safety preprompt is prefixed to adversarial prompts to generate safer responses, which are then used for fine-tuning without the preprompt [arxiv/2307_09288#22].
+
+Researchers also develop and utilize benchmarks for safety evaluation. These benchmarks cover various safety dimensions, such as toxicity, adversarial robustness, and machine ethics [arxiv/2406_16746#39]. Examples include SafetyBench, which uses multiple-choice questions for easier automated evaluation, and HarmBench, a framework for automated red-teaming [arxiv/2406_16746#39]. Some benchmarks focus on specific types of safety concerns, such as Multimodal Situational Safety, which assesses how safety considerations vary based on visual context [arxiv/2410_06172#1].
+
+Defensive strategies are also developed and evaluated. These include constitutional classifiers, which use explicit constitutional rules to train classifier safeguards that monitor inputs and outputs to block harmful content [arxiv/2501_18837#3]. Adversarial training, where models are continuously exposed to adversarial examples, is another technique used to improve inherent robustness [arxiv/2504_01990#203]. Data augmentation, including the synthesis of queries with high-risk words, is also employed to train safety moderators and reduce false positive predictions [arxiv/2503_06550#6].
+
+The provided text does not specify what "CBRN capabilities" refers to.
+
+Traversal: 3 hops, 4 queries, 72 sections seen, 4 sections read; stopped: answered.
+
+Sections read: `arxiv/2405_09818#34`, `arxiv/2307_09288#22`, `arxiv/2503_06550#6`, `arxiv/2406_16746#39`
