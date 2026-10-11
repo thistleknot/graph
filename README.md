@@ -65,7 +65,7 @@ retrieval step yet. The agent's answer quality is not yet measured against plain
    (default: its natural subgraph minus what is already shown, plus as many more as overlapped, hopped from the whole natural subgraph)
    or `mask`. It can READ a section whole and may stop at any reply. It never extends the graph by hops itself.
 4. **The final answer** interprets every section the traversal saw, in the light of the global answer: sections the agent read, the typical
-   section of each top community (always included), then all the rest nearest the question first; each cut to fit a 270,000-character budget, and every cut says so. For methods questions, the prompt asks the agent to track both what approaches do and how sources classify their variants, while preserving any other distinctions the question asks for. The synthesis treats a taxonomy as one view of the methods, not a substitute for describing them.
+   section of each top community (always included), then all the rest nearest the question first; each cut to fit a 270,000-character budget, and every cut says so. For methods questions, the prompt asks the agent to track both what approaches do and how sources classify their variants, while preserving any other distinctions the question asks for. When sources classify by separate axes, such as function versus storage form, the synthesis keeps those axes distinct; overloaded terms are grounded in the relevant field.
 
 Measured (`.tmp/hop_grid_stage_a.log`, `.tmp/mask_vs_topup.log`, 200 queries each): the graph walk does **not** beat plain hybrid retrieval on
 finding the source section of a sentence (0.445 to 0.450 against 0.555; second query 0.41 against 0.505), hops 1, 2 and 3 score the same, and

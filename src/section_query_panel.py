@@ -41,7 +41,7 @@ sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "src"))
 
 QUESTIONS = ["What are the core speculative-decoding methods, and how do they differ in proposal, verification, and candidate structure?",
-             "What methods and workflows support long-term memory in LLM agents, and how do researchers classify their memory types?",
+             "How do LLM-agent memory taxonomies distinguish function/content from storage form? Explain factual memory, textual storage, latent representations stored outside the backbone, and parametric weight-based memory; say which labels can overlap and compare the storage mechanisms.",
              "How do researchers evaluate language-model safety? Distinguish evaluation protocols and metrics from interventions intended to improve safety."]
 TITLE_CHARS, WRAP, LINE_IN, PAD_IN = 46, 92, 0.165, 1.0
 SECTION_WITH_PAPER, PAPER_CHARS = 24, 40                       # P4: a section heading and its paper's title share one line

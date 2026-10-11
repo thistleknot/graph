@@ -107,6 +107,7 @@ def test_answer_prompt_says_so_when_no_summary_bore_on_the_question():
     assert "map the question's requested dimensions to evidence" in p
     assert "distinguish what the approaches do" in p and "how sources classify their variants" in p
     assert "A taxonomy is an organizing view of the methods" in p
+    assert "When a term has different meanings across fields" in p
     assert "only when it concerns an explicit part of the question" in p
     assert "Do not add generic caveats about unrelated topics" in p
     assert "Every bracketed citation must exactly match a section key printed in the SUBGRAPH" in p
@@ -117,6 +118,7 @@ def test_answer_prompt_says_so_when_no_summary_bore_on_the_question():
     agent = g.agent_prompt("q", "", {}, {}, [], 1, (3,), 3)
     assert "what the approaches do" in agent and "how sources classify their variants" in agent
     assert "A classification is one view of the methods" in agent
+    assert "When a term has different meanings across fields" in agent
 
 
 def test_answer_discards_sentences_with_non_evidence_citations():
