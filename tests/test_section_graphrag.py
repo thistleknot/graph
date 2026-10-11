@@ -105,9 +105,24 @@ def test_answer_prompt_says_so_when_no_summary_bore_on_the_question():
     p = g.answer_prompt("q", "  ", [{"key": "k#1", "community": 1, "role": "retrieved", "text": "body"}])
     assert "(no community summary bore on the question)" in p and "[k#1]" in p
     assert "preserve every named category" in p and "do not replace it with a different taxonomy" in p
+    assert "only when it concerns an explicit part of the question" in p
+    assert "Do not add generic caveats about unrelated topics" in p
+    assert "Every bracketed citation must exactly match a section key printed in the SUBGRAPH" in p
+    assert "replace them with labels such as [GLOBAL view]" in p
+    reduce = g.reduce_prompt("q", [(1, "answer [c1]")])
+    assert "only when it is an explicit part of the question" in reduce
+    assert "generic caveats about unrelated topics" in reduce
     agent = g.agent_prompt("q", "", {}, {}, [], 1, (3,), 3)
     assert "first scan the sections already shown" in agent
     assert "READ at least one before you ANSWER" in agent
+
+
+def test_answer_discards_sentences_with_non_evidence_citations():
+    items = [{"key": "arxiv/2401_00001#2"}, {"key": "arxiv/2401_00002#3"}]
+    answer = "Grounded point [arxiv/2401_00001#2]. Uncited point [GLOBAL view]. Combined point [arxiv/2401_00002#3, arxiv/2401_00001#2]."
+    assert g.keep_grounded_sentences(answer, items) == (
+        "Grounded point [arxiv/2401_00001#2]. Combined point [arxiv/2401_00002#3, arxiv/2401_00001#2]."
+    )
 
 
 def test_cluster_tags_never_reach_the_answer_or_agent_prompt_but_section_keys_do():

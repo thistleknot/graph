@@ -92,7 +92,7 @@ After a YES, write 2-4 sentences answering the question from this summary only, 
 REDUCE_PROMPT = """Question: {question}
 
 Below are partial answers, each drawn from one cluster of sections of research papers. Write one answer to the question that combines them.
-Keep the cluster tag, e.g. [c12], after each claim it supports. Say what the clusters leave unanswered. Use nothing but the partial answers.
+Keep the cluster tag, e.g. [c12], after each claim it supports. Mention an unanswered point only when it is an explicit part of the question and the partial answers do not address it. Do not add generic caveats about unrelated topics the summaries do not cover. Use nothing but the partial answers.
 
 {partials}"""
 ANSWER_PROMPT = """Answer the question from two kinds of context. The GLOBAL view is a synthesis across communities of related sections and gives the framing.
@@ -107,9 +107,7 @@ GLOBAL view:
 SUBGRAPH view (each section has a key in square brackets; after every claim you take from it, cite that key exactly as printed, the document id AND the # and section number, in square brackets, in the form [<document id>#<section number>]):
 {sections}
 
-Write ONE answer to the question, in at most four short paragraphs, for a reader who has not seen the context. Cite section keys only: the [c12]-style tags in the GLOBAL view are cluster
-tags, never cite them and never invent new ones. Do not describe the views ("the GLOBAL view says") and print no heading or label; begin with the answer. The GLOBAL view frames the answer and can miss things: cover the distinct approaches or findings the sections report, including those it does not mention. When a section explicitly names a taxonomy or set of types, preserve every named category and state the set together; do not replace it with a different taxonomy. Where the evidence does not support part of the question, say so in one
-closing sentence. Use nothing but the two kinds of context."""
+Write ONE answer to the question, in at most four short paragraphs, for a reader who has not seen the context. Every bracketed citation must exactly match a section key printed in the SUBGRAPH. The [c12]-style tags in the GLOBAL view are cluster tags, never cite them or replace them with labels such as [GLOBAL view]. If a global claim has no supporting subgraph section, omit it. Do not describe the views ("the GLOBAL view says") and print no heading or label; begin with the answer. The GLOBAL view frames the answer and can miss things: cover the distinct approaches or findings the sections report, including those it does not mention. When a section explicitly names a taxonomy or set of types, preserve every named category and state the set together; do not replace it with a different taxonomy. Mention an evidence gap only when it concerns an explicit part of the question that the context does not answer. Do not add generic caveats about unrelated topics, or say that the text does not specify details the question did not ask for. End after answering. Use nothing but the two kinds of context."""
 AGENT_PROMPT = """You search a graph of sections from research papers to answer a question. You choose the words of each new search, and you may stop as soon as you have enough.
 Sections are nodes. A VECTOR edge joins two sections that read alike. Every search returns a subgraph: the sections best matching its words plus their neighbours out to hop {hops}, {per_query} in all. A section an earlier search already showed is never shown again, so a new search always returns new sections.
 
@@ -248,6 +246,25 @@ def answer_prompt(question: str, global_answer: str, items: list[dict], section_
     """G5. Guarantee: the final synthesis prompt over the global answer (cluster tags removed) and the subgraph sections."""
     return ANSWER_PROMPT.format(question=question, global_answer=strip_cluster_tags(global_answer).strip() or "(no community summary bore on the question)",
                                 sections=sections_block(items, section_chars))
+
+
+def keep_grounded_sentences(text: str, items: list[dict]) -> str:
+    """Drop sentences whose bracketed citations are not exact keys in the evidence set."""
+    valid = {item["key"] for item in items}
+    paragraphs = []
+    for paragraph in (text or "").splitlines():
+        kept = []
+        for sentence in re.split(r"(?<=[.!?])\s+", paragraph.strip()):
+            if not sentence:
+                continue
+            refs = re.findall(r"\[([^\[\]]+)\]", sentence)
+            cited = [key.strip() for ref in refs for key in ref.split(",")]
+            if cited and any(key not in valid for key in cited):
+                continue
+            kept.append(sentence)
+        if kept:
+            paragraphs.append(" ".join(kept))
+    return "\n".join(paragraphs)
 
 
 def parse_action(reply: str) -> tuple[str | None, str, str]:
@@ -588,7 +605,7 @@ def answer(sg: SectionGraph, question: str, k: int = 3, model: str | None = None
     got = sg.retrieve(question, k, per_seed, m)
     glob = global_view(sg, got, model)
     items = sg.items(got)
-    final = scz.chat(model, answer_prompt(question, glob["global_answer"], items))["content"]
+    final = keep_grounded_sentences(scz.chat(model, answer_prompt(question, glob["global_answer"], items))["content"], items)
     return {**got, **glob, "final": final, "evidence": [{"key": i["key"], "ord": i["ord"], "role": i["role"]} for i in items]}
 
 
@@ -656,5 +673,5 @@ def agent_answer(sg: SectionGraph, question: str, k: int = 3, model: str | None 
     lab |= {o: r["community"] for o, r in away.items()}
     items = [{"key": o["key"], "ord": o["ord"], "community": lab[o["ord"]], "role": o["role"],
               "text": run["read"][o["key"]] if o["role"] == "read by the agent" else text[o["ord"]]["text"]} for o in order]
-    final = scz.chat(model, answer_prompt(question, glob["global_answer"], items, answer_chars(len(items))))["content"]
+    final = keep_grounded_sentences(scz.chat(model, answer_prompt(question, glob["global_answer"], items, answer_chars(len(items))))["content"], items)
     return {**got, **glob, "final": final, "agent": run, "traversal": traversal, "evidence": [{"key": i["key"], "ord": i["ord"], "role": i["role"]} for i in items]}
