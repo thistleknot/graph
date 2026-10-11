@@ -281,14 +281,22 @@ def parse_action(reply: str) -> tuple[str | None, str, str]:
     return action, arg, why
 
 
+TAXONOMY_HEADING = re.compile(r"\b(?:[A-Z][a-z-]+\s+){0,3}(?:Memory\s+)?(?:Mechanisms|Types|Categories|Taxonomy|Classification)\.")
+
+
+def taxonomy_candidates(nodes: dict[str, dict]) -> list[str]:
+    """Keys whose opening snippet names a likely taxonomy, highest query similarity first."""
+    return sorted((k for k, n in nodes.items() if TAXONOMY_HEADING.search(n.get("snippet", ""))),
+                  key=lambda k: (-nodes[k].get("sim", 0.0), k))
+
+
 def working_block(nodes: dict[str, dict], read: dict[str, str], prioritize_taxonomy: bool = False) -> str:
     """G8, G11. Guarantee: the sections seen, grouped by the query that found them (query 1 is the question), each group headed `QUERY n: "words" -> k sections` and each section one line in the
     order seen: `*` when read, [key], hop, community topic, similarity, how it was reached, the first words. A node without a `query` belongs to query 1."""
     groups: dict[int, list[tuple[str, dict]]] = {}
     for k, n in nodes.items():
         groups.setdefault(n.get("query", 1), []).append((k, n))
-    overview = re.compile(r"\b(?:[A-Z][a-z-]+\s+){0,3}(?:Memory\s+)?(?:Mechanisms|Types|Categories|Taxonomy|Classification)\.")
-    is_overview = lambda n: bool(overview.search(n.get("snippet", "")))
+    is_overview = lambda n: bool(TAXONOMY_HEADING.search(n.get("snippet", "")))
     out = []
     for q in sorted(groups):
         if prioritize_taxonomy:
@@ -402,18 +410,28 @@ def run_agent(question: str, global_answer: str, initial: list[dict], tools, ask
     trace: list[dict] = []
     batches: list[list] = []
     shown: set[int] = set()
+    taxonomy_q = bool(re.search(r"\b(approaches?|types?|categories|taxonomy|classification)\b", question, re.I))
     for rnd in range(1, queries + 2):
+        reserved_read = False
+        if taxonomy_q and not any(TAXONOMY_HEADING.search(nodes[k].get("snippet", "")) for k in read):
+            candidates = taxonomy_candidates(nodes)
+            if candidates:
+                key = candidates[0]
+                read[key] = tools.read(key)
+                reserved_read = True
+                result = "reserved taxonomy read: %d characters" % len(read[key])
+                trace.append({"round": rnd, "action": "READ", "arg": key, "why": "Read a shown taxonomy section before spending the round's read budget.", "result": result, "new": []})
+                history.append("round %d: READ %s -> %s" % (rnd, key, result))
         searching = rnd <= queries
         if catalogue and searching:
             batches.append(sample_communities(catalogue, k, seed + rnd, shown, mode))
             shown |= {c[0] for c in batches[-1]}
-        searched, reads = False, 0
+        searched, reads = False, int(reserved_read)
         for left in range(MAX_READS + 1, 0, -1):
             reply = ask(agent_prompt(question, global_answer, nodes, read, history, rnd, searching, left, batches, facts, queries, hops, per_query))
             action, arg, why = parse_action(reply)
-            taxonomy_q = bool(re.search(r"\b(approaches?|types?|categories|taxonomy|classification)\b", question, re.I))
             if action == "ANSWER" and taxonomy_q:
-                marked = [k for k, n in nodes.items() if re.search(r"\b(?:[A-Z][a-z-]+\s+){0,3}(?:Memory\s+)?(?:Mechanisms|Types|Categories|Taxonomy|Classification)\.", n.get("snippet", "")) and k not in read]
+                marked = [k for k in taxonomy_candidates(nodes) if k not in read]
                 if marked:
                     arg = max(marked, key=lambda k: (nodes[k].get("sim", 0.0), k))
                     action, why = "READ", "A shown section signals a named taxonomy; read it before answering."
