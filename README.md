@@ -66,7 +66,7 @@ retrieval step yet. The agent's answer quality is not yet measured against plain
 3. **The agent** sees that subgraph, the global answer and a Box-Cox-weighted sample of the communities (with their top entities), and may
    make up to `AGENT_QUERIES` more searches (default 3, tunable 1 to 3), each its own subgraph kept apart from the earlier ones: `topup`
    (default: its natural subgraph minus what is already shown, plus as many more as overlapped, hopped from the whole natural subgraph)
-   or `mask`. It can READ a section whole and may stop at any reply. It never extends the graph by hops itself.
+   or `mask`. It can READ a section whole and may stop at any reply. It never extends the graph by hops itself. A question rejected in step 1 gets no agent, no evidence and no answer.
 4. **The final answer** interprets every section the traversal saw, in the light of the global answer: sections the agent read, the typical
    section of each top community (always included), then all the rest nearest the question first; each cut to fit a 270,000-character budget, and every cut says so. For methods questions, the prompt asks the agent to track both what approaches do and how sources classify their variants, while preserving any other distinctions the question asks for. When sources classify by separate axes, such as function versus storage form, the synthesis keeps those axes distinct; overloaded terms are grounded in the relevant field.
 

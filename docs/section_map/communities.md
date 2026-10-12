@@ -16133,7 +16133,7 @@ We made several modifications to AllenNLP's evaluation script 3 to better fit ou
 
 - · Added Smoothing: Smoothing was incorporated to handle cases where BLEU score is zero, due to no n-gram matches occurring in the reference text. A BLEU score of zero skews the results, leading to an overly harsh evaluation for rare or novel phrases. By adding
 
-3 docs.allennlp.org/models/main/models/rc/src/narrativeqa/
+3 docs.allennlp.org/models/main/models/rc/tools/narrativeqa/
 
 a smoothing function, we prevent the BLEU scores from dropping to zero, providing a more fair evaluation.
 
@@ -27994,42 +27994,3 @@ The pre-training hyper-parameters for different OpenELM configurations are given
 
 Table 9. Pre-training details for different variants of OpenELM.
 ~~~
-
-## Example question results (2026-10-11)
-
-The answers below come from the three query runs shown below the map. Section citations link to arXiv papers; the keys identify source sections.
-## Example answers and traversal receipts
-The answers below come from the three query runs shown below the map. Section citations link to arXiv papers; keys identify source sections.
-
-### Query 1: What are the core speculative-decoding methods, and how do they differ in proposal, verification, and candidate structure?
-
-Speculative decoding accelerates autoregressive LLM inference by using a smaller, faster "draft" model to propose a sequence of tokens, which are then verified by a larger, more accurate "target" model. This "draft then verify" approach reduces the number of forward passes required by the target model, thereby speeding up generation [arxiv/2407_16207#2, arxiv/2602_06036#2].
-The core speculative decoding methods differ in how they structure and verify these proposed token sequences. Early methods and some current approaches use a single draft model to propose one draft sequence at a time [arxiv/2602_06036#2, arxiv/2404_14294#30]. More advanced methods employ tree-based structures to generate multiple candidate tokens simultaneously, aiming to boost the acceptance rate and thus the overall speedup [arxiv/2404_11912#2, arxiv/2404_14294#30]. Graph-structured speculative decoding further refines this by using a directed acyclic graph to organize drafted tokens, allowing for greater sharing of common nodes across different hypotheses and potentially longer drafted sequences without prohibitive computational overhead [arxiv/2407_16207#2].
-Verification typically involves the target model computing conditional probabilities for the draft tokens in a single forward pass. The acceptance of each draft token is then determined sequentially. The acceptance rate, defined as the average number of accepted draft tokens per inference step, is a key metric for evaluating performance [arxiv/2404_14294#30]. Some methods, like Medusa, augment the base LLM with multiple prediction heads and use tree attention for parallel verification, eliminating the need for an external draft model [arxiv/2602_06036#2]. Other approaches, such as EAGLE, exploit feature-level context from the frozen target model to improve acceptance rates [arxiv/2602_06036#2].
-The candidate structure can range from a single draft sequence to more complex tree or graph structures. Tree-based methods organize multiple candidates to increase acceptance rates [arxiv/2404_11912#2]. Graph-structured speculative decoding uses a directed acyclic graph where each path from the root represents a hypothesis, allowing for significant sharing of common nodes among different hypotheses [arxiv/2407_16207#2]. This structure aims to extend the length of drafted hypotheses without a proportional increase in computational cost.
-
-Traversal: 3 hops, 3 queries, 54 sections seen, 4 read; stopped: answered.
-
-Sections read: `arxiv/2404_11912#4`, `arxiv/2602_06036#4`, `arxiv/2407_16207#2`, `arxiv/2404_14294#30`
-
-### Query 2: How do LLM-agent memory taxonomies distinguish function/content from storage form? Explain factual memory, textual storage, latent representations stored outside the backbone, and parametric weight-based memory; say which labels can overlap and compare the storage mechanisms.
-
-LLM-agent memory taxonomies distinguish function/content from storage form by categorizing memory based on how information is represented and stored. The "form dimension" differentiates between parametric memory, embedded within the model's parameters, and non-parametric memory, stored externally in databases or retrieval mechanisms [arxiv/2504_15965#8]. Factual memory, as a functional aspect, refers to the general knowledge an AI system possesses, which can be stored in either parametric or non-parametric forms [arxiv/2411_0489#28].
-Textual storage refers to memory stored in human-readable formats, such as raw text notes or structured labels [arxiv/2411_0489#16]. Parametric weight-based memory stores information directly within the model's parameters, acquired through training [arxiv/2512_13564#23, arxiv/2411_0489#16].
-Labels can overlap across these dimensions. For instance, factual memory (content/function) can be stored as textual data (storage form) or as latent representations (storage form). Similarly, parametric memory (storage form) inherently contains factual knowledge (content/function). Textual storage and latent representations are primarily distinguished by their storage form, with latent representations being more machine-native and less interpretable by humans [arxiv/2512_13564#60]. Parametric memory is a storage mechanism where learned information is embedded within the model's weights, contrasting with non-parametric memory which relies on external storage like databases or file systems [arxiv/2411_0489#16].
-
-Traversal: 3 hops, 4 queries, 72 sections seen, 7 read; stopped: done.
-
-Sections read: `arxiv/2512_13564#60`, `arxiv/2504_15965#8`, `arxiv/2512_13564#23`, `arxiv/2411_0489#18`, `arxiv/2411_0489#16`, `arxiv/2512_13564#53`, `arxiv/2411_0489#25`
-
-Coverage check: all three requested labels appear in the final answer.
-
-### Query 3: How do researchers evaluate language-model safety? Distinguish evaluation protocols and metrics from interventions intended to improve safety.
-
-Researchers evaluate language-model safety through a combination of adversarial testing, specific evaluation protocols, and metrics, distinguishing these from interventions aimed at improving safety.
-To evaluate safety, researchers employ adversarial attacks and jailbreaks to test model defenses. This includes crowdsourcing prompts that aim to elicit unsafe content across categories like self-harm, violence, and criminal planning [arxiv/2405_09818#34]. Models are also tested for their ability to withstand adversarial prompting in interactive sessions, with internal "red teams" probing for vulnerabilities [arxiv/2405_09818#34]. Evaluation protocols often involve measuring the attack success rate (ASR) of various jailbreaking strategies, including in-distribution and out-of-distribution variants, and assessing the refusal rate on benign queries [arxiv/2411_07494#4]. Metrics can include the proportion of unsafe responses [arxiv/2405_09818#34], refusal rates for unsafe requests, and compliance rates for safe requests [arxiv/2503_24370#17]. LLM-as-a-Judge is also used, involving generating scores, yes/no questions, pairwise comparisons, and multiple-choice selections to assess model responses [arxiv/2411_16594#27].
-Interventions intended to improve safety include various fine-tuning techniques. Supervised safety fine-tuning incorporates adversarial prompts and safe demonstrations into the training process [arxiv/2307_09288#22]. Safety RLHF involves training a safety-specific reward model and gathering more challenging adversarial prompts for fine-tuning [arxiv/2307_09288#22]. Safety context distillation refines the model by prefixing prompts with safety preprompts, then fine-tuning on the safer responses without the preprompt [arxiv/2307_09288#22]. Other interventions include constitutional classifiers, which defend against universal jailbreaks [arxiv/2501_18837#12], and adversarial training, which continuously exposes models to adversarial examples to improve inherent robustness [arxiv/2504_01990#203]. Rapid response paradigms focus on monitoring for novel jailbreaks and quickly defending against them after observation, often using jailbreak proliferation to generate similar attack variants [arxiv/2411_07494#1, arxiv/2411_07494#13].
-
-Traversal: 3 hops, 4 queries, 72 sections seen, 4 read; stopped: answered.
-
-Sections read: `arxiv/2405_09818#34`, `arxiv/2307_09288#22`, `arxiv/2411_07494#4`, `arxiv/2501_18837#12`

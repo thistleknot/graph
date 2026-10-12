@@ -90,3 +90,10 @@ Scratch: `.tmp/hop_grid.py`.
 - Final citations are checked against the evidence keys after generation; a sentence with a non-evidence bracketed citation is dropped. This catches labels such as `[GLOBAL view]` that the prompt alone did not prevent.
 - Still NOT TESTED: the blind 20-question answer comparison and the full agent grid in stage B. The three example answers in the map are a smoke check, not a quality evaluation.
 - Verification 2026-10-11: focused section-GraphRAG tests 35 passed; full suite 1,210 passed, 1 failed, 3 skipped. The failure is the existing `tests/test_walker_render.py::test_panels_render_digests_and_chain_communities` assertion for missing `pairs=… corpus_n=…` text.
+
+## Outcome 2026-10-12 (community scoring, no fallback; handoff.md)
+
+- Cause of the bad global view: the 0.8B Jev-Style scorer's score depends on the other summaries sharing its request (materials-science summaries 0.03 alone, 0.74-0.86 in a 64-summary request; the speculative-decoding community 0.77 alone, 0.25 in 64). Polarity (`noul` = P(true)) was right.
+- Built: one summary per scoring request by default; partials open `RELEVANT: YES|NO` and a NO is kept in `partials_rejected`; no fallback: a question nothing passes is rejected (`question_rejected`: no global view, agent, evidence or answer); the strip shows scored / passed / kept and a QUESTION REJECTED block.
+- Result at threshold 0.50 over 415 communities: speculative decoding answered (1 kept), agent-memory REJECTED (best c10 0.449; c21 0.182), safety answered (6 passed, 5 kept, 3 of them weak). Citations all resolve.
+- NOT TESTED: a calibrated cut (needs labelled pairs), a larger scorer, the blind 20-question comparison, the agent grid. Tests: 50 passed across the reranker, query-panel and graphrag files; the wider suite was not re-run.
