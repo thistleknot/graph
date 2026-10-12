@@ -440,6 +440,16 @@ def summaries(conn, build: int, cids: list[int]) -> dict[int, dict]:
         "SELECT cid, size, title, summary, genre_flag FROM sect_community WHERE build_id = %s AND cid = ANY(%s) AND status = 'draft'", (build, cids)).fetchall()}
 
 
+def summary_batches(conn, build: int, cids: list[int], batch_size: int):
+    """D13. Yield at most `batch_size` draft summaries at a time, in `cids` order; do not materialize the full summary corpus in memory."""
+    if batch_size < 1:
+        raise ValueError("batch_size must be positive")
+    for start in range(0, len(cids), batch_size):
+        ids = cids[start:start + batch_size]
+        found = summaries(conn, build, ids)
+        yield {cid: found[cid] for cid in ids if cid in found}
+
+
 def sections(conn, build: int, ords: list[int]) -> dict[int, dict]:
     """D2. Guarantee: {ord: {doc_id, section_idx, section_title, community, text}} with the whole text."""
     return {o: {"doc_id": d, "section_idx": i, "section_title": t, "community": c, "text": x} for o, d, i, t, c, x in conn.execute(

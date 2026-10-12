@@ -6,8 +6,9 @@ synthesis"; "leverage pgvector in docker"; approved plan C:\\Users\\user\\.claud
     STAGE     MECHANISM                                                                                                   GUARD
     SEED      pgvector exact cosine over the centred section vectors + Postgres full text over the body, fused by RRF k=60   G1
     EXPAND    one hop over sect_edge_sym from each seed, strongest edges first; neighbours ranked by RRF over seed lists     G2
-    CANDIDATE communities of the seeds and of the subgraph, plus those whose summary vector is nearest the question          G3
-    MAP       one LLM call per candidate community, over that community's summary alone; first line RELEVANT: YES|NO         G4
+    CANDIDATE every multi-section community with a draft summary, largest first                                               G15
+    SCORE     every candidate summary gets an independent Jev-Style NOUL relevance score in bounded batches                   G15
+    PARTIAL   generation calls only for communities above the relevance threshold, after all scores are collected             G15
     REDUCE    one query-focused summary of the partial answers                                                               G4
     ANSWER    one call over (global answer, evidence): the typical section of each of the top 3 communities, then the 6          G5, G7
               subgraph sections nearest the question; every claim cites a section key
@@ -57,6 +58,13 @@ G14 (operator 2026-10-09: "the global summarized answer (over partials) is input
     the evidence came from the question's first retrieval alone, so a search of the agent's could not change the answer unless it read what it found.
 G5  The final prompt carries each section whole up to `section_chars` and says so when it cuts; a cut is never silent. Sections are keyed doc_id#section_idx and the
     section header carries NO community number: with "community 12" in the header the model cited [c12] for sections (observed 2026-10-07, three times in three questions).
+G15 (operator 2026-10-12): score EVERY multi-section community with a draft summary using independent Jev-Style NOUL relevance questions, ONE summary per request by default (COMMUNITY_JEV_BATCH_SIZE, 1 to 128); one request runs at a time,
+    with one serialized successor prefetched in CPU RAM. Measured 2026-10-12: a score is a pair score only at 1 per request; at 64 per request the same materials-science summaries
+    scored 0.74-0.86 for speculative decoding, memory and safety queries (0.03 alone) and the speculative-decoding community scored 0.25 (0.77 alone). Only after all scores are collected are
+    partial answers generated for communities at/above COMMUNITY_JEV_THRESHOLD; each partial opens RELEVANT: YES|NO, a NO is kept in `partials_rejected` and never reduced.
+    Do not cap this global lens to the query's seed/subgraph communities or nearest-summary top-k.
+    NO FALLBACK (operator 2026-10-12: "fallback = failure ... if no community came back, I would reject the question"): when no community passes the cut, or none of the passers' partials holds up,
+    the question is REJECTED (`question_rejected`): no global view, no agent, no evidence, no answer. Observed with the 0.8B scorer at 0.50: the agent-memory query is rejected (best c10 .449; c21 scored .182).
 """
 from __future__ import annotations
 
@@ -95,6 +103,14 @@ Below are partial answers, each drawn from one cluster of sections of research p
 Keep the cluster tag, e.g. [c12], after each claim it supports. Mention an unanswered point only when it is an explicit part of the question and the partial answers do not address it. Do not add generic caveats about unrelated topics the summaries do not cover. Use nothing but the partial answers.
 
 {partials}"""
+PARTIAL_PROMPT = """Answer the question using only this already-selected community summary from research papers.
+Question: {question}
+
+Community {cid} ({size} sections) — {title}
+{summary}
+
+Reply in exactly this form. The first line is RELEVANT: YES or RELEVANT: NO. YES only when the summary itself states something that answers the question; NO when it is about something else. After a NO write nothing more.
+After a YES write a concise partial answer of 2–4 sentences containing only information this summary supports, including useful distinctions or categories when present. Do not add outside knowledge or generic caveats."""
 ANSWER_PROMPT = """Answer the question from two kinds of context. The GLOBAL view is a synthesis across communities of related sections and gives the framing.
 The SUBGRAPH view is the evidence. It opens with the TYPICAL section of each of the communities that hold most of the retrieved subgraph (what that community is generally like; use it
 as evidence only where it speaks to the question), then the sections of the subgraph NEAREST the question, nearest first.
@@ -540,15 +556,17 @@ class SectionGraph:
         return {"q": q, "qd": qd, "col": self.col, "arms": arms, "ranked": [o for o, _ in rrf(list(arms.values()))]}
 
     def retrieve(self, question: str, k: int = 3, per_seed: int = PER_SEED, m: int = MAX_CANDIDATES) -> dict:
-        """Guarantee: {question, seeds, arms, subgraph, candidates} -- everything before the first LLM call."""
+        """G15. Return the candidates for global scoring: every multi-section community with a draft summary, largest first. `m` remains accepted for call compatibility but no longer caps this global lens."""
         r = self.ranked(question)
         q, qd, arms = r["q"], r["qd"], r["arms"]
         seeds = r["ranked"][:k]
         sub = expand(seeds, st.neighbours(self.conn, self.build, seeds, per_seed))
         lab_of = st.community_of(self.conn, self.build, seeds + [s["ord"] for s in sub])
-        by_summary = st.communities_by_summary(self.conn, self.build, q, m, self.exclude_genre)
+        candidates = [c for c, _, _ in st.community_catalogue(self.conn, self.build)]
+        if self.exclude_genre:
+            candidates = [c for c in candidates if c not in self.genre]
         return {"question": question, "seeds": seeds, "arms": arms, "subgraph": sub, "lab_of": lab_of, "qd": qd, "col": self.col,
-                "candidates": candidate_communities(lab_of, self.genre | self.small, seeds, [s["ord"] for s in sub], by_summary, m)}
+                "candidates": candidates}
 
     def items(self, got: dict, centre_k: int = CENTRE_K, closest_k: int = CLOSEST_K) -> list[dict]:
         """G5, G7. Guarantee: the evidence list for the final step: the centrepoint of each of the top `centre_k` communities (by how many subgraph sections they hold), then the `closest_k`
@@ -573,19 +591,46 @@ class SectionGraph:
 
 
 def global_view(sg: SectionGraph, got: dict, model: str) -> dict:
-    """G4. Guarantee: {partials, not_relevant, unparsed, global_answer} -- the map step over every candidate community of `got`, then the reduce step. LLM calls: one per candidate, one reduce."""
+    """G15. Score every candidate summary in bounded Jev-Style batches, then generate partials only for scores at/above threshold and reduce them."""
     import summarize_clusters as scz
-    summ = st.summaries(sg.conn, sg.build, got["candidates"])
-    partials, skipped, unparsed = [], 0, 0
-    for c in got["candidates"]:
-        relevant, text = parse_map(scz.chat(model, map_prompt(got["question"], summ[c]))["content"])
-        if relevant:
-            partials.append((c, text))
-        else:
-            skipped += 1
-            unparsed += relevant is None
-    return {"partials": partials, "not_relevant": skipped, "unparsed": unparsed,
+    import community_reranker as cr
+    threshold = cr.relevance_threshold()
+    summary_pages = st.summary_batches(sg.conn, sg.build, got["candidates"], cr.PAGE_SIZE)
+    community_scores, score_batches = cr.score_communities(got["question"], summary_pages)
+    scored_ids = {row["community"] for row in community_scores}
+    missing = set(got["candidates"]) - scored_ids
+    if missing:
+        raise RuntimeError("community summaries missing from JEV scoring: %s" % sorted(missing)[:20])
+    selected = [row["community"] for row in community_scores if row["score"] >= threshold]
+    # Finish scoring the full candidate set before starting generation. The
+    # generation model now writes partial answers; it does not repeat the gate.
+    partials, rejected, unparsed = [], [], 0
+    for page in st.summary_batches(sg.conn, sg.build, selected, 32):
+        for c, rec in page.items():
+            reply = scz.chat(model, PARTIAL_PROMPT.format(question=got["question"], cid=c, size=rec["size"],
+                                                          title=rec["title"], summary=rec["summary"]))["content"]
+            relevant, text = parse_map(reply)
+            if relevant:
+                partials.append((c, text))
+            else:                                    # G15: a refusal is never evidence; it is kept for audit (the score said relevant, the summary's own reader said not)
+                rejected.append({"community": c, "verdict": "unparsed" if relevant is None else "NO", "reply": reply})
+                unparsed += relevant is None
+    return {"partials": partials, "not_relevant": len(community_scores) - len(selected), "unparsed": unparsed, "partials_rejected": rejected,
+            "community_scores": community_scores, "community_threshold": threshold, "community_score_batches": score_batches,
+            "question_rejected": rejection_reason(community_scores, threshold, partials),
             "global_answer": scz.chat(model, reduce_prompt(got["question"], partials))["content"] if partials else ""}
+
+
+def rejection_reason(scores: list[dict], threshold: float, partials: list) -> str:
+    """G15. Guarantee: '' when at least one community passed the Jev-Style cut AND its partial held up (RELEVANT: YES); else the sentence that rejects the question. Nothing is
+    substituted for a missing global view (operator 2026-10-12: "fallback = failure ... if no community came back, I would reject the question")."""
+    if partials:
+        return ""
+    best = max(scores, key=lambda s: s["score"]) if scores else None
+    top = " (best score %.3f, community c%d, threshold %.2f)" % (best["score"], best["community"], threshold) if best else ""
+    passed = sum(1 for s in scores if s["score"] >= threshold)
+    return ("Question rejected: no community summary passed the Jev-Style relevance check%s." % top if not passed else
+            "Question rejected: %d community summaries passed the Jev-Style check but none held up when summarised against the question." % passed)
 
 
 def answer(sg: SectionGraph, question: str, k: int = 3, model: str | None = None, per_seed: int = PER_SEED, m: int = MAX_CANDIDATES) -> dict:
@@ -594,6 +639,8 @@ def answer(sg: SectionGraph, question: str, k: int = 3, model: str | None = None
     model = model or scz.MODEL
     got = sg.retrieve(question, k, per_seed, m)
     glob = global_view(sg, got, model)
+    if glob["question_rejected"]:
+        return {**got, **glob, "final": glob["question_rejected"], "evidence": []}
     items = sg.items(got)
     final = keep_grounded_sentences(scz.chat(model, answer_prompt(question, glob["global_answer"], items))["content"], items)
     return {**got, **glob, "final": final, "evidence": [{"key": i["key"], "ord": i["ord"], "role": i["role"]} for i in items]}
@@ -646,6 +693,9 @@ def agent_answer(sg: SectionGraph, question: str, k: int = 3, model: str | None 
     agent_model = agent_model or model
     got = sg.retrieve(question, k, per_seed, m)
     glob = global_view(sg, got, model)
+    if glob["question_rejected"]:                    # G15: no agent, no evidence, no answer
+        return {**got, **glob, "final": glob["question_rejected"], "evidence": [], "traversal": None,
+                "agent": {"nodes": {}, "read": {}, "trace": [], "stop": "rejected", "shown": []}}
     ex = Explorer(sg, got, hops, per_query)
     run = run_agent(question, glob["global_answer"], ex.initial(), ex, lambda p: scz.chat(agent_model, p)["content"], queries,
                     catalogue=None if catalogue_mode == "none" else st.community_catalogue(sg.conn, sg.build), seed=zlib.crc32(question.encode()), mode=catalogue_mode,

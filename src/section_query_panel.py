@@ -64,14 +64,32 @@ def column_lines(res: dict, rows: dict, comm: dict, titles: dict[str, str] | Non
 
     out = []
     who = [c for c, _ in res["partials"]]
-    out.append(("h", "GLOBAL  - LLM summary of the %d of %d candidate communities that answered" % (len(who), len(res["candidates"]))))
+    if "community_scores" in res:
+        thr = res.get("community_threshold", 0.5)
+        passed = sum(1 for s in res["community_scores"] if float(s["score"]) >= thr)
+        out.append(("h", "GLOBAL  - scored %d; %d passed %.2f; %d kept" % (len(res["community_scores"]), passed, thr, len(who))))
+        if res.get("partials_rejected"):
+            out.append(("k", "%d passed but their own summary said not relevant: %s" % (len(res["partials_rejected"]), " ".join("c%d" % r["community"] for r in res["partials_rejected"]))))
+        batches = res.get("community_score_batches") or []
+        sizes = sorted({b["candidates"] for b in batches})
+        out.append(("k", "%d scoring requests of %s summary each; every score is in the query JSON" % (len(batches), "1" if sizes == [1] else "/".join(str(s) for s in sizes))
+                    if batches else "no scoring request recorded"))
+        score_by_community = {int(s["community"]): float(s["score"]) for s in res["community_scores"]}
+    else:   # older saved query-panel JSON
+        out.append(("h", "GLOBAL  - LLM summary of the %d of %d candidate communities that answered" % (len(who), len(res["candidates"]))))
+        score_by_community = {}
     for c in who:
-        out.append(("k", "c%d  %s  (%d sections)" % (c, shorten(comm[c]["title"], 52), comm[c]["size"])))
-    out += wrapped(res["global_answer"].strip() or "(no community summary bore on the question)")
+        score = "  JEV %.3f" % score_by_community[c] if c in score_by_community else ""
+        out.append(("k", "c%d  %s  (%d sections)%s" % (c, shorten(comm[c]["title"], 52), comm[c]["size"], score)))
     ev = res.get("evidence") or []
     shown = {e["ord"] for e in ev}
-    out.append(("h", "ANSWER  - LLM over question + global summary + ▸ ◆ sections"))
-    out += wrapped((res.get("final") or "").strip() or "(no answer was generated for this question)")
+    if res.get("question_rejected"):                 # G15: nothing passed the Jev-Style check: no global view, no answer, no fallback
+        out.append(("h", "QUESTION REJECTED"))
+        out += wrapped(res["question_rejected"])
+    else:
+        out += wrapped(res["global_answer"].strip() or "(no community summary bore on the question)")
+        out.append(("h", "ANSWER  - LLM over question + global summary + ▸ ◆ sections"))
+        out += wrapped((res.get("final") or "").strip() or "(no answer was generated for this question)")
     tr = res.get("traversal")
     if tr:
         out.append(("h", "TRAVERSAL  - ReAct agent: %d hops asked of each query, %d sections seen, %d read" % (tr["hops"], tr["size"], tr["read"])))
@@ -189,7 +207,8 @@ def main() -> None:
         results = []
         for q in QUESTIONS:
             r = g.agent_answer(sg, q, k=3, agent_model=a.agent_model, hops=a.hops or g.HOPS, queries=a.queries or g.AGENT_QUERIES)
-            results.append({k: r[k] for k in ("question", "seeds", "subgraph", "candidates", "partials", "global_answer", "final", "evidence", "traversal")}
+            results.append({k: r[k] for k in ("question", "seeds", "subgraph", "candidates", "partials", "global_answer", "final", "evidence", "traversal",
+                                               "community_scores", "community_threshold", "community_score_batches", "partials_rejected", "question_rejected") if k in r}
                            | {"nodes": [{"ord": n["ord"], "key": k, "hop": n["hop"], "query": n.get("query", 1), "words": n.get("query_text", "")} for k, n in r["agent"]["nodes"].items()],
                               "shown_communities": sum(len(b) for b in r["agent"]["shown"]),
                               "trace": r["agent"]["trace"]})
@@ -199,7 +218,7 @@ def main() -> None:
     rows_all = [{o: secs[o] for o in need(r)} for r in results]
     comm_all = []
     for r in results:
-        cids = sorted({c for c, _ in r["partials"]} | {bc["cid"] for bc in r.get("traversal", {}).get("by_community", [])})
+        cids = sorted({c for c, _ in r["partials"]} | {bc["cid"] for bc in (r.get("traversal") or {}).get("by_community", [])})
         comm_all.append({c: {"title": v["title"], "size": v["size"]} for c, v in st.summaries(conn, build, cids).items()})
     xy = np.array(conn.execute("SELECT x, y, community FROM sect_node WHERE build_id = %s ORDER BY ord", (build,)).fetchall(), np.float64)
     base_path = a.base or ".tmp/sections_%s_labelled_community_map.png" % a.tag

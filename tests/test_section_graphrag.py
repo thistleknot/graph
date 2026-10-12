@@ -402,3 +402,13 @@ def test_two_walks_with_the_first_one_masked_share_no_section():
     taken = {10} | {p["ord"] for p in first}
     second, _ = g.hop_pool([30], ring_neigh, 2, 5, taken)
     assert not taken & {p["ord"] for p in second}
+
+
+def test_a_question_is_rejected_when_no_partial_survives_and_the_reason_says_which_way_G15():
+    scores = [{"community": 10, "score": 0.449}, {"community": 21, "score": 0.182}]
+    assert g.rejection_reason(scores, 0.5, [(94, "text")]) == ""                                       # one held-up partial: not rejected
+    nothing = g.rejection_reason(scores, 0.5, [])
+    assert nothing == "Question rejected: no community summary passed the Jev-Style relevance check (best score 0.449, community c10, threshold 0.50)."
+    held = g.rejection_reason([{"community": 1, "score": 0.9}, {"community": 2, "score": 0.7}], 0.5, [])
+    assert held == "Question rejected: 2 community summaries passed the Jev-Style check but none held up when summarised against the question."
+    assert g.rejection_reason([], 0.5, []).startswith("Question rejected: no community summary passed")  # no candidates at all

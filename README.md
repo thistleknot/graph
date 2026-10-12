@@ -56,8 +56,11 @@ retrieval step yet. The agent's answer quality is not yet measured against plain
 
 ### How a question is answered (`section_graphrag.py`)
 
-1. **Global view.** Hybrid search (dense plus full text, fused by RRF) finds seed sections; each candidate community's summary is asked
-   "does this answer the question?" (map step), and the YES partials are reduced to one global answer.
+1. **Global view.** Every multi-section community with a draft summary is scored for query relevance by Jev-Style's typed yes/no decision head.
+   Each summary is scored in its own request (`COMMUNITY_JEV_BATCH_SIZE` default 1; one GPU request at a time, the next prepared in CPU RAM): measured, a
+   score depends on the other summaries sharing the request (materials-science summaries scored 0.03 alone and 0.74 to 0.86 inside a 64-summary request, while the
+   speculative-decoding summary scored 0.77 alone and 0.25 inside its 64). All scores are collected before the generation model writes a partial for each summary
+   above the threshold; a partial opens with `RELEVANT: YES|NO`, a NO is kept in the JSON (`partials_rejected`) and never reaches the reducer. **There is no fallback:** when no community passes the cut, or no partial holds up, the question is rejected and the strip says so (`question_rejected`).
 2. **The question's subgraph.** The 3 best seeds plus their vector neighbours out to `HOPS` hops (default 3, tunable 1 to 3; at most 15
    sections per hop, strongest edge first); the 18 nearest the question by dense similarity are shown (`PER_QUERY`).
 3. **The agent** sees that subgraph, the global answer and a Box-Cox-weighted sample of the communities (with their top entities), and may
@@ -66,6 +69,10 @@ retrieval step yet. The agent's answer quality is not yet measured against plain
    or `mask`. It can READ a section whole and may stop at any reply. It never extends the graph by hops itself.
 4. **The final answer** interprets every section the traversal saw, in the light of the global answer: sections the agent read, the typical
    section of each top community (always included), then all the rest nearest the question first; each cut to fit a 270,000-character budget, and every cut says so. For methods questions, the prompt asks the agent to track both what approaches do and how sources classify their variants, while preserving any other distinctions the question asks for. When sources classify by separate axes, such as function versus storage form, the synthesis keeps those axes distinct; overloaded terms are grounded in the relevant field.
+
+The scoring path uses the local Jev-Style service at `http://127.0.0.1:8765/v1/systemone` by default. Run it with a CUDA-enabled PyTorch install using
+`jev-style serve --backend torch --device cuda --dtype float16`; override the base URL with `JEV_STYLE_URL`. `COMMUNITY_JEV_BATCH_SIZE` accepts 1–128 (default 1; above 1 the scores become candidate-relative),
+and `COMMUNITY_JEV_THRESHOLD` sets the independent yes-probability cutoff (default 0.5). Each query-panel JSON stores every community score and batch timing.
 
 Measured (`.tmp/hop_grid_stage_a.log`, `.tmp/mask_vs_topup.log`, 200 queries each): the graph walk does **not** beat plain hybrid retrieval on
 finding the source section of a sentence (0.445 to 0.450 against 0.555; second query 0.41 against 0.505), hops 1, 2 and 3 score the same, and
