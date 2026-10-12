@@ -97,3 +97,19 @@ Scratch: `.tmp/hop_grid.py`.
 - Built: one summary per scoring request by default; partials open `RELEVANT: YES|NO` and a NO is kept in `partials_rejected`; no fallback: a question nothing passes is rejected (`question_rejected`: no global view, agent, evidence or answer); the strip shows scored / passed / kept and a QUESTION REJECTED block.
 - Result at threshold 0.50 over 415 communities: speculative decoding answered (1 kept), agent-memory REJECTED (best c10 0.449; c21 0.182), safety answered (6 passed, 5 kept, 3 of them weak). Citations all resolve.
 - NOT TESTED: a calibrated cut (needs labelled pairs), a larger scorer, the blind 20-question comparison, the agent grid. Tests: 50 passed across the reranker, query-panel and graphrag files; the wider suite was not re-run.
+
+## Step status against this plan (2026-10-12)
+
+| Step | Status | Evidence |
+|---|---|---|
+| 1 Spec first (guards, ledger) | DONE | guards G8, G11, G13, G14, G15 and P3, P5 in the module docstrings |
+| 2 `hop_pool` and the masked walk | DONE | `hop_pool`, `top_up`, `Explorer.pick/walk` in `src/section_graphrag.py`; tests in `tests/test_section_graphrag.py` |
+| 3 Agent reads/searches only, final answer over every section seen | DONE | `run_agent` (READ, SEARCH, ANSWER), `subgraph_order`, `answer_chars` (G14) |
+| 4 Strip shows every section of every query, hops, masked count | DONE | `src/section_query_panel.py` (P3, P5), `tests/test_section_query_panel.py` |
+| 5a Stage A, hops 1/2/3 against same-length hybrid, 200 queries | DONE | `.tmp/hop_grid_stage_a.log`: walk 0.445-0.450 against hybrid 0.555, hops identical |
+| 5a' mask against top-up, 200 query pairs | DONE | `.tmp/mask_vs_topup.log`: both 0.41 against plain next-13 hybrid 0.505 |
+| 5b Stage B, agent queries 1-3 x hops 1-3 | NOT RUN | cost: every question needs its own 415 solo Jev scores (about 95 s) before any agent call, so 60 questions is about 95 minutes of scoring alone; the plan's own bound is 15 minutes per test. A 20-question version is about 32 minutes plus about 700 model calls. Not started without a go/no-go. |
+| 5c Cross-encoder precision | NOT RUN | `cross-encoder/ms-marco-MiniLM-L-6-v2` not cached locally (about 90 MB download, needs approval) |
+| 6 README and plan outcome | DONE | `README.md`, this file; pushed at `ec0241d` |
+
+Open decisions, with a recommendation: run stage B at 20 questions on the default config first (about 32 minutes), because the stage A result already says hops do not move recall on this instrument; a 3 x 3 grid would likely repeat that. Say go or no-go.
