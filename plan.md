@@ -108,8 +108,20 @@ Scratch: `.tmp/hop_grid.py`.
 | 4 Strip shows every section of every query, hops, masked count | DONE | `src/section_query_panel.py` (P3, P5), `tests/test_section_query_panel.py` |
 | 5a Stage A, hops 1/2/3 against same-length hybrid, 200 queries | DONE | `.tmp/hop_grid_stage_a.log`: walk 0.445-0.450 against hybrid 0.555, hops identical |
 | 5a' mask against top-up, 200 query pairs | DONE | `.tmp/mask_vs_topup.log`: both 0.41 against plain next-13 hybrid 0.505 |
-| 5b Stage B, agent queries 1-3 x hops 1-3 | NOT RUN | cost: every question needs its own 415 solo Jev scores (about 95 s) before any agent call, so 60 questions is about 95 minutes of scoring alone; the plan's own bound is 15 minutes per test. A 20-question version is about 32 minutes plus about 700 model calls. Not started without a go/no-go. |
-| 5c Cross-encoder precision | NOT RUN | `cross-encoder/ms-marco-MiniLM-L-6-v2` not cached locally (about 90 MB download, needs approval) |
+| 5b Stage B, agent searches 0-3 x hops 1-3 | DONE at 20 questions (not 60) | `docs/experiments/stage_b_result.txt`, script and pre-registration in `docs/experiments/stage_b.py`. Global view left empty (the traversal is tested, not the Jev gate); the 3-search run supplies the 1- and 2-search results as prefixes. Result below. |
+| 5c Cross-encoder precision | DONE | `cross-encoder/ms-marco-MiniLM-L-6-v2` downloaded with curl (this environment's Python SSL fails; curl verifies) into `.tmp/ce_minilm`; relevant pair 8.66 / 1.21, irrelevant -11.4. tau = 4.815 = 25th percentile of the 20 gold sections' scores, fixed before any arm was scored. |
 | 6 README and plan outcome | DONE | `README.md`, this file; pushed at `ec0241d` |
 
-Open decisions, with a recommendation: run stage B at 20 questions on the default config first (about 32 minutes), because the stage A result already says hops do not move recall on this instrument; a 3 x 3 grid would likely repeat that. Say go or no-go.
+Stage B result (20 known-item questions, truth = the exact source section; one number per arm, same-size hybrid control):
+
+```
+hops 1, 0 searches: walk 10/20 = 0.50 | hybrid 12/20 = 0.60 | paired only-walk/only-hybrid 0/2
+hops 2, 3 searches: walk 12/20 = 0.60 | hybrid 14/20 = 0.70 | paired 1/3   (paper-level 0.85 against 0.70)
+hops 3, 3 searches: walk 12/20 = 0.60 | hybrid 13/20 = 0.65 | paired 1/2   (paper-level 0.85 against 0.70)
+precision (cross-encoder >= tau): walk 0.082-0.092, hybrid 0.083-0.094 in every cell
+sections shown: 18 with 0 searches, 28-29 with 1, 35-37 with 2, 39-41 with 3 (the agent stopped by ANSWER in 59 of 60 runs, usually after 1-2 searches)
+```
+
+Reading: hops 1, 2 and 3 do not move exact-section recall (0.50 / 0.55 / 0.55 at 0 searches); the agent's searches add 20 or more sections and 0-1 hits, while the same-size hybrid list gains 1-2; precision is a tie. The one thing that moved is paper-level recall with 2-3 searches at hops 2-3 (0.80-0.85 against a flat 0.70, 3 more questions of 20): the searches find the right paper more often without finding the right section. n = 20, intervals about +-0.2: none of this is significant, and it does not measure answer quality.
+
+Still NOT TESTED: the blind 20-question answer comparison; a 60-question stage B; stage B with the Jev global view in the loop.

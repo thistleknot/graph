@@ -1,0 +1,21 @@
+tau 4.815 | questions 20 | agent anthropic/claude-haiku-5.5 | global view empty
+
+HOPS 1
+  searches 0 | mean shown 18.0 | walk exact 10/20 = 0.50 [0.30,0.70] | hybrid same size 12/20 = 0.60 | paired only-walk/only-hybrid 0/2 | paper walk 0.65 hybrid 0.70 | precision walk 0.086 hybrid 0.094
+  searches 1 | mean shown 28.8 | walk exact 10/20 = 0.50 [0.30,0.70] | hybrid same size 12/20 = 0.60 | paired only-walk/only-hybrid 0/2 | paper walk 0.65 hybrid 0.70 | precision walk 0.083 hybrid 0.086
+  searches 2 | mean shown 35.1 | walk exact 10/20 = 0.50 [0.30,0.70] | hybrid same size 13/20 = 0.65 | paired only-walk/only-hybrid 0/3 | paper walk 0.65 hybrid 0.70 | precision walk 0.082 hybrid 0.084
+  searches 3 | mean shown 38.7 | walk exact 10/20 = 0.50 [0.30,0.70] | hybrid same size 13/20 = 0.65 | paired only-walk/only-hybrid 0/3 | paper walk 0.65 hybrid 0.70 | precision walk 0.082 hybrid 0.083
+
+HOPS 2
+  searches 0 | mean shown 18.0 | walk exact 11/20 = 0.55 [0.34,0.74] | hybrid same size 12/20 = 0.60 | paired only-walk/only-hybrid 1/2 | paper walk 0.70 hybrid 0.70 | precision walk 0.092 hybrid 0.094
+  searches 1 | mean shown 27.9 | walk exact 11/20 = 0.55 [0.34,0.74] | hybrid same size 12/20 = 0.60 | paired only-walk/only-hybrid 1/2 | paper walk 0.80 hybrid 0.70 | precision walk 0.085 hybrid 0.090
+  searches 2 | mean shown 36.9 | walk exact 12/20 = 0.60 [0.39,0.78] | hybrid same size 14/20 = 0.70 | paired only-walk/only-hybrid 1/3 | paper walk 0.80 hybrid 0.70 | precision walk 0.081 hybrid 0.086
+  searches 3 | mean shown 40.5 | walk exact 12/20 = 0.60 [0.39,0.78] | hybrid same size 14/20 = 0.70 | paired only-walk/only-hybrid 1/3 | paper walk 0.85 hybrid 0.70 | precision walk 0.082 hybrid 0.085
+
+HOPS 3
+  searches 0 | mean shown 18.0 | walk exact 11/20 = 0.55 [0.34,0.74] | hybrid same size 12/20 = 0.60 | paired only-walk/only-hybrid 1/2 | paper walk 0.70 hybrid 0.70 | precision walk 0.092 hybrid 0.094
+  searches 1 | mean shown 27.9 | walk exact 11/20 = 0.55 [0.34,0.74] | hybrid same size 12/20 = 0.60 | paired only-walk/only-hybrid 1/2 | paper walk 0.75 hybrid 0.70 | precision walk 0.089 hybrid 0.086
+  searches 2 | mean shown 35.1 | walk exact 12/20 = 0.60 [0.39,0.78] | hybrid same size 13/20 = 0.65 | paired only-walk/only-hybrid 1/2 | paper walk 0.80 hybrid 0.70 | precision walk 0.087 hybrid 0.084
+  searches 3 | mean shown 38.7 | walk exact 12/20 = 0.60 [0.39,0.78] | hybrid same size 13/20 = 0.65 | paired only-walk/only-hybrid 1/2 | paper walk 0.85 hybrid 0.70 | precision walk 0.088 hybrid 0.082
+
+agent stop reasons by hops: 1: {'answered': 20}; 2: {'done': 1, 'answered': 19}; 3: {'answered': 20}
