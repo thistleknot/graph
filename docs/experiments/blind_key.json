@@ -1,0 +1,152 @@
+{
+ "item 1": {
+  "X1": "B + subgraph",
+  "X2": "C + global",
+  "X3": "A hybrid only",
+  "X4": "D + agent"
+ },
+ "item 2": {
+  "X1": "B + subgraph",
+  "X2": "C + global",
+  "X3": "D + agent",
+  "X4": "A hybrid only"
+ },
+ "item 3": {
+  "X1": "C + global",
+  "X2": "A hybrid only",
+  "X3": "D + agent",
+  "X4": "B + subgraph"
+ },
+ "item 4": {
+  "X1": "D + agent",
+  "X2": "C + global",
+  "X3": "A hybrid only",
+  "X4": "B + subgraph"
+ },
+ "item 5": {
+  "X1": "D + agent",
+  "X2": "B + subgraph",
+  "X3": "C + global",
+  "X4": "A hybrid only"
+ },
+ "item 6": {
+  "X1": "B + subgraph",
+  "X2": "C + global",
+  "X3": "A hybrid only",
+  "X4": "D + agent"
+ },
+ "item 7": {
+  "X1": "D + agent",
+  "X2": "C + global",
+  "X3": "B + subgraph",
+  "X4": "A hybrid only"
+ },
+ "item 8": {
+  "X1": "B + subgraph",
+  "X2": "A hybrid only",
+  "X3": "C + global",
+  "X4": "D + agent"
+ },
+ "item 9": {
+  "X1": "B + subgraph",
+  "X2": "A hybrid only",
+  "X3": "D + agent",
+  "X4": "C + global"
+ },
+ "item 10": {
+  "X1": "D + agent",
+  "X2": "C + global",
+  "X3": "B + subgraph",
+  "X4": "A hybrid only"
+ },
+ "item 11": {
+  "X1": "D + agent",
+  "X2": "B + subgraph",
+  "X3": "A hybrid only",
+  "X4": "C + global"
+ },
+ "item 12": {
+  "X1": "C + global",
+  "X2": "B + subgraph",
+  "X3": "D + agent",
+  "X4": "A hybrid only"
+ },
+ "item 13": {
+  "X1": "A hybrid only",
+  "X2": "C + global",
+  "X3": "D + agent",
+  "X4": "B + subgraph"
+ },
+ "item 14": {
+  "X1": "A hybrid only",
+  "X2": "C + global",
+  "X3": "D + agent",
+  "X4": "B + subgraph"
+ },
+ "item 15": {
+  "X1": "C + global",
+  "X2": "D + agent",
+  "X3": "B + subgraph",
+  "X4": "A hybrid only"
+ },
+ "item 16": {
+  "X1": "A hybrid only",
+  "X2": "B + subgraph",
+  "X3": "C + global",
+  "X4": "D + agent"
+ },
+ "item 17": {
+  "X1": "C + global",
+  "X2": "B + subgraph",
+  "X3": "D + agent",
+  "X4": "A hybrid only"
+ },
+ "item 18": {
+  "X1": "D + agent",
+  "X2": "C + global",
+  "X3": "A hybrid only",
+  "X4": "B + subgraph"
+ },
+ "item 19": {
+  "X1": "D + agent",
+  "X2": "A hybrid only",
+  "X3": "B + subgraph",
+  "X4": "C + global"
+ },
+ "item 20": {
+  "X1": "C + global",
+  "X2": "B + subgraph",
+  "X3": "A hybrid only",
+  "X4": "D + agent"
+ },
+ "item 21": {
+  "X1": "C + global",
+  "X2": "B + subgraph",
+  "X3": "A hybrid only",
+  "X4": "D + agent"
+ },
+ "item 22": {
+  "X1": "B + subgraph",
+  "X2": "C + global",
+  "X3": "A hybrid only",
+  "X4": "D + agent"
+ },
+ "item 23": {
+  "X1": "B + subgraph",
+  "X2": "C + global",
+  "X3": "A hybrid only",
+  "X4": "D + agent"
+ },
+ "item 24": {
+  "X1": "C + global",
+  "X2": "D + agent",
+  "X3": "B + subgraph",
+  "X4": "A hybrid only"
+ },
+ "item 25": {
+  "X1": "C + global",
+  "X2": "D + agent",
+  "X3": "A hybrid only",
+  "X4": "B + subgraph"
+ }
+}
