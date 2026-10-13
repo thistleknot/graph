@@ -1,0 +1,10 @@
+answered questions 25 | judgements 50 (2 shuffles each) | judge and writer google/gemini-2.5-flash-lite
+  A hybrid only  mean rank 2.70 | first place 11 of 50
+  B + subgraph   mean rank 2.48 | first place 11 of 50
+  C + global     mean rank 2.48 | first place 11 of 50
+  D + agent      mean rank 2.34 | first place 17 of 50
+  B + subgraph ranked above A hybrid only: 27 of 50 judgements, below: 23
+  C + global ranked above B + subgraph: 22 of 50 judgements, below: 28
+  D + agent ranked above C + global: 25 of 50 judgements, below: 25
+  D + agent ranked above A hybrid only: 29 of 50 judgements, below: 21
+  mean answer length (characters): A hybrid only 1238; B + subgraph 1373; C + global 1241; D + agent 1225

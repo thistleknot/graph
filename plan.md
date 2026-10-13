@@ -112,6 +112,7 @@ Scratch: `.tmp/hop_grid.py`.
 | 5c Cross-encoder precision | DONE (a precision measure for stage B only) | `cross-encoder/ms-marco-MiniLM-L-6-v2` downloaded with curl (this environment's Python SSL fails; curl verifies) into `.tmp/ce_minilm`; relevant pair 8.66 / 1.21, irrelevant -11.4. tau = 25th percentile of the gold sections' scores, fixed before any arm was scored (4.815 over the first 20 questions, 5.116 over the 60). |
 | 5d Jev gate on in-corpus questions and cut calibration (added 2026-10-12) | DONE at 60 questions | `docs/experiments/jev_gate_probe_result.txt`: at 0.50, 29 of 60 questions (0.48) pass NO community; the source section's own community passes in 13 of 60 (0.22), ranks 1st in 12, top 10 in 24, median rank 20 of 415. Calibration table below. The first 20 questions had suggested 0.70 rejected. |
 | 5e Stage B with the Jev gate in the loop (added 2026-10-12) | DONE at 60 questions | `docs/experiments/stage_b_gate_result.txt`, script `stage_b_gate.py`. Result below. |
+| 5f Blind answer comparison (added 2026-10-12) | DONE as a model-judged second opinion on the 25 gate-answered questions, not a human read | `docs/experiments/blind_cmp_result.txt`, script `blind_cmp.py`. Result below. |
 | 6 README and plan outcome | DONE | `README.md`, this file; pushed at `ec0241d` |
 
 Stage B result (60 known-item questions, truth = the exact source section; same-size hybrid control; tau 5.116):
@@ -158,8 +159,21 @@ whole system over ALL 60 (a rejection is a miss): 9-10 of 60 = 0.15-0.17 | plain
 
 Reading: with the gate in the loop the system answers 25 of 60 in-corpus questions, and on those it still finds the source section less often than a plain hybrid list; counting rejections as misses it finds it in 0.15-0.17 of questions against 0.52. These are known-item sentences, not user questions, and the measure is source-section recall, not answer quality.
 
+Blind answer comparison (25 gold questions the gate answered; arms A hybrid top-12 alone, B + subgraph, C + global, D + agent traversal at hops 3 + global; same answer prompt and model; judge sees only the question and the four answers, shuffled, two orders per question; 50 judgements):
+
+```
+A hybrid only  mean rank 2.70 | first place 11 of 50
+B + subgraph   mean rank 2.48 | first place 11 of 50
+C + global     mean rank 2.48 | first place 11 of 50
+D + agent      mean rank 2.34 | first place 17 of 50
+D above A: 29 of 50, below 21 (two-sided sign test p about 0.32); C above B: 22, below 28; D above C: 25 / 25
+mean answer length (characters): 1238 / 1373 / 1241 / 1225
+```
+
+Reading: no arm is distinguishable from another (random ranking gives a mean rank of 2.50). The judge and the writer are the same model (`google/gemini-2.5-flash-lite`), the queries are lifted sentences, the 50 judgements come from 25 questions and are not independent, and no human read these answers: it is a second opinion that finds no difference, not evidence that the arms are equal.
+
 ## Scope of this plan, stated (2026-10-12)
 
 - The steps of this plan are the six in the status table above plus row 5d. All are DONE as worded in their rows; 5b ran with an empty global view and 5d measured the Jev gate on its own, and row 5e is the stage B run with the Jev gate in its loop.
-- NOT steps of this plan, and not done: (a) a blind 20-question answer comparison, (d) the conclusion/entailment idea listed under "Out of scope".
+- NOT steps of this plan, and not done: (a) a HUMAN-read blind comparison (5f is model-judged), (d) the conclusion/entailment idea listed under "Out of scope".
 - Open items, with cost: (a) needs a rubric and a reader; (b) is about 95 minutes of solo scoring for 60 questions and would mostly measure rejections, since 14 of 20 in-corpus questions pass no community at 0.50; (c) needs scoring the 60 gold questions solo (about 95 minutes) to fit the cut on labelled pairs; the cut policy itself (what a rejection should cost) is a product decision this plan does not make.
