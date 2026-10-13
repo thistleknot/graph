@@ -131,3 +131,9 @@ Reading: on this instrument the graph walk is WORSE than a plain hybrid list of 
 Still NOT TESTED: the blind 20-question answer comparison; a 60-question stage B; stage B with the Jev global view in the loop.
 
 Jev gate on in-corpus questions (20 sentences each taken from one section, solo scoring of all 415 summaries, threshold 0.50): the question is REJECTED for 14 of 20 (0.70); the community that contains the source section scores >= 0.50 in 4 of 20, ranks first in 6 and within the top 10 in 8 (median rank 13 of 415). Under the no-fallback rule this scorer at this cut rejects most questions the corpus can answer. Caveat: sentences lifted from a section are not user-style questions, and several sections sit in generic communities ("Experimental details") that no summary-level judge will score high. Calibrating the cut needs labelled pairs; the 60 gold sentences with their communities are such a set.
+
+## Scope of this plan, stated (2026-10-12)
+
+- The steps of this plan are the six in the status table above plus row 5d. All are DONE as worded in their rows; 5b ran with an empty global view and 5d measured the Jev gate on its own, so there is no stage B run with the Jev gate in its loop.
+- NOT steps of this plan, and not done: (a) a blind 20-question answer comparison, (b) a stage B run with the Jev gate in its loop, (c) calibrating the Jev cut, (d) the conclusion/entailment idea listed under "Out of scope".
+- Open items, with cost: (a) needs a rubric and a reader; (b) is about 95 minutes of solo scoring for 60 questions and would mostly measure rejections, since 14 of 20 in-corpus questions pass no community at 0.50; (c) needs scoring the 60 gold questions solo (about 95 minutes) to fit the cut on labelled pairs; the cut policy itself (what a rejection should cost) is a product decision this plan does not make.
