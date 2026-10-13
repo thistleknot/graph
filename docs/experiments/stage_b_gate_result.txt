@@ -1,0 +1,22 @@
+questions 60 | rejected 35 = 0.58 | answered 25 | agent anthropic/claude-haiku-5.5 | gate cut 0.50 solo
+answered questions whose own community is among the kept partials: 11 of 25
+
+HOPS 1 (answered questions only, n=25)
+  searches 0 | mean shown 18.0 | walk exact 9/25 = 0.36 [0.20,0.55] | hybrid same size 10/25 = 0.40
+  searches 1 | mean shown 31.7 | walk exact 9/25 = 0.36 [0.20,0.55] | hybrid same size 12/25 = 0.48
+  searches 2 | mean shown 43.9 | walk exact 10/25 = 0.40 [0.23,0.59] | hybrid same size 14/25 = 0.56
+  searches 3 | mean shown 49.0 | walk exact 10/25 = 0.40 [0.23,0.59] | hybrid same size 14/25 = 0.56
+
+HOPS 2 (answered questions only, n=25)
+  searches 0 | mean shown 18.0 | walk exact 9/25 = 0.36 [0.20,0.55] | hybrid same size 10/25 = 0.40
+  searches 1 | mean shown 30.2 | walk exact 9/25 = 0.36 [0.20,0.55] | hybrid same size 12/25 = 0.48
+  searches 2 | mean shown 41.0 | walk exact 9/25 = 0.36 [0.20,0.55] | hybrid same size 15/25 = 0.60
+  searches 3 | mean shown 43.9 | walk exact 9/25 = 0.36 [0.20,0.55] | hybrid same size 15/25 = 0.60
+
+HOPS 3 (answered questions only, n=25)
+  searches 0 | mean shown 18.0 | walk exact 9/25 = 0.36 [0.20,0.55] | hybrid same size 10/25 = 0.40
+  searches 1 | mean shown 31.7 | walk exact 9/25 = 0.36 [0.20,0.55] | hybrid same size 12/25 = 0.48
+  searches 2 | mean shown 43.9 | walk exact 9/25 = 0.36 [0.20,0.55] | hybrid same size 15/25 = 0.60
+  searches 3 | mean shown 47.5 | walk exact 9/25 = 0.36 [0.20,0.55] | hybrid same size 15/25 = 0.60
+
+whole system over ALL 60 questions (a rejected question is a miss), every section the traversal saw: hops 1: 10 = 0.17; hops 2: 9 = 0.15; hops 3: 9 = 0.15 | plain hybrid top 18: 31 = 0.52

@@ -110,7 +110,8 @@ Scratch: `.tmp/hop_grid.py`.
 | 5a' mask against top-up, 200 query pairs | DONE | `.tmp/mask_vs_topup.log`: both 0.41 against plain next-13 hybrid 0.505 |
 | 5b Stage B, agent searches 0-3 x hops 1-3 | DONE at 60 questions, GLOBAL VIEW EMPTY (the Jev gate was not in this loop; its own measure is the next row) | `docs/experiments/stage_b_result.txt` (the first 20 questions' earlier run is kept in `stage_b_result_20_questions.txt`), script and pre-registration in `docs/experiments/stage_b.py`. Global view left empty (the traversal is tested, not the Jev gate: that would be about 95 minutes of solo scoring for 60 questions); the 3-search run supplies the 1- and 2-search results as prefixes. Result below. |
 | 5c Cross-encoder precision | DONE (a precision measure for stage B only) | `cross-encoder/ms-marco-MiniLM-L-6-v2` downloaded with curl (this environment's Python SSL fails; curl verifies) into `.tmp/ce_minilm`; relevant pair 8.66 / 1.21, irrelevant -11.4. tau = 25th percentile of the gold sections' scores, fixed before any arm was scored (4.815 over the first 20 questions, 5.116 over the 60). |
-| 5d Jev gate on in-corpus questions (added 2026-10-12) | DONE at 20 questions | `docs/experiments/jev_gate_probe_result.txt`: 14 of 20 questions (0.70) pass NO community at 0.50, so the reject rule would reject them; the source section's own community passes in 4 of 20 (0.20), ranks 1st in 6, within the top 10 in 8, median rank 13 of 415. |
+| 5d Jev gate on in-corpus questions and cut calibration (added 2026-10-12) | DONE at 60 questions | `docs/experiments/jev_gate_probe_result.txt`: at 0.50, 29 of 60 questions (0.48) pass NO community; the source section's own community passes in 13 of 60 (0.22), ranks 1st in 12, top 10 in 24, median rank 20 of 415. Calibration table below. The first 20 questions had suggested 0.70 rejected. |
+| 5e Stage B with the Jev gate in the loop (added 2026-10-12) | DONE at 60 questions | `docs/experiments/stage_b_gate_result.txt`, script `stage_b_gate.py`. Result below. |
 | 6 README and plan outcome | DONE | `README.md`, this file; pushed at `ec0241d` |
 
 Stage B result (60 known-item questions, truth = the exact source section; same-size hybrid control; tau 5.116):
@@ -132,8 +133,33 @@ Still NOT TESTED: the blind 20-question answer comparison; a 60-question stage B
 
 Jev gate on in-corpus questions (20 sentences each taken from one section, solo scoring of all 415 summaries, threshold 0.50): the question is REJECTED for 14 of 20 (0.70); the community that contains the source section scores >= 0.50 in 4 of 20, ranks first in 6 and within the top 10 in 8 (median rank 13 of 415). Under the no-fallback rule this scorer at this cut rejects most questions the corpus can answer. Caveat: sentences lifted from a section are not user-style questions, and several sections sit in generic communities ("Experimental details") that no summary-level judge will score high. Calibrating the cut needs labelled pairs; the 60 gold sentences with their communities are such a set.
 
+Jev cut calibration (60 gold questions, all 415 summaries scored solo; default cut unchanged at 0.50):
+
+```
+cut 0.10 | rejected  4 = 0.07 | own community passes 31 = 0.52
+cut 0.20 | rejected 11 = 0.18 | own community passes 24 = 0.40
+cut 0.30 | rejected 19 = 0.32 | own community passes 19 = 0.32
+cut 0.40 | rejected 27 = 0.45 | own community passes 16 = 0.27
+cut 0.50 | rejected 29 = 0.48 | own community passes 13 = 0.22
+cut 0.60 | rejected 37 = 0.62 | own community passes  9 = 0.15
+cut 0.70 | rejected 42 = 0.70 | own community passes  7 = 0.12
+```
+
+No cut both rejects few questions and keeps the source section's community: the cut is a trade the product owner sets.
+
+Stage B with the Jev gate in the loop (60 questions; gate 0.50 solo, then the RELEVANT: YES|NO check on each passer's partial; no surviving partial = rejected):
+
+```
+rejected 35 of 60 = 0.58 (29 passed no community; 6 more passed one but its partial said NO); answered 25
+own community among the kept partials: 11 of 25
+answered only, hops 2 or 3, 3 searches: walk 9/25 = 0.36 | same-size hybrid 15/25 = 0.60
+whole system over ALL 60 (a rejection is a miss): 9-10 of 60 = 0.15-0.17 | plain hybrid top 18: 31 of 60 = 0.52
+```
+
+Reading: with the gate in the loop the system answers 25 of 60 in-corpus questions, and on those it still finds the source section less often than a plain hybrid list; counting rejections as misses it finds it in 0.15-0.17 of questions against 0.52. These are known-item sentences, not user questions, and the measure is source-section recall, not answer quality.
+
 ## Scope of this plan, stated (2026-10-12)
 
-- The steps of this plan are the six in the status table above plus row 5d. All are DONE as worded in their rows; 5b ran with an empty global view and 5d measured the Jev gate on its own, so there is no stage B run with the Jev gate in its loop.
-- NOT steps of this plan, and not done: (a) a blind 20-question answer comparison, (b) a stage B run with the Jev gate in its loop, (c) calibrating the Jev cut, (d) the conclusion/entailment idea listed under "Out of scope".
+- The steps of this plan are the six in the status table above plus row 5d. All are DONE as worded in their rows; 5b ran with an empty global view and 5d measured the Jev gate on its own, and row 5e is the stage B run with the Jev gate in its loop.
+- NOT steps of this plan, and not done: (a) a blind 20-question answer comparison, (d) the conclusion/entailment idea listed under "Out of scope".
 - Open items, with cost: (a) needs a rubric and a reader; (b) is about 95 minutes of solo scoring for 60 questions and would mostly measure rejections, since 14 of 20 in-corpus questions pass no community at 0.50; (c) needs scoring the 60 gold questions solo (about 95 minutes) to fit the cut on labelled pairs; the cut policy itself (what a rejection should cost) is a product decision this plan does not make.
