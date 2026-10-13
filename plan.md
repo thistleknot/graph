@@ -175,5 +175,5 @@ Reading: no arm is distinguishable from another (random ranking gives a mean ran
 ## Scope of this plan, stated (2026-10-12)
 
 - The steps of this plan are the six in the status table above plus row 5d. All are DONE as worded in their rows; 5b ran with an empty global view and 5d measured the Jev gate on its own, and row 5e is the stage B run with the Jev gate in its loop.
-- NOT steps of this plan, and not done: (a) a HUMAN-read blind comparison (5f is model-judged), (d) the conclusion/entailment idea listed under "Out of scope".
+- NOT steps of this plan, and not done: (a) a HUMAN-read blind comparison (5f is model-judged; the packet `docs/experiments/blind_packet.md`, its key and `blind_score.py` are built and wait for one reader to fill `blind_scores.txt`: 25 items, about 130,000 characters of reading), (d) the conclusion/entailment idea listed under "Out of scope".
 - Open items, with cost: (a) needs a rubric and a reader; (b) is about 95 minutes of solo scoring for 60 questions and would mostly measure rejections, since 14 of 20 in-corpus questions pass no community at 0.50; (c) needs scoring the 60 gold questions solo (about 95 minutes) to fit the cut on labelled pairs; the cut policy itself (what a rejection should cost) is a product decision this plan does not make.
