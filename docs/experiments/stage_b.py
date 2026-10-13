@@ -1,9 +1,10 @@
-"""scratch: plan.md step 5b + 5c, scaled to 20 questions. Agent searches 0..3 x hops 1..3 against a same-size hybrid control; recall and cross-encoder precision.
-PRE-REGISTERED before any arm is scored (written 2026-10-12):
-  questions   the first 20 body-sentence queries of ingest_arxiv_sparsevec.gold; truth = the exact section the sentence came from (paper-level beside it)
+"""scratch: plan.md step 5b + 5c (60 questions). Agent searches 0..3 x hops 1..3 against a same-size hybrid control; recall and cross-encoder precision.
+PRE-REGISTERED before any arm is scored (written 2026-10-12; widened from 20 to 60 questions the same day, after the 20-question run, because plan.md asks for 60; tau is recomputed
+  over the 60 gold sections BEFORE the 60-question arms are scored; the 20-question numbers are kept in stage_b_result_20.txt):
+  questions   the first 60 body-sentence queries of ingest_arxiv_sparsevec.gold; truth = the exact section the sentence came from (paper-level beside it)
   agent       claude-haiku-5.5 via summarize_clusters.chat, global view EMPTY (stage B tests the traversal, not the Jev gate), queries=3 per hop setting; the result for k searches is the union of
               the question's subgraph and the agent's first k searches (a 3-search run contains the 1- and 2-search runs as prefixes)
-  precision   share of shown sections whose cross-encoder (ms-marco-MiniLM-L-6-v2) score for (question, section) is >= tau; tau = 25th percentile of the cross-encoder scores of the 20 gold sections
+  precision   share of shown sections whose cross-encoder (ms-marco-MiniLM-L-6-v2) score for (question, section) is >= tau; tau = 25th percentile of the cross-encoder scores of the gold sections
   control     the top n of the hybrid RRF list, n = how many sections that arm showed
   report      one number per arm with n, Wilson 95%, paired counts against the control
 Model replies are cached by prompt hash in .tmp/stage_b_cache.json so a rerun is free. No governing spec beyond plan.md."""
@@ -20,7 +21,7 @@ import ingest_arxiv_sparsevec as ing
 import section_corpus as sc, section_graphrag as g, section_store as st, sparsevec_store as ss
 import summarize_clusters as scz
 
-N, HOPS, KS = 20, (1, 2, 3), (0, 1, 2, 3)
+N, HOPS, KS = 60, (1, 2, 3), (0, 1, 2, 3)
 AGENT = "anthropic/claude-haiku-5.5"
 CACHE = os.path.join(HERE, "stage_b_cache.json")
 OUT = os.path.join(HERE, "stage_b_runs.json")

@@ -108,20 +108,23 @@ Scratch: `.tmp/hop_grid.py`.
 | 4 Strip shows every section of every query, hops, masked count | DONE | `src/section_query_panel.py` (P3, P5), `tests/test_section_query_panel.py` |
 | 5a Stage A, hops 1/2/3 against same-length hybrid, 200 queries | DONE | `.tmp/hop_grid_stage_a.log`: walk 0.445-0.450 against hybrid 0.555, hops identical |
 | 5a' mask against top-up, 200 query pairs | DONE | `.tmp/mask_vs_topup.log`: both 0.41 against plain next-13 hybrid 0.505 |
-| 5b Stage B, agent searches 0-3 x hops 1-3 | DONE at 20 questions (not 60) | `docs/experiments/stage_b_result.txt`, script and pre-registration in `docs/experiments/stage_b.py`. Global view left empty (the traversal is tested, not the Jev gate); the 3-search run supplies the 1- and 2-search results as prefixes. Result below. |
-| 5c Cross-encoder precision | DONE | `cross-encoder/ms-marco-MiniLM-L-6-v2` downloaded with curl (this environment's Python SSL fails; curl verifies) into `.tmp/ce_minilm`; relevant pair 8.66 / 1.21, irrelevant -11.4. tau = 4.815 = 25th percentile of the 20 gold sections' scores, fixed before any arm was scored. |
+| 5b Stage B, agent searches 0-3 x hops 1-3 | DONE at 60 questions | `docs/experiments/stage_b_result.txt` (the first 20 questions' earlier run is kept in `stage_b_result_20_questions.txt`), script and pre-registration in `docs/experiments/stage_b.py`. Global view left empty (the traversal is tested, not the Jev gate: that would be about 95 minutes of solo scoring for 60 questions); the 3-search run supplies the 1- and 2-search results as prefixes. Result below. |
+| 5c Cross-encoder precision | DONE | `cross-encoder/ms-marco-MiniLM-L-6-v2` downloaded with curl (this environment's Python SSL fails; curl verifies) into `.tmp/ce_minilm`; relevant pair 8.66 / 1.21, irrelevant -11.4. tau = 25th percentile of the gold sections' scores, fixed before any arm was scored (4.815 over the first 20 questions, 5.116 over the 60). |
 | 6 README and plan outcome | DONE | `README.md`, this file; pushed at `ec0241d` |
 
-Stage B result (20 known-item questions, truth = the exact source section; one number per arm, same-size hybrid control):
+Stage B result (60 known-item questions, truth = the exact source section; same-size hybrid control; tau 5.116):
 
 ```
-hops 1, 0 searches: walk 10/20 = 0.50 | hybrid 12/20 = 0.60 | paired only-walk/only-hybrid 0/2
-hops 2, 3 searches: walk 12/20 = 0.60 | hybrid 14/20 = 0.70 | paired 1/3   (paper-level 0.85 against 0.70)
-hops 3, 3 searches: walk 12/20 = 0.60 | hybrid 13/20 = 0.65 | paired 1/2   (paper-level 0.85 against 0.70)
-precision (cross-encoder >= tau): walk 0.082-0.092, hybrid 0.083-0.094 in every cell
-sections shown: 18 with 0 searches, 28-29 with 1, 35-37 with 2, 39-41 with 3 (the agent stopped by ANSWER in 59 of 60 runs, usually after 1-2 searches)
+hops 1, 0 searches: walk 22/60 = 0.37 | hybrid 31/60 = 0.52 | paired only-walk/only-hybrid 0/9
+hops 2, 0 searches: walk 24/60 = 0.40 | hybrid 31/60 = 0.52 | paired 1/8
+hops 3, 0 searches: walk 24/60 = 0.40 | hybrid 31/60 = 0.52 | paired 1/8
+hops 2, 3 searches: walk 29/60 = 0.48 | hybrid 40/60 = 0.67 | paired 2/13 (two-sided sign test p about 0.007)
+hops 3, 3 searches: walk 26/60 = 0.43 | hybrid 39/60 = 0.65 | paired 1/14
+paper-level, 3 searches: walk 0.68-0.73, hybrid 0.73 in every hop setting
+precision (cross-encoder >= tau): walk 0.042-0.051, hybrid 0.046-0.058 in every cell
+sections shown: 18 with 0 searches, 30 with 1, 39 with 2, 42-43 with 3 (the agent stopped by ANSWER in 177 of 180 runs)
 ```
 
-Reading: hops 1, 2 and 3 do not move exact-section recall (0.50 / 0.55 / 0.55 at 0 searches); the agent's searches add 20 or more sections and 0-1 hits, while the same-size hybrid list gains 1-2; precision is a tie. The one thing that moved is paper-level recall with 2-3 searches at hops 2-3 (0.80-0.85 against a flat 0.70, 3 more questions of 20): the searches find the right paper more often without finding the right section. n = 20, intervals about +-0.2: none of this is significant, and it does not measure answer quality.
+Reading: on this instrument the graph walk is WORSE than a plain hybrid list of the same size at finding the source section, at every hop setting and every search count; hops 1, 2 and 3 are not distinguishable (0.37 / 0.40 / 0.40 at 0 searches); the agent's searches lift the walk from 0.40 to 0.48 but the hybrid list lifts more (0.52 to 0.67) at the same size; precision is a small loss. The paper-level lead seen in the first 20 questions (0.85 against 0.70) did not survive 60 (0.73 against 0.73). This does not measure answer quality, and the global view was empty.
 
 Still NOT TESTED: the blind 20-question answer comparison; a 60-question stage B; stage B with the Jev global view in the loop.
