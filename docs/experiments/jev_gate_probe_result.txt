@@ -1,0 +1,22 @@
+[  85s] 1/20 passed 0 best 0.196 | own community c44 score 0.030 rank 33 of 415
+[ 174s] 2/20 passed 4 best 0.850 | own community c35 score 0.850 rank 1 of 415
+[ 261s] 3/20 passed 0 best 0.291 | own community c724 score 0.027 rank 124 of 415
+[ 348s] 4/20 passed 0 best 0.098 | own community c678 score 0.030 rank 60 of 415
+[ 433s] 5/20 passed 6 best 0.901 | own community c17 score 0.901 rank 1 of 415
+[ 523s] 6/20 passed 2 best 0.735 | own community c740 score 0.156 rank 12 of 415
+[ 608s] 7/20 passed 0 best 0.308 | own community c6 score 0.063 rank 107 of 415
+[ 697s] 8/20 passed 0 best 0.239 | own community c32 score 0.239 rank 1 of 415
+[ 783s] 9/20 passed 0 best 0.378 | own community c30 score 0.046 rank 168 of 415
+[ 873s] 10/20 passed 2 best 0.861 | own community c32 score 0.861 rank 1 of 415
+[ 963s] 11/20 passed 0 best 0.072 | own community c7 score 0.028 rank 324 of 415
+[1052s] 12/20 passed 0 best 0.260 | own community c21 score 0.042 rank 256 of 415
+[1138s] 13/20 passed 2 best 0.566 | own community c40 score 0.566 rank 1 of 415
+[1226s] 14/20 passed 0 best 0.257 | own community c148 score 0.118 rank 14 of 415
+[1315s] 15/20 passed 0 best 0.375 | own community c12 score 0.085 rank 33 of 415
+[1401s] 16/20 passed 1 best 0.573 | own community c16 score 0.225 rank 10 of 415
+[1489s] 17/20 passed 0 best 0.334 | own community c22 score 0.334 rank 1 of 415
+[1575s] 18/20 passed 0 best 0.137 | own community c2 score 0.043 rank 6 of 415
+[1664s] 19/20 passed 0 best 0.461 | own community c28 score 0.126 rank 51 of 415
+[1752s] 20/20 passed 0 best 0.216 | own community c9 score 0.085 rank 12 of 415
+
+questions 20 | rejected (no community passed 0.50): 14 = 0.70 | own community passes: 4 = 0.20 | own rank median 13, top-10: 8, top-1: 6

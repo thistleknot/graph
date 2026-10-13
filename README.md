@@ -76,7 +76,7 @@ and `COMMUNITY_JEV_THRESHOLD` sets the independent yes-probability cutoff (defau
 
 Measured (`.tmp/hop_grid_stage_a.log`, `.tmp/mask_vs_topup.log`, 200 queries each): the graph walk does **not** beat plain hybrid retrieval on
 finding the source section of a sentence (0.445 to 0.450 against 0.555; second query 0.41 against 0.505), hops 1, 2 and 3 score the same, and
-`topup` ties `mask`. Stage B (60 questions, `docs/experiments/stage_b_result.txt`): the walk is worse than a same-size hybrid list at finding the source section at every hop setting and search count (0.48 against 0.67 with 3 searches at hops 2, paired 2 against 13), hops 1-3 are not distinguishable, and cross-encoder precision is a small loss. Answer quality is not measured. That test cannot see whether hops improve an answer; answer quality is not measured.
+`topup` ties `mask`. Stage B (60 questions, `docs/experiments/stage_b_result.txt`): the walk is worse than a same-size hybrid list at finding the source section at every hop setting and search count (0.48 against 0.67 with 3 searches at hops 2, paired 2 against 13), hops 1-3 are not distinguishable, and cross-encoder precision is a small loss. Answer quality is not measured. Jev gate (`docs/experiments/jev_gate_probe_result.txt`, 20 in-corpus questions): at 0.50 no community passes for 14 of 20 (0.70), so the reject rule would reject them; the source section's own community passes in 4 of 20 and ranks within the top 10 in 8. That test cannot see whether hops improve an answer; answer quality is not measured.
 
 ### What the map looks like
 
