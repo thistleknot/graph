@@ -135,5 +135,25 @@ def test_strip_height_follows_the_longest_column_and_the_figure_is_that_tall():
     res, rows, comm = world()
     XY = np.random.default_rng(0).normal(size=(10, 2))
     fig = qp.draw_strip([res], [rows], [comm], XY, np.arange(10) % 8, width_in=8.0, dpi=50)
-    assert abs(fig.get_figheight() - qp.strip_height_in([qp.column_lines(res, rows, comm)])) < 1e-9
+    assert abs(fig.get_figheight() - qp.strip_height_in([qp.column_lines(res, rows, comm)], [res["question"]])) < 1e-9
     assert fig.get_figwidth() == 8.0
+
+
+def test_a_monospace_line_is_cut_to_the_column_width_and_spacing_is_kept_P6():
+    short = "c21  Long-term memory  (1024 sections)"
+    assert qp.fit_line(short) == short                                           # spacing inside a fitting line is not collapsed
+    long = "▸· h3 2602_06036_methods#0  c94  " + "x" * 90
+    cut = qp.fit_line(long)
+    assert len(cut) == qp.KEY_LINE_MAX and cut.endswith("…") and cut.startswith("▸· h3 2602_06036_methods#0  c94  ")
+    assert qp.fit_line("x" * qp.KEY_LINE_MAX) == "x" * qp.KEY_LINE_MAX            # exactly the width: no ellipsis
+
+
+def test_a_long_question_is_wrapped_inside_its_column_and_the_header_grows_for_it_P6():
+    q = "How do LLM-agent memory taxonomies distinguish function/content from storage form? Explain factual memory, textual storage, latent representations stored outside the backbone."
+    lines = qp.title_lines(q)
+    assert len(lines) == 3 and all(len(l) <= qp.TITLE_WRAP for l in lines)       # 175 characters at 66 a line
+    assert lines[0].startswith('"How do LLM-agent') and lines[-1].endswith('backbone."')
+    cols = [[("b", "x")] * 3]
+    one = qp.strip_height_in(cols, ["short question?"])
+    assert one == qp.strip_height_in(cols) == qp.PAD_IN + 4.2 + qp.LINE_IN * 3     # a one-line title is the padding already there
+    assert abs(qp.strip_height_in(cols, ["short?", q]) - (one + 2 * qp.TITLE_LINE_IN)) < 1e-9     # two wrapped lines beyond the first, taken from the longest question

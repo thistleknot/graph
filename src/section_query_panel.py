@@ -18,6 +18,8 @@ P2  The strip is as wide as the base graphic and as tall as its longest column n
 P4  (operator 2026-10-08: "we need to get the paper name if we're going to show 'conclusion' 'introduction'") WHEN the paper's title is known (section_store.paper_titles) every section line of the
     SUBGRAPH, HOP and TYPICAL lists ends with it after the heading, the heading cut to SECTION_WITH_PAPER characters and the title to PAPER_CHARS; a book or a paper without a title shows the heading
     alone, as before.
+P6  (operator 2026-10-14: "can we fix the overlapping text?") Each question is wrapped to TITLE_WRAP characters per line inside its own column, never drawn as one line across its neighbours; the
+    header grows by one TITLE_LINE_IN per wrapped line of the longest question beyond the first, and the strip height and the map's top follow it.
 P3  (operator 2026-10-08: "update the bottom queries based on these hops and show the # of hops and the size of the total subgraph selected for and its mini composition for entities";
     2026-10-09: hops and agent queries are parameters, each query a masked subgraph of 13) WHEN a result carries a ReAct traversal (`traversal`, `nodes`) the column gains a TRAVERSAL block after
     the ANSWER: the hops each query walked, the sections seen, how many each hop holds, the sections read, why it stopped, the communities shown to the agent, one line per query (how many of the
@@ -44,6 +46,9 @@ QUESTIONS = ["What are the core speculative-decoding methods, and how do they di
              "How do LLM-agent memory taxonomies distinguish function/content from storage form? Explain factual memory, textual storage, latent representations stored outside the backbone, and parametric weight-based memory; say which labels can overlap and compare the storage mechanisms.",
              "How do researchers evaluate language-model safety? Distinguish evaluation protocols and metrics from interventions intended to improve safety."]
 TITLE_CHARS, WRAP, LINE_IN, PAD_IN = 46, 92, 0.165, 1.0
+KEY_LINE_MAX = 96                                              # P6: characters of a monospace line (9 pt) that fit a column
+QUERY_CHARS = 36                                              # P6: characters of a query's words in its QUERY heading, so the bold heading ends inside its column
+TITLE_WRAP, TITLE_LINE_IN = 66, 0.2                           # P6: characters of a question per title line at 12 pt bold in a column, and the inches one title line takes
 SECTION_WITH_PAPER, PAPER_CHARS = 24, 40                       # P4: a section heading and its paper's title share one line
 TINTS = ["#1f77b4", "#2ca02c", "#9467bd", "#8c564b", "#17becf"]
 QUERY_COLOURS = {2: "#e6c200", 3: "#7fbf3f", 4: "#3f9fbf"}                         # P3: query 1 is the red stars and orange neighbours; each search of the agent has a colour
@@ -119,7 +124,7 @@ def column_lines(res: dict, rows: dict, comm: dict, titles: dict[str, str] | Non
             len(nodes), len(queries), "query" if len(queries) == 1 else "queries", len({rows[n["ord"]]["community"] for n in nodes}))))
         for q in queries:
             here = [n for n in nodes if n.get("query", 1) == q]
-            out.append(("h", 'QUERY %d  "%s"  - %d sections' % (q, shorten(res["question"] if q == 1 else here[0].get("words", ""), 60), len(here))))
+            out.append(("h", 'QUERY %d  "%s"  - %d sections' % (q, shorten(res["question"] if q == 1 else here[0].get("words", ""), QUERY_CHARS), len(here))))
             for n in here:
                 o = n["ord"]
                 out.append(("k", "%s%s h%d %s  c%d  %s" % (mark(o), "★" if n["hop"] == 0 else "·", n["hop"], key(o), rows[o]["community"], named(o, TITLE_CHARS))))
@@ -139,9 +144,21 @@ def column_lines(res: dict, rows: dict, comm: dict, titles: dict[str, str] | Non
     return out
 
 
-def strip_height_in(columns: list[list[tuple[str, str]]]) -> float:
-    """P2. Guarantee: inches the strip needs: the longest column's lines plus the map and padding."""
-    return PAD_IN + 4.2 + LINE_IN * max(len(c) for c in columns)
+def fit_line(line: str, n: int = KEY_LINE_MAX) -> str:
+    """P6. Guarantee: `line` unchanged (spacing kept) when it fits n characters, else cut to n - 1 and ended with an ellipsis, so a monospace line stays inside its column."""
+    return line if len(line) <= n else line[:n - 1] + "…"
+
+
+def title_lines(question: str) -> list[str]:
+    """P6. Guarantee: the quoted question wrapped to TITLE_WRAP characters, so it stays inside its own column."""
+    return textwrap.wrap('"%s"' % question, TITLE_WRAP)
+
+
+def strip_height_in(columns: list[list[tuple[str, str]]], questions: list[str] = ()) -> float:
+    """P2, P6. Guarantee: inches the strip needs: the longest column's lines plus the map and padding, plus a title line for each wrapped line of the longest question beyond the first
+    (PAD_IN already holds one)."""
+    extra = max((len(title_lines(q)) - 1 for q in questions), default=0) * TITLE_LINE_IN
+    return PAD_IN + 4.2 + LINE_IN * max(len(c) for c in columns) + max(extra, 0.0)
 
 
 def draw_strip(results: list[dict], rows_all: list[dict], comm_all: list[dict], XY: np.ndarray, lab: np.ndarray, width_in: float, dpi: int = 100, titles: dict[str, str] | None = None):
@@ -150,14 +167,16 @@ def draw_strip(results: list[dict], rows_all: list[dict], comm_all: list[dict], 
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     cols = [column_lines(r, rows_all[i], comm_all[i], titles) for i, r in enumerate(results)]
-    h = strip_height_in(cols)
+    questions = [r["question"] for r in results]
+    h = strip_height_in(cols, questions)
+    head = 0.55 + max((len(title_lines(q)) - 1 for q in questions), default=0) * TITLE_LINE_IN       # P6: inches from the strip's top to the map's top
     fig = plt.figure(figsize=(width_in, h), dpi=dpi)
     n = len(results)
     w = 0.94 / n
     map_h = 4.0 / h
     for i, r in enumerate(results):
         x0 = 0.03 + i * w
-        ax = fig.add_axes([x0, 1 - (0.55 / h) - map_h, w - 0.015, map_h])
+        ax = fig.add_axes([x0, 1 - (head / h) - map_h, w - 0.015, map_h])
         ax.scatter(XY[:, 0], XY[:, 1], s=0.25, c="#dcdcdc", linewidths=0, rasterized=True)
         for t, (c, _) in enumerate(r["partials"]):
             m = lab == c
@@ -172,10 +191,11 @@ def draw_strip(results: list[dict], rows_all: list[dict], comm_all: list[dict], 
         ax.set_xticks([]); ax.set_yticks([])
         for sp in ax.spines.values():
             sp.set_color("#999999")
-        fig.text(x0, 1 - 0.18 / h, '"%s"' % r["question"], fontsize=13, fontweight="bold", va="top")
-        y = 1 - (0.55 / h) - map_h - 0.12 / h
+        for t, ln in enumerate(title_lines(r["question"])):                                    # P6: the question wrapped inside its own column
+            fig.text(x0, 1 - (0.18 + t * TITLE_LINE_IN) / h, ln, fontsize=12, fontweight="bold", va="top")
+        y = 1 - (head / h) - map_h - 0.12 / h
         for style, line in cols[i]:
-            fig.text(x0, y, line, fontsize=10.5 if style == "h" else 9, fontweight="bold" if style == "h" else "normal",
+            fig.text(x0, y, fit_line(line) if style == "k" else line, fontsize=10.5 if style == "h" else 9, fontweight="bold" if style == "h" else "normal",
                      family="monospace" if style == "k" else "sans-serif", va="top", color="#8b0000" if style == "h" else "black")
             y -= (LINE_IN * (1.35 if style == "h" else 1.0)) / h
     return fig
