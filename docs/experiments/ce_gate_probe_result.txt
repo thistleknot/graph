@@ -1,0 +1,14 @@
+questions 60 | pool 50 sections | pass score 0.000
+gate rejects 7 of 60 questions (no section at/above the pass score); best section score per question: median 6.36, min -6.63
+source section in the pool for 42 of 60; it passes for 39 of those; cross-encoder rank of the source inside the pool: median 1, rank 1 in 35
+in-corpus questions rejected at each pass score: -4.00: 3 of 60 | -2.00: 4 of 60 | 0.00: 7 of 60 | 2.00: 11 of 60 | 5.12: 23 of 60
+extra question 'How do LLM agents store and retrieve long-term memory?': 24 of 50 sections pass; best 6.27
+off-topic question 'How do I bake sourdough bread at home?': 0 of 50 sections pass; best -2.58
+off-topic question 'Who won the 2022 football world cup?': 2 of 50 sections pass; best 4.36
+off-topic question 'What is the capital of Australia?': 0 of 50 sections pass; best -4.50
+off-topic question 'How do I change a flat tire on a car?': 0 of 50 sections pass; best -6.50
+off-topic question 'What are the best hiking trails in Colorado?': 0 of 50 sections pass; best -6.79
+off-topic question 'What is a good recipe for chicken soup?': 1 of 50 sections pass; best 1.87
+off-topic question 'How many calories are in a banana?': 0 of 50 sections pass; best -7.14
+off-topic question 'Which team won the last basketball championship?': 0 of 50 sections pass; best -0.45
+off-topic questions (8) accepted at each pass score: -4.00: 4 | -2.00: 3 | 0.00: 2 | 2.00: 1 | 5.12: 0

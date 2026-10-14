@@ -7,8 +7,8 @@ synthesis"; "leverage pgvector in docker"; approved plan C:\\Users\\user\\.claud
     SEED      pgvector exact cosine over the centred section vectors + Postgres full text over the body, fused by RRF k=60   G1
     EXPAND    one hop over sect_edge_sym from each seed, strongest edges first; neighbours ranked by RRF over seed lists     G2
     CANDIDATE every multi-section community with a draft summary, largest first                                               G15
-    SCORE     every candidate summary gets an independent Jev-Style NOUL relevance score in bounded batches                   G15
-    PARTIAL   generation calls only for communities above the relevance threshold, after all scores are collected             G15
+    SCORE     the cross-encoder scores (question, section) for the CE_POOL best hybrid sections                                 G15
+    PARTIAL   generation calls only for the communities holding a section at/above CE_TAU, after all scores are collected    G15
     REDUCE    one query-focused summary of the partial answers                                                               G4
     ANSWER    one call over (global answer, evidence): the typical section of each of the top 3 communities, then the 6          G5, G7
               subgraph sections nearest the question; every claim cites a section key
@@ -58,13 +58,16 @@ G14 (operator 2026-10-09: "the global summarized answer (over partials) is input
     the evidence came from the question's first retrieval alone, so a search of the agent's could not change the answer unless it read what it found.
 G5  The final prompt carries each section whole up to `section_chars` and says so when it cuts; a cut is never silent. Sections are keyed doc_id#section_idx and the
     section header carries NO community number: with "community 12" in the header the model cited [c12] for sections (observed 2026-10-07, three times in three questions).
-G15 (operator 2026-10-12): score EVERY multi-section community with a draft summary using independent Jev-Style NOUL relevance questions, ONE summary per request by default (COMMUNITY_JEV_BATCH_SIZE, 1 to 128); one request runs at a time,
-    with one serialized successor prefetched in CPU RAM. Measured 2026-10-12: a score is a pair score only at 1 per request; at 64 per request the same materials-science summaries
-    scored 0.74-0.86 for speculative decoding, memory and safety queries (0.03 alone) and the speculative-decoding community scored 0.25 (0.77 alone). Only after all scores are collected are
-    partial answers generated for communities at/above COMMUNITY_JEV_THRESHOLD; each partial opens RELEVANT: YES|NO, a NO is kept in `partials_rejected` and never reduced.
-    Do not cap this global lens to the query's seed/subgraph communities or nearest-summary top-k.
-    NO FALLBACK (operator 2026-10-12: "fallback = failure ... if no community came back, I would reject the question"): when no community passes the cut, or none of the passers' partials holds up,
-    the question is REJECTED (`question_rejected`): no global view, no agent, no evidence, no answer. Observed with the 0.8B scorer at 0.50: the agent-memory query is rejected (best c10 .449; c21 scored .182).
+G15 (operator 2026-10-13: "I now officially regret JEV ... just use query + section with minilm cross-encoder"; it replaces the 2026-10-12 Jev-Style community-summary gate, which at 0.50 rejected
+    the agent-memory question (best c10 .449, c21 .182) and 29 of 60 in-corpus gold questions) The gate scores SECTIONS, not summaries: the cross-encoder cross-encoder/ms-marco-MiniLM-L-6-v2
+    (CE_DIR) scores (question, section) for the CE_POOL best sections of the hybrid ranking; a section at/above CE_TAU = 0.0 is a pass: logit 0 is the model's own relevant/irrelevant boundary. Measured 2026-10-13 (docs/experiments/ce_gate_probe_result.txt):
+    on the 60 gold sentence questions the 25th percentile of the gold sections' scores (5.116, the stage-B precision cut) rejects 23 and 2.0 rejects 11; on the panel's three long survey questions the best
+    section scores 2.64 / 2.38 / 1.66, so 2.0 rejected two of the three (memory taxonomy, safety) and no score cut separates them from an off-topic question (a football question scored 4.36).
+    0.0 rejects 7 of 60 and accepts 2 of 8 off-topic questions; the partial's own RELEVANT check still follows. The communities holding a passing section (candidates only) are the ones summarised: only after all scores are collected are
+    partial answers generated for them, best section score first; each partial opens RELEVANT: YES|NO, a NO is kept in `partials_rejected` and never reduced.
+    NO FALLBACK (operator 2026-10-12: "fallback = failure ... if no community came back, I would reject the question"): when no section passes, the question is REJECTED (`question_rejected`):
+    no global view, no agent, no evidence, no answer. Amended 2026-10-13: a question with a passing section is not rejected because the partials said NO; with the Jev gate removed the cross-encoder is
+    the judge of relevance, and in the first run the memory question's six passing sections (all c21) were rejected by c21's summary-level NO. The global view is then empty, never substituted.
 """
 from __future__ import annotations
 
@@ -88,6 +91,7 @@ ANSWER_BUDGET_CHARS, MIN_SECTION_CHARS = 270000, 1200                           
 ACTIONS, KEY_ACTIONS = ("READ", "SEARCH", "ANSWER"), ("READ",)
 RRF_K, POOL, PER_SEED, MAX_CANDIDATES = 60, 100, 5, 12
 CENTRE_K, CLOSEST_K, MIN_MEMBERS = 3, 6, 2      # G7: typical sections of the top 3 communities holding >= 2 subgraph sections, then the 6 subgraph sections nearest the question
+CE_DIR, CE_TAU, CE_POOL, CE_CHARS = os.path.expanduser("~/models/ce-ms-marco-minilm-l6"), 0.0, 50, 2500   # G15: the cross-encoder, the pass score, sections scored, characters of a section it is given
 MAP_PROMPT = """You answer ONE question using ONLY the summary of one cluster of sections from research papers.
 Question: {question}
 
@@ -566,7 +570,7 @@ class SectionGraph:
         if self.exclude_genre:
             candidates = [c for c in candidates if c not in self.genre]
         return {"question": question, "seeds": seeds, "arms": arms, "subgraph": sub, "lab_of": lab_of, "qd": qd, "col": self.col,
-                "candidates": candidates}
+                "candidates": candidates, "ranked": r["ranked"]}
 
     def items(self, got: dict, centre_k: int = CENTRE_K, closest_k: int = CLOSEST_K) -> list[dict]:
         """G5, G7. Guarantee: the evidence list for the final step: the centrepoint of each of the top `centre_k` communities (by how many subgraph sections they hold), then the `closest_k`
@@ -590,20 +594,47 @@ class SectionGraph:
         return out
 
 
+_CE: dict = {}
+
+
+def cross_scores(question: str, texts: list[str]) -> list[float]:
+    """G15. Guarantee: the cross-encoder's logit for each (question, text), in order, 16 pairs per forward pass; a text is cut to the model's 512 tokens (question kept). Relevant pairs
+    score about 1 to 9, an unrelated pair about -11."""
+    if not _CE:
+        for name in ("torchvision", "torchaudio"):               # this environment's torchvision/torchaudio do not match its torch; transformers only needs torch
+            sys.modules[name] = None
+        from transformers import AutoModelForSequenceClassification, AutoTokenizer
+        _CE["tok"], _CE["model"] = AutoTokenizer.from_pretrained(CE_DIR), AutoModelForSequenceClassification.from_pretrained(CE_DIR).eval()
+    import torch
+    out = []
+    for i in range(0, len(texts), 16):
+        part = texts[i:i + 16]
+        batch = _CE["tok"]([question] * len(part), part, padding=True, truncation="only_second", max_length=512, return_tensors="pt")
+        with torch.no_grad():
+            out += _CE["model"](**batch).logits.squeeze(-1).tolist()
+    return out
+
+
+def passing_communities(scores: list[dict], threshold: float, candidates: set[int]) -> list[int]:
+    """G15. Guarantee: the candidate communities holding a section whose score is at/above `threshold`, the one with the best-scoring section first."""
+    best: dict[int, float] = {}
+    for s in scores:
+        if s["score"] >= threshold and s["community"] in candidates:
+            best[s["community"]] = max(best.get(s["community"], s["score"]), s["score"])
+    return sorted(best, key=lambda c: -best[c])
+
+
 def global_view(sg: SectionGraph, got: dict, model: str) -> dict:
-    """G15. Score every candidate summary in bounded Jev-Style batches, then generate partials only for scores at/above threshold and reduce them."""
+    """G15. Score the CE_POOL best hybrid sections against the question with the cross-encoder, then generate partials for the communities of the passing sections and reduce them."""
     import summarize_clusters as scz
-    import community_reranker as cr
-    threshold = cr.relevance_threshold()
-    summary_pages = st.summary_batches(sg.conn, sg.build, got["candidates"], cr.PAGE_SIZE)
-    community_scores, score_batches = cr.score_communities(got["question"], summary_pages)
-    scored_ids = {row["community"] for row in community_scores}
-    missing = set(got["candidates"]) - scored_ids
-    if missing:
-        raise RuntimeError("community summaries missing from JEV scoring: %s" % sorted(missing)[:20])
-    selected = [row["community"] for row in community_scores if row["score"] >= threshold]
-    # Finish scoring the full candidate set before starting generation. The
-    # generation model now writes partial answers; it does not repeat the gate.
+    pool = got["ranked"][:CE_POOL]
+    rows = st.sections(sg.conn, sg.build, pool)
+    lab = st.community_of(sg.conn, sg.build, pool)
+    marks = cross_scores(got["question"], [" ".join(rows[o]["text"].split())[:CE_CHARS] for o in pool])
+    scores = [{"ord": o, "key": "%s#%s" % (rows[o]["doc_id"], rows[o]["section_idx"]), "community": lab.get(o), "score": s} for o, s in zip(pool, marks)]
+    threshold = CE_TAU
+    selected = passing_communities(scores, threshold, set(got["candidates"]))
+    # Finish scoring before starting generation: the generation model writes partial answers; it does not repeat the gate.
     partials, rejected, unparsed = [], [], 0
     for page in st.summary_batches(sg.conn, sg.build, selected, 32):
         for c, rec in page.items():
@@ -615,22 +646,21 @@ def global_view(sg: SectionGraph, got: dict, model: str) -> dict:
             else:                                    # G15: a refusal is never evidence; it is kept for audit (the score said relevant, the summary's own reader said not)
                 rejected.append({"community": c, "verdict": "unparsed" if relevant is None else "NO", "reply": reply})
                 unparsed += relevant is None
-    return {"partials": partials, "not_relevant": len(community_scores) - len(selected), "unparsed": unparsed, "partials_rejected": rejected,
-            "community_scores": community_scores, "community_threshold": threshold, "community_score_batches": score_batches,
-            "question_rejected": rejection_reason(community_scores, threshold, partials),
+    partials.sort(key=lambda p: selected.index(p[0]))            # best-scoring section's community first
+    return {"partials": partials, "not_relevant": len(scores) - sum(1 for s in scores if s["score"] >= threshold), "unparsed": unparsed, "partials_rejected": rejected,
+            "section_scores": scores, "section_threshold": threshold, "question_rejected": rejection_reason(scores, threshold),
             "global_answer": scz.chat(model, reduce_prompt(got["question"], partials))["content"] if partials else ""}
 
 
-def rejection_reason(scores: list[dict], threshold: float, partials: list) -> str:
-    """G15. Guarantee: '' when at least one community passed the Jev-Style cut AND its partial held up (RELEVANT: YES); else the sentence that rejects the question. Nothing is
-    substituted for a missing global view (operator 2026-10-12: "fallback = failure ... if no community came back, I would reject the question")."""
-    if partials:
+def rejection_reason(scores: list[dict], threshold: float) -> str:
+    """G15. Guarantee: '' when at least one section passed the cross-encoder cut; else the sentence that rejects the question. Only the cross-encoder rejects: a community whose partial said
+    RELEVANT: NO is left out of the global view, and a question whose passing sections had no partial to show goes on with an empty global view (observed 2026-10-13: the memory question's six passing
+    sections were all in one community, c21, and its summary's NO rejected the question; nothing is substituted for the missing global view)."""
+    if any(s["score"] >= threshold for s in scores):
         return ""
     best = max(scores, key=lambda s: s["score"]) if scores else None
-    top = " (best score %.3f, community c%d, threshold %.2f)" % (best["score"], best["community"], threshold) if best else ""
-    passed = sum(1 for s in scores if s["score"] >= threshold)
-    return ("Question rejected: no community summary passed the Jev-Style relevance check%s." % top if not passed else
-            "Question rejected: %d community summaries passed the Jev-Style check but none held up when summarised against the question." % passed)
+    top = " (best %.2f, %s, pass score %.2f)" % (best["score"], best["key"], threshold) if best else ""
+    return "Question rejected: no section passed the cross-encoder relevance check%s." % top
 
 
 def answer(sg: SectionGraph, question: str, k: int = 3, model: str | None = None, per_seed: int = PER_SEED, m: int = MAX_CANDIDATES) -> dict:

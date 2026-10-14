@@ -84,25 +84,25 @@ def test_a_traversal_adds_the_hops_the_size_the_entities_each_querys_walk_and_on
 
 def test_the_global_header_keeps_scored_passed_and_kept_apart_and_names_a_rejected_partial():
     res, rows, comm = world()
-    res["community_scores"] = [{"community": c, "score": s} for c, s in ((5, 0.8), (7, 0.6), (9, 0.2))]
-    res["community_threshold"], res["community_score_batches"] = 0.5, [{"candidates": 1}] * 3
+    res["section_scores"] = [{"ord": o, "key": "k%d" % o, "community": c, "score": s} for o, (c, s) in enumerate(((5, 8.1), (5, 6.0), (7, 5.5), (9, 0.2)))]
+    res["section_threshold"] = 5.116
     res["partials_rejected"] = [{"community": 7, "verdict": "NO", "reply": "RELEVANT: NO"}]
     text = "\n".join(l for _, l in qp.column_lines(res, rows, comm))
-    assert "GLOBAL  - scored 3; 2 passed 0.50; 1 kept" in text                      # the score gate and the summary's own check are two numbers
-    assert "1 passed but their own summary said not relevant: c7" in text and "3 scoring requests of 1 summary each" in text
-    res["community_scores"], res["partials"] = [{"community": 5, "score": 0.2}], []
-    assert "scored 1; 0 passed 0.50; 0 kept" in "\n".join(l for _, l in qp.column_lines(res, rows, comm))      # zero is shown as zero
+    assert "GLOBAL  - 4 sections scored; 3 passed 5.12; 1 communities kept" in text                      # the section gate and the summary's own check are two numbers
+    assert "1 passed but their own summary said not relevant: c7" in text and "(309 sections)  best section 8.10" in text      # the community line carries its best section's score
+    res["section_scores"], res["partials"] = [{"ord": 0, "key": "k0", "community": 5, "score": 0.2}], []
+    assert "1 sections scored; 0 passed 5.12; 0 communities kept" in "\n".join(l for _, l in qp.column_lines(res, rows, comm))      # zero is shown as zero
 
 
 def test_a_rejected_question_shows_the_rejection_and_neither_a_global_view_nor_an_answer_G15():
     res, rows, comm = world()
-    res["community_scores"], res["community_threshold"], res["partials"], res["global_answer"] = [{"community": 5, "score": 0.449}], 0.5, [], ""
-    res["question_rejected"], res["final"], res["evidence"] = "Question rejected: no community summary passed the Jev-Style relevance check (best score 0.449, community c5, threshold 0.50).", "x", []
+    res["section_scores"], res["section_threshold"], res["partials"], res["global_answer"] = [{"ord": 0, "key": "k0", "community": 5, "score": 3.2}], 5.116, [], ""
+    res["question_rejected"], res["final"], res["evidence"] = "Question rejected: no section passed the cross-encoder relevance check (best 3.20, k0, pass score 5.12).", "x", []
     lines = qp.column_lines(res, rows, comm)
     text = "\n".join(l for _, l in lines)
     heads = [l for s, l in lines if s == "h"]
-    assert heads[:2] == ["GLOBAL  - scored 1; 0 passed 0.50; 0 kept", "QUESTION REJECTED"] and "ANSWER  - LLM" not in text
-    assert "Question rejected: no community summary passed the Jev-Style relevance check" in text and "no community summary bore on the question" not in text
+    assert heads[:2] == ["GLOBAL  - 1 sections scored; 0 passed 5.12; 0 communities kept", "QUESTION REJECTED"] and "ANSWER  - LLM" not in text
+    assert "Question rejected: no section passed the cross-encoder relevance check" in text and "no community summary bore on the question" not in text
 
 
 def test_a_known_paper_title_follows_the_section_heading_on_every_section_line_P4():

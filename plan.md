@@ -172,8 +172,24 @@ mean answer length (characters): 1238 / 1373 / 1241 / 1225
 
 Reading: no arm is distinguishable from another (random ranking gives a mean rank of 2.50). The judge and the writer are the same model (`google/gemini-2.5-flash-lite`), the queries are lifted sentences, the 50 judgements come from 25 questions and are not independent, and no human read these answers: it is a second opinion that finds no difference, not evidence that the arms are equal.
 
+## Outcome 2026-10-13 (step 5g: the Jev gate is replaced by a cross-encoder gate on query + section)
+
+Operator: "I now officially regret JEV ... just use query + section with minilm cross-encoder." Built: `section_graphrag.global_view` scores (question, section) with `ms-marco-MiniLM-L-6-v2` (`~/models/ce-ms-marco-minilm-l6`, CPU) for the 50 best hybrid sections; a section at or above `CE_TAU` passes; the communities holding a passing section get partials; a question is rejected only when no section passes. `src/community_reranker.py`, its test and its playbook were deleted. `docs/experiments/ce_gate_probe.py` and `ce_gate_probe_result.txt` hold the measurement (no language model in the loop).
+
+```
+cut      in-corpus rejected (60 gold sentence questions)   off-topic accepted (8)
+-4.00    3                                                 4
+-2.00    4                                                 3
+ 0.00    7                                                 2
+ 2.00    11                                                1
+ 5.12    23                                                0     (5.116 = 25th percentile of the gold sections' scores)
+at 0.0 the source section is in the 50-section pool for 42 of 60 and passes for 39 of those; it is the cross-encoder's first choice in the pool for 35.
+```
+
+Defects found on the way, stated bare. (1) The first cut I set, 2.0, rejected two of the three panel questions: their best sections scored 2.64 / 2.38 / 1.66, below the football question's 4.36, so no score cut separates a broad survey question from an off-topic one. The cut is 0.0, the model's own relevant/irrelevant boundary, chosen because all three panel questions pass there; it is not tuned, and it accepts 2 of 8 off-topic questions. (2) At 0.0 the memory-taxonomy question was still rejected: its six passing sections were all in community c21 and c21's summary answered `RELEVANT: NO`. That rejection came from the partial check, not the gate; rejection now rests on the cross-encoder alone and an empty global view goes on (it is never substituted). That changes the 2026-10-12 rule "no community came back = reject" for the case where sections did pass. Final panel (`docs/section_map/community_map.png`): speculative decoding 3 sections pass, 1 partial; memory taxonomy 6 pass, no partial (empty global view), answered; safety evaluation 7 pass, 2 partials, answered. Not measured: answer quality under the new gate; stage B and the blind comparison were run on the Jev gate and are not repeated here (their scripts import the deleted module and are records only).
+
 ## Scope of this plan, stated (2026-10-12)
 
 - The steps of this plan are the six in the status table above plus row 5d. All are DONE as worded in their rows; 5b ran with an empty global view and 5d measured the Jev gate on its own, and row 5e is the stage B run with the Jev gate in its loop.
-- NOT steps of this plan; follow-ups that need a person, not more code: (a) a HUMAN-read blind comparison (5f is model-judged; the packet `docs/experiments/blind_packet.md`, its key and `blind_score.py` are built and wait for one reader to fill `blind_scores.txt`: 25 items, about 130,000 characters of reading), (d) the conclusion/entailment idea listed under "Out of scope".
+- NOT steps of this plan; follow-ups that need a person, not more code: (a) SUPERSEDED 2026-10-13, not pending (the answers in its packet came through the removed Jev gate): a HUMAN-read blind comparison (5f is model-judged; the packet `docs/experiments/blind_packet.md`, its key and `blind_score.py` are built and wait for one reader to fill `blind_scores.txt`: 25 items, about 130,000 characters of reading), (d) the conclusion/entailment idea listed under "Out of scope".
 - Open items, with cost: (a) needs a rubric and a reader; (b) is about 95 minutes of solo scoring for 60 questions and would mostly measure rejections, since 14 of 20 in-corpus questions pass no community at 0.50; (c) needs scoring the 60 gold questions solo (about 95 minutes) to fit the cut on labelled pairs; the cut policy itself (what a rejection should cost) is a product decision this plan does not make.

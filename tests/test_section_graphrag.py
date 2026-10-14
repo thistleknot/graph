@@ -153,6 +153,31 @@ def test_parse_action_rejects_anything_not_an_action_on_the_first_line():
         assert g.parse_action(bad) == (None, bad, "")
 
 
+def test_a_community_passes_on_one_section_at_or_above_the_cut_best_score_first_and_only_if_it_is_a_candidate_G15():
+    scores = [{"community": 5, "score": 6.0}, {"community": 5, "score": 9.5}, {"community": 7, "score": 5.116}, {"community": 9, "score": 5.115}, {"community": 11, "score": 12.0}, {"community": None, "score": 20.0}]
+    assert g.passing_communities(scores, 5.116, {5, 7, 9}) == [5, 7]               # 9 is just under the cut, 11 is not a candidate, a section without a community counts for none
+    assert g.passing_communities(scores, 99.0, {5, 7, 9}) == []
+
+
+def test_the_cross_encoder_scores_the_section_that_answers_the_question_above_an_unrelated_one_and_in_order_G15():
+    import os
+    import pytest
+    if not os.path.isdir(g.CE_DIR):
+        pytest.skip("cross-encoder not installed at %s" % g.CE_DIR)
+    q = "How do agents store long-term memory between sessions?"
+    on = "Long-term memory for LLM agents is kept in an external store that the agent writes to and reads from across sessions, using retrieval over past interactions."
+    off = "The crystal lattice of the alloy was annealed at 900 K and its hardness measured with a Vickers indenter."
+    import json
+    import subprocess
+    src = str(Path(__file__).resolve().parents[1] / "src")
+    code = "import sys, json; sys.path.insert(0, %r); import section_graphrag as g; q, on, off = json.loads(sys.stdin.read()); print(json.dumps([g.cross_scores(q, [off, on]), g.cross_scores(q, [on, off])]))" % src
+    done = subprocess.run([sys.executable, "-c", code], input=json.dumps([q, on, off]), capture_output=True, text=True, timeout=240)     # a fresh interpreter: transformers' import state is process-global and other tests import it first
+    assert done.returncode == 0, done.stderr[-400:]
+    s, swapped = json.loads(done.stdout.strip().splitlines()[-1])
+    assert len(s) == 2 and s[1] > g.CE_TAU > s[0]                                  # the pass score separates them: the answering section is above it, the unrelated one below
+    assert swapped == pytest.approx(s[::-1], abs=1e-3)                            # the score belongs to the pair, not to its place in the batch
+
+
 def test_boxcox_weights_sum_to_one_give_singletons_nothing_and_flatten_the_giants():
     sizes = [1630, 1369, 336, 63, 50, 30, 15, 11, 4, 2, 2, 1, 1]
     w = g.boxcox_weights(sizes)
@@ -405,10 +430,7 @@ def test_two_walks_with_the_first_one_masked_share_no_section():
 
 
 def test_a_question_is_rejected_when_no_partial_survives_and_the_reason_says_which_way_G15():
-    scores = [{"community": 10, "score": 0.449}, {"community": 21, "score": 0.182}]
-    assert g.rejection_reason(scores, 0.5, [(94, "text")]) == ""                                       # one held-up partial: not rejected
-    nothing = g.rejection_reason(scores, 0.5, [])
-    assert nothing == "Question rejected: no community summary passed the Jev-Style relevance check (best score 0.449, community c10, threshold 0.50)."
-    held = g.rejection_reason([{"community": 1, "score": 0.9}, {"community": 2, "score": 0.7}], 0.5, [])
-    assert held == "Question rejected: 2 community summaries passed the Jev-Style check but none held up when summarised against the question."
-    assert g.rejection_reason([], 0.5, []).startswith("Question rejected: no community summary passed")  # no candidates at all
+    scores = [{"key": "a#1", "community": 5, "score": 3.2}, {"key": "b#2", "community": 7, "score": -4.0}]
+    assert g.rejection_reason(scores, 5.116) == "Question rejected: no section passed the cross-encoder relevance check (best 3.20, a#1, pass score 5.12)."
+    assert g.rejection_reason(scores + [{"key": "c#3", "community": 5, "score": 8.0}], 5.116) == ""    # one passing section: not rejected, whatever the partials said
+    assert g.rejection_reason([], 5.116).startswith("Question rejected: no section passed")          # no sections at all
