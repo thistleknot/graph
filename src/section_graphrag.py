@@ -64,7 +64,7 @@ G15 (operator 2026-10-13: "I now officially regret JEV ... just use query + sect
     on the 60 gold sentence questions the 25th percentile of the gold sections' scores (5.116, the stage-B precision cut) rejects 23 and 2.0 rejects 11; on the panel's three long survey questions the best
     section scores 2.64 / 2.38 / 1.66, so 2.0 rejected two of the three (memory taxonomy, safety) and no score cut separates them from an off-topic question (a football question scored 4.36).
     0.0 rejects 7 of 60 and accepts 2 of 8 off-topic questions; the partial's own RELEVANT check still follows. The communities holding a passing section (candidates only) are the ones summarised: only after all scores are collected are
-    partial answers generated for them, best section score first; each partial opens RELEVANT: YES|NO, a NO is kept in `partials_rejected` and never reduced.
+    partial answers generated for them, best section score first; each partial is given the community summary AND that community's PARTIAL_SECTIONS best passing sections (a summary is a topical abstract and cannot hold the detail a question asks for: observed 2026-10-13, the memory question's community c21 answered NO from its summary alone and the question got no global view); it opens RELEVANT: YES|NO, a NO is kept in `partials_rejected` and never reduced.
     NO FALLBACK (operator 2026-10-12: "fallback = failure ... if no community came back, I would reject the question"): when no section passes, the question is REJECTED (`question_rejected`):
     no global view, no agent, no evidence, no answer. Amended 2026-10-13: a question with a passing section is not rejected because the partials said NO; with the Jev gate removed the cross-encoder is
     the judge of relevance, and in the first run the memory question's six passing sections (all c21) were rejected by c21's summary-level NO. The global view is then empty, never substituted.
@@ -107,14 +107,18 @@ Below are partial answers, each drawn from one cluster of sections of research p
 Keep the cluster tag, e.g. [c12], after each claim it supports. Mention an unanswered point only when it is an explicit part of the question and the partial answers do not address it. Do not add generic caveats about unrelated topics the summaries do not cover. Use nothing but the partial answers.
 
 {partials}"""
-PARTIAL_PROMPT = """Answer the question using only this already-selected community summary from research papers.
+PARTIAL_PROMPT = """Answer the question using only this already-selected community of research-paper sections: its summary, then the sections of it that a relevance model scored highest against the question.
 Question: {question}
 
 Community {cid} ({size} sections) — {title}
 {summary}
 
-Reply in exactly this form. The first line is RELEVANT: YES or RELEVANT: NO. YES only when the summary itself states something that answers the question; NO when it is about something else. After a NO write nothing more.
-After a YES write a concise partial answer of 2–4 sentences containing only information this summary supports, including useful distinctions or categories when present. Do not add outside knowledge or generic caveats."""
+Highest-scoring sections of this community:
+{sections}
+
+Reply in exactly this form. The first line is RELEVANT: YES or RELEVANT: NO. YES when the summary or these sections state something that answers the question, even in part; NO only when none of them touch the question. After a NO write nothing more.
+After a YES write a concise partial answer of 2–4 sentences containing only information the summary and these sections support, including useful distinctions or categories when present. Do not add outside knowledge or generic caveats."""
+PARTIAL_SECTIONS, PARTIAL_CHARS = 3, 1200      # G15: sections of a community shown to its partial, characters of each
 ANSWER_PROMPT = """Answer the question from two kinds of context. The GLOBAL view is a synthesis across communities of related sections and gives the framing.
 The SUBGRAPH view is the evidence. It opens with the TYPICAL section of each of the communities that hold most of the retrieved subgraph (what that community is generally like; use it
 as evidence only where it speaks to the question), then the sections of the subgraph NEAREST the question, nearest first.
@@ -636,10 +640,12 @@ def global_view(sg: SectionGraph, got: dict, model: str) -> dict:
     selected = passing_communities(scores, threshold, set(got["candidates"]))
     # Finish scoring before starting generation: the generation model writes partial answers; it does not repeat the gate.
     partials, rejected, unparsed = [], [], 0
+    best = {c: [s for s in sorted(scores, key=lambda s: -s["score"]) if s["community"] == c and s["score"] >= threshold][:PARTIAL_SECTIONS] for c in selected}
     for page in st.summary_batches(sg.conn, sg.build, selected, 32):
         for c, rec in page.items():
+            shown = "\n\n".join("[%s] %s" % (s["key"], " ".join(rows[s["ord"]]["text"].split())[:PARTIAL_CHARS]) for s in best[c])
             reply = scz.chat(model, PARTIAL_PROMPT.format(question=got["question"], cid=c, size=rec["size"],
-                                                          title=rec["title"], summary=rec["summary"]))["content"]
+                                                          title=rec["title"], summary=rec["summary"], sections=shown))["content"]
             relevant, text = parse_map(reply)
             if relevant:
                 partials.append((c, text))

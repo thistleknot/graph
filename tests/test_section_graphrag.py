@@ -434,3 +434,25 @@ def test_a_question_is_rejected_when_no_partial_survives_and_the_reason_says_whi
     assert g.rejection_reason(scores, 5.116) == "Question rejected: no section passed the cross-encoder relevance check (best 3.20, a#1, pass score 5.12)."
     assert g.rejection_reason(scores + [{"key": "c#3", "community": 5, "score": 8.0}], 5.116) == ""    # one passing section: not rejected, whatever the partials said
     assert g.rejection_reason([], 5.116).startswith("Question rejected: no section passed")          # no sections at all
+
+
+def test_a_communitys_partial_is_shown_its_best_passing_sections_and_not_only_its_summary_G15(monkeypatch):
+    import types
+    import summarize_clusters as scz
+    prompts = []
+
+    def chat(model, prompt):
+        prompts.append(prompt)
+        return {"content": "RELEVANT: YES\nthe sections say it" if "Highest-scoring sections" in prompt else "combined"}
+
+    monkeypatch.setattr(scz, "chat", chat)
+    monkeypatch.setattr(g.st, "sections", lambda conn, build, ords: {o: {"doc_id": "d", "section_idx": o, "text": "body of  section %d" % o} for o in ords})
+    monkeypatch.setattr(g.st, "community_of", lambda conn, build, ords: {o: 5 for o in ords})
+    monkeypatch.setattr(g.st, "summary_batches", lambda conn, build, cids, n: [{5: {"size": 9, "title": "Memory", "summary": "a short topical summary"}}])
+    monkeypatch.setattr(g, "cross_scores", lambda q, texts: [3.0, 1.0, -2.0, 2.0, 0.5][:len(texts)])
+    got = {"question": "q?", "ranked": [10, 11, 12, 13, 14], "candidates": [5]}
+    out = g.global_view(types.SimpleNamespace(conn=None, build=1), got, "m")
+    partial = prompts[0]
+    assert "a short topical summary" in partial and "[d#10] body of section 10" in partial and "[d#13] body of section 13" in partial and "[d#11] body of section 11" in partial
+    assert "section 12" not in partial and "section 14" not in partial     # the 3 best passing sections (scores 3.0, 2.0, 1.0); 12 failed the cut and 14 (0.5) ranks fourth
+    assert out["partials"] == [(5, "the sections say it")] and out["partials_rejected"] == [] and out["question_rejected"] == ""
