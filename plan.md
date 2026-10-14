@@ -90,6 +90,7 @@ Scratch: `.tmp/hop_grid.py`.
 - Final citations are checked against the evidence keys after generation; a sentence with a non-evidence bracketed citation is dropped. This catches labels such as `[GLOBAL view]` that the prompt alone did not prevent.
 - Still NOT TESTED: the blind 20-question answer comparison and the full agent grid in stage B. The three example answers in the map are a smoke check, not a quality evaluation.
 - Verification 2026-10-11: focused section-GraphRAG tests 35 passed; full suite 1,210 passed, 1 failed, 3 skipped. The failure is the existing `tests/test_walker_render.py::test_panels_render_digests_and_chain_communities` assertion for missing `pairs=… corpus_n=…` text.
+- Resolved 2026-10-13: the test never chose a run, so the Walker app opened the newest live run (`ab-section`, 0 relations, 0 mentions) instead of `mixed-full-dual` (328,825 relations). The `ab-document` and `ab-section` ingests of 2026-09-17 changed that default. The test now selects `mixed-full-dual`; `tests/test_walker_render.py` runs 45 passed. The relations table was never damaged and was not regenerated.
 
 ## Outcome 2026-10-12 (community scoring, no fallback; handoff.md)
 

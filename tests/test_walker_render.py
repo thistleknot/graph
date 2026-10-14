@@ -286,6 +286,9 @@ def test_panels_render_digests_and_chain_communities():
         at = AppTest.from_file("src/walker_app.py", default_timeout=240)
         at.session_state["assess"] = (q, rr)
         at.run()
+        # The app opens the newest live run; only mixed-full-dual carries the
+        # entities, mentions and relations this panel digests.
+        at.selectbox[0].select("mixed-full-dual").run()
         at.text_input("q").set_value(q).run()
     except Exception as e:                                # pragma: no cover
         pytest.skip(f"app could not start (no db?): {e}")
