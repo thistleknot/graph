@@ -1,6 +1,23 @@
-"""summarize_clusters.py -- an LLM summary per community, from its exemplar chunks, never truncated.
+"""| Stage | Mechanism | Tag | Ref |
+|---|---|---|---|
+| PROMPT | Preserve complete exemplars and provenance. | [mandatory] | S1, S2 |
+| CALL | Request textual task output with optional reasoning disabled. | [mandatory] | S3, S6 |
+| BOUND | Share the caller's monotonic deadline across network waits and retries. | [contract] | S6 |
+| CHECK | Reject empty or unfinished completions before downstream parsing. | [mandatory] | S4, S6 |
+| STORE | Checkpoint community drafts with source keys and usage. | [mandatory] | S5 |
 
-NO GOVERNING SPEC. Basis: operator instructions 2026-10-02 ("you're going to need an llm to
+S6 WHEN a caller supplies `deadline`, every attempt and retry SHALL use its remaining budget;
+network waits SHALL be at most 60 seconds. IF output is empty or unfinished, THEN fail explicitly.
+S7 WHEN a caller supplies max_tokens, the client SHALL use that completion allowance;
+otherwise action and summary calls retain 1024 tokens, while final comparative synthesis requests 2048.
+CLOSED: default reasoning plus a 1024-token cap returned empty Qwen actions (31.62s); disabling
+reasoning returned the matched action in 2.52s (2026-10-22). Empty actions are not successful calls.
+Preconditions: OpenRouter credentials and a textual model; failures propagate to the owning caller.
+
+summarize_clusters.py -- an LLM summary per community, from its exemplar chunks, never truncated.
+
+Governing timeout contract: .spec/specs/section-term-reweighting/requirements.md.
+Summary basis: operator instructions 2026-10-02 ("you're going to need an llm to
 provide a summary for each cluster using the top n chunks represented for the cluster and not
 truncate it. This is the key final piece" ... "just use openrouter"). Exemplars: read from
 .tmp/arxiv_exemplars.json, written by arxiv_community_map.derive (1 to 3 per community by size:
@@ -39,6 +56,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import pickle
 import re
@@ -56,6 +74,7 @@ from domain_corpora import retrievable
 CACHE, EXEMPLARS = ".tmp/arxiv_section_chunks.pkl", ".tmp/arxiv_exemplars.json"
 OUT = ".tmp/arxiv_cluster_summaries.json"
 API = "https://openrouter.ai/api/v1"
+LOG = logging.getLogger(__name__)
 MODEL = "google/gemini-2.5-flash-lite"
 MAX_TOKENS, SEED, MAX_FILL, WORKERS, RETRIES = 1024, 7, 0.90, 8, 4
 
@@ -123,13 +142,47 @@ def parse(content: str) -> tuple[str, str]:
     return title.strip(), re.sub(r"\s+", " ", summary).strip()
 
 
-def _request(path: str, body: dict | None = None) -> dict:
+def _request(path: str, body: dict | None = None, *, timeout: float = 300, deadline: float | None = None) -> dict:
+    """Read an OpenRouter response without letting keepalives bypass the caller's budget.
+
+    Args:
+        path: API-relative route.
+        body: Optional JSON request.
+        timeout: Maximum socket wait in seconds.
+        deadline: Optional absolute monotonic request deadline.
+
+    Returns:
+        The decoded JSON response, never a partial response.
+
+    Raises:
+        TimeoutError: The request budget expired before or during response reading.
+        urllib.error.HTTPError: The upstream rejected the request.
+    """
+    if deadline is not None:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("graph request budget exhausted before OpenRouter call")
+        timeout = min(timeout, remaining)
     headers = {"Content-Type": "application/json", "X-Title": "arxiv cluster summaries"}
     if body is not None:
         headers["Authorization"] = "Bearer " + os.environ["OPENROUTER_API_KEY"]
     req = urllib.request.Request(API + path, json.dumps(body).encode() if body is not None else None, headers)
-    with urllib.request.urlopen(req, timeout=300) as r:
-        return json.load(r)
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        if deadline is None:
+            return json.load(r)
+        chunks = []
+        # OpenRouter may send whitespace while generating; check elapsed wall time
+        # between reads so keepalives cannot reset the whole request budget.
+        while True:
+            if time.monotonic() >= deadline:
+                raise TimeoutError("graph request budget exhausted while reading OpenRouter response")
+            chunk = r.read1(65536)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        if time.monotonic() >= deadline:
+            raise TimeoutError("graph request budget exhausted while reading OpenRouter response")
+        return json.loads(b"".join(chunks))
 
 
 def context_length_of(model: str) -> int:
@@ -139,22 +192,52 @@ def context_length_of(model: str) -> int:
     raise SystemExit("model %r is not on OpenRouter" % model)
 
 
-def chat(model: str, prompt: str) -> dict:
-    """S3. Guarantee: the reply plus usage. Retries 429 and 5xx with backoff; anything else raises."""
+def chat(model: str, prompt: str, *, deadline: float | None = None, max_tokens: int = MAX_TOKENS) -> dict:
+    """Return completed task text and usage within the caller's remaining budget.
+
+    Args:
+        model: OpenRouter model selected by the caller.
+        prompt: Full task prompt.
+        deadline: Optional absolute monotonic deadline shared by the whole graph request.
+        max_tokens: Completion allowance; callers may widen final synthesis while actions stay bounded.
+
+    Returns:
+        Nonempty completed text, finish reason, provider, and usage.
+
+    Raises:
+        TimeoutError: No budget remains for a network call or retry.
+        ValueError: The model returned empty or unfinished text.
+        urllib.error.HTTPError: An upstream HTTP failure exhausted bounded retries.
+    """
     body = {"model": model, "messages": [{"role": "user", "content": prompt}], "temperature": 0,
-            "max_tokens": MAX_TOKENS, "seed": SEED, "transforms": []}
+            "max_tokens": max_tokens, "seed": SEED, "transforms": [], "reasoning": {"enabled": False}}
     for attempt in range(RETRIES):
+        started = time.monotonic()
+        remaining = None if deadline is None else deadline - started
+        if remaining is not None and remaining <= 0:
+            raise TimeoutError("graph request budget exhausted before OpenRouter call")
         try:
-            d = _request("/chat/completions", body)
+            d = (_request("/chat/completions", body) if deadline is None else
+                 _request("/chat/completions", body, timeout=min(60.0, remaining), deadline=deadline))
             if "error" in d:
                 raise urllib.error.HTTPError(API, d["error"].get("code", 500), str(d["error"].get("message")), {}, None)
             ch, u = d["choices"][0], d.get("usage", {})
-            return {"content": ch["message"]["content"] or "", "finish_reason": ch.get("finish_reason"),
+            content = ch["message"].get("content") or ""
+            LOG.info("Model call model=%s elapsed=%.2fs finish=%s completion_tokens=%s content_chars=%d",
+                     model, time.monotonic() - started, ch.get("finish_reason"), u.get("completion_tokens"), len(content))
+            if ch.get("finish_reason") != "stop" or not isinstance(content, str) or not content.strip():
+                raise ValueError("OpenRouter model %s returned unusable task text (finish_reason=%s, content_chars=%d)"
+                                 % (model, ch.get("finish_reason"), len(content)))
+            return {"content": content, "finish_reason": ch.get("finish_reason"),
                     "prompt_tokens": u.get("prompt_tokens", 0), "completion_tokens": u.get("completion_tokens", 0),
                     "cost": u.get("cost"), "provider": d.get("provider")}
         except urllib.error.HTTPError as e:
             if e.code in (429, 500, 502, 503, 504) and attempt < RETRIES - 1:
-                time.sleep(2 ** attempt * 2)
+                delay = 2 ** attempt * 2
+                if deadline is not None and time.monotonic() + delay >= deadline:
+                    raise TimeoutError("graph request budget exhausted before OpenRouter retry") from e
+                LOG.warning("Model call model=%s HTTP=%s attempt=%d retry_delay=%ss", model, e.code, attempt + 1, delay)
+                time.sleep(delay)
                 continue
             raise
     raise AssertionError("unreachable")

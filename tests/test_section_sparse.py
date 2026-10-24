@@ -102,3 +102,34 @@ def test_query_rows_drop_what_the_corpus_never_kept_and_are_unit_length():
     assert set(u) <= set(col.values()) and abs(sum(v * v for v in u.values()) - 1.0) < 1e-9
     assert len(p) == 1                                                    # only (alpha, beta) is adjacent AND kept; (beta, zzz), (zzz, gamma) are not
     assert ss2.query_rows([], col, idf, avgdl, pcol, pidf, pavg, tok) == ({}, {})
+
+
+class _PieceTokenizer:
+    def encode(self, word):
+        class Encoding:
+            tokens = list(word)
+        return Encoding()
+
+
+def test_chunk_adjacency_keeps_word_boundaries_and_directed_term_order():
+    query = ["alpha beta"]
+    docs = ["alpha beta", "beta alpha", "alpha gamma beta"]
+    scores = ss2.adjacency_scores(query, docs, _PieceTokenizer())
+    assert scores[0]["term_adjacency"] == 1.0
+    assert scores[1]["term_adjacency"] == 0.0
+    [boundary] = ss2.adjacency_scores(["alphabeta"], ["alpha beta"], _PieceTokenizer())
+    assert boundary["piece_adjacency"] < 1.0  # the pair across alpha|beta is not a within-word pair
+
+
+def test_chunk_adjacency_counts_repeated_query_terms_only_to_query_multiplicity():
+    [single] = ss2.adjacency_scores(["alpha alpha"], ["alpha"], _PieceTokenizer())
+    [repeated] = ss2.adjacency_scores(["alpha alpha"], ["alpha alpha"], _PieceTokenizer())
+    assert single["within_word"] == pytest.approx(0.5)
+    assert repeated["within_word"] == pytest.approx(1.0)
+    assert repeated["score"] > single["score"]
+
+
+def test_chunk_adjacency_allows_only_one_piece_position_shift():
+    scores = ss2.adjacency_scores(["alpha"], ["xalpha", "xxalpha"], _PieceTokenizer())
+    assert scores[0]["within_word"] > 0.0
+    assert scores[1]["within_word"] == 0.0

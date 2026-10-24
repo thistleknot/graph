@@ -34,6 +34,7 @@ R10 A selected community SHALL be shown the way the map shows it: medoid first, 
     skew remains), one MMR(lambda=.5) pick per equal-width window, pool = band AND lex∩sem edge (fallback band), never past the band.
 R11 Exemplars and entities of a community SHALL come from ONE uniform sample of that community (>= MIN_SAMPLE records and >= ENT_M entity-bearing, or exhausted);
     only the lex∩sem edge marker reads the stored graph. The query's own view (top hits by score) SHALL be shown beside it, never merged into it.
+R12 The HNSW binary SHALL be imported only when a kNN graph is built; embedding-only callers SHALL not require that optional extension.
 
 CLOSED
 - Fixed uniform-share quota for entity discovery: spent on records without entities; draw-until replaces it.
@@ -46,7 +47,7 @@ spacy (+ en_core_web_sm) ftfy matplotlib. Offline: set DENSE to a local model di
 Run: python quote_entity_clusters.py            (writes query_entities.png, query_results.toon); tables per query: hits, hit_entities, clusters, community_view, community_entities
 """
 import os, re, sys, json, math, textwrap, collections, numpy as np, scipy.sparse as sp
-import ftfy, hnswlib, igraph, leidenalg, umap, spacy, tempfile
+import ftfy, igraph, leidenalg, umap, spacy, tempfile
 from tokenizers import Tokenizer, models, trainers, pre_tokenizers, normalizers
 from scipy.stats import boxcox, skew
 from sklearn.metrics import adjusted_rand_score as ari
@@ -86,6 +87,7 @@ def center(X, mu):
 
 def knn(E, k=K_NN):
     """Guarantee: (idx, dist) from an HNSW cosine index, k neighbours including self."""
+    import hnswlib
     ix = hnswlib.Index(space="cosine", dim=E.shape[1]); ix.init_index(max_elements=len(E), M=16, ef_construction=200, random_seed=HNSW_SEED)
     ix.add_items(E, np.arange(len(E))); ix.set_ef(128); i, d = ix.knn_query(E, k=k); return i.astype(np.int64), d.astype(np.float32)
 

@@ -1,5 +1,5 @@
 """Pins summarize_clusters.py's never-truncate guards (S1-S4), its reply parser and its
-failure isolation.
+failure isolation, completed task text, shared request deadlines (S6), and caller completion allowance (S7).
 
 The claim the whole tool rests on: every exemplar chunk reaches the model in full, and any
 silent cut (a window that is too small, a capped answer) becomes a loud, recorded failure.
@@ -10,7 +10,9 @@ Run:  pytest tests/test_summarize_clusters.py -v
 from __future__ import annotations
 
 import re
+import io
 import sys
+import urllib.error
 from pathlib import Path
 
 import pytest
@@ -22,6 +24,92 @@ import summarize_clusters as sc
 from summarize_clusters import MAX_FILL, MAX_TOKENS, assert_not_truncated, build_prompt, collapse_ws, fits, parse
 
 NONWS = lambda s: re.sub(r"\s+", "", s)
+
+
+@pytest.mark.parametrize("content,finish,accepted", [("", "stop", False), ("unfinished", "length", False), ("ACTION: ANSWER", "stop", True)])
+def test_task_client_rejects_unusable_model_output(monkeypatch, content, finish, accepted):
+    """S6. Guarantee: only nonempty stopped text reaches the agent parser."""
+    calls = []
+
+    def response(path, body, **kwargs):
+        calls.append(body)
+        return {"choices": [{"message": {"content": content}, "finish_reason": finish}], "usage": {}}
+
+    monkeypatch.setattr(sc, "_request", response)
+    if accepted:
+        assert sc.chat("model", "prompt")["content"] == content
+    else:
+        with pytest.raises(ValueError, match="unusable task text"):
+            sc.chat("model", "prompt")
+    assert len(calls) == 1 and calls[0]["reasoning"] == {"enabled": False}
+
+
+@pytest.mark.parametrize("remaining,expected_timeout", [(-1.0, None), (0.25, 0.25), (200.0, 60.0)])
+def test_task_client_uses_remaining_request_budget(monkeypatch, remaining, expected_timeout):
+    """S6. Guarantee: expired budgets make no call; live budgets cap network waits."""
+    calls = []
+
+    def response(path, body, **kwargs):
+        calls.append(kwargs)
+        return {"choices": [{"message": {"content": "OK"}, "finish_reason": "stop"}], "usage": {}}
+
+    monkeypatch.setattr(sc.time, "monotonic", lambda: 100.0)
+    monkeypatch.setattr(sc, "_request", response)
+    if expected_timeout is None:
+        with pytest.raises(TimeoutError, match="budget exhausted"):
+            sc.chat("model", "prompt", deadline=100.0 + remaining)
+        assert calls == []
+    else:
+        assert sc.chat("model", "prompt", deadline=100.0 + remaining)["content"] == "OK"
+        assert calls == [{"timeout": expected_timeout, "deadline": 100.0 + remaining}]
+
+
+@pytest.mark.parametrize("allowance", [None, 1024, 2048])
+def test_completion_allowance_is_caller_owned_with_summary_default(monkeypatch, allowance):
+    """S7. Guarantee: wider final synthesis does not widen action/summary defaults."""
+    bodies = []
+
+    def response(path, body, **kwargs):
+        bodies.append(body)
+        return {"choices": [{"message": {"content": "Complete text"}, "finish_reason": "stop"}], "usage": {}}
+
+    monkeypatch.setattr(sc, "_request", response)
+    options = {} if allowance is None else {"max_tokens": allowance}
+    assert sc.chat("model", "prompt", **options)["content"] == "Complete text"
+    assert bodies[0]["max_tokens"] == (MAX_TOKENS if allowance is None else allowance)
+    assert bodies[0]["reasoning"] == {"enabled": False}
+
+
+def test_task_retry_stops_when_backoff_would_consume_remaining_budget(monkeypatch):
+    """S6. Guarantee: a rate-limited request cannot sleep beyond its budget."""
+    calls = []
+
+    def limited(path, body, **kwargs):
+        calls.append(path)
+        raise urllib.error.HTTPError("https://example.test", 429, "rate limited", {}, None)
+
+    monkeypatch.setattr(sc.time, "monotonic", lambda: 100.0)
+    monkeypatch.setattr(sc, "_request", limited)
+    monkeypatch.setattr(sc.time, "sleep", lambda _: pytest.fail("must not sleep past deadline"))
+    with pytest.raises(TimeoutError, match="before OpenRouter retry"):
+        sc.chat("model", "prompt", deadline=101.0)
+    assert len(calls) == 1
+
+
+def test_keepalive_response_cannot_reset_whole_request_deadline(monkeypatch):
+    """S6. Guarantee: whitespace reads still consume the monotonic request budget."""
+    clock = [100.0]
+
+    class Heartbeats(io.BytesIO):
+        def read1(self, size):
+            clock[0] += 2.0
+            return b" "
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setattr(sc.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(sc.urllib.request, "urlopen", lambda *a, **kw: Heartbeats())
+    with pytest.raises(TimeoutError, match="while reading"):
+        sc._request("/chat/completions", {}, timeout=5, deadline=103.0)
 
 
 def test_collapse_ws_shrinks_padding_and_keeps_every_non_whitespace_character():

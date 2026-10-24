@@ -1,4 +1,4 @@
-"""Pins src/section_graphrag.py guards G1-G5 on hand-built neighbour lists and prompts. No model, no network, no database (the SQL side is pinned in test_section_store.py).
+"""Pins src/section_graphrag.py guards G1-G5 and G22 on hand-built neighbours and prompts. No model, no network, no database (the SQL side is pinned in test_section_store.py).
 
 Run:  pytest tests/test_section_graphrag.py -v
 """
@@ -119,6 +119,32 @@ def test_answer_prompt_says_so_when_no_summary_bore_on_the_question():
     assert "what the approaches do" in agent and "how sources classify their variants" in agent
     assert "A classification is one view of the methods" in agent
     assert "When a term has different meanings across fields" in agent
+
+
+def test_final_synthesis_preserves_comparison_contract_and_has_its_own_completion_allowance(monkeypatch):
+    """G22. Guarantee: final answers get comparison room without changing shared defaults."""
+    import types
+    import summarize_clusters as scz
+    calls = []
+
+    def chat(model, prompt, **kwargs):
+        calls.append((prompt, kwargs))
+        return {"content": "Supported result [fixture#2]."}
+
+    items = [{"key": "fixture#2", "ord": 2, "role": "retrieved", "text": "Explicit criteria and named methods."}]
+    sg = types.SimpleNamespace(retrieve=lambda *args: {}, items=lambda got: items)
+    monkeypatch.setattr(g, "global_view", lambda *args: {"global_answer": "", "question_rejected": ""})
+    monkeypatch.setattr(scz, "chat", chat)
+    for question in ("Compare control methods", "Compare optimizer targets", "Compare scheduling supervision"):
+        result = g.answer(sg, question, model="selected/model")
+        assert result["final"] == "Supported result [fixture#2]."
+        prompt, options = calls[-1]
+        assert options == {"max_tokens": 2048}
+        assert "EXACT SOURCE NAMES" in prompt and "EVERY row's Evidence cell" in prompt
+        assert "not reported" in prompt and "distillation" in prompt
+        assert "Canonical source inventory" in prompt and "- fixture" in prompt
+        assert "Additional retrieved approaches" in prompt
+    assert scz.MAX_TOKENS == 1024
 
 
 def test_answer_discards_sentences_with_non_evidence_citations():
@@ -440,9 +466,11 @@ def test_a_communitys_partial_is_shown_its_best_passing_sections_and_not_only_it
     import types
     import summarize_clusters as scz
     prompts = []
+    deadlines = []
 
-    def chat(model, prompt):
+    def chat(model, prompt, **kwargs):
         prompts.append(prompt)
+        deadlines.append(kwargs.get("deadline"))
         return {"content": "RELEVANT: YES\nthe sections say it" if "Highest-scoring sections" in prompt else "combined"}
 
     monkeypatch.setattr(scz, "chat", chat)
@@ -451,8 +479,9 @@ def test_a_communitys_partial_is_shown_its_best_passing_sections_and_not_only_it
     monkeypatch.setattr(g.st, "summary_batches", lambda conn, build, cids, n: [{5: {"size": 9, "title": "Memory", "summary": "a short topical summary"}}])
     monkeypatch.setattr(g, "cross_scores", lambda q, texts: [3.0, 1.0, -2.0, 2.0, 0.5][:len(texts)])
     got = {"question": "q?", "ranked": [10, 11, 12, 13, 14], "candidates": [5]}
-    out = g.global_view(types.SimpleNamespace(conn=None, build=1), got, "m")
+    out = g.global_view(types.SimpleNamespace(conn=None, build=1), got, "m", deadline=12345.0)
     partial = prompts[0]
     assert "a short topical summary" in partial and "[d#10] body of section 10" in partial and "[d#13] body of section 13" in partial and "[d#11] body of section 11" in partial
     assert "section 12" not in partial and "section 14" not in partial     # the 3 best passing sections (scores 3.0, 2.0, 1.0); 12 failed the cut and 14 (0.5) ranks fourth
     assert out["partials"] == [(5, "the sections say it")] and out["partials_rejected"] == [] and out["question_rejected"] == ""
+    assert deadlines == [12345.0, 12345.0]

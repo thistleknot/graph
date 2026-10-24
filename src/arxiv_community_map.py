@@ -274,7 +274,8 @@ def embed(recs: list[dict]) -> np.ndarray:
 # ------------------------------------------------------------------- graph ----
 def knn_det(E: np.ndarray, k: int = hc.K_NN):
     """A2. Guarantee: (idx, dist) like hc.knn, but built with ONE insertion thread so it is reproducible."""
-    ix = hc.hnswlib.Index(space="cosine", dim=E.shape[1])
+    import hnswlib
+    ix = hnswlib.Index(space="cosine", dim=E.shape[1])
     ix.init_index(max_elements=len(E), M=16, ef_construction=200, random_seed=hc.HNSW_SEED)
     ix.add_items(E, np.arange(len(E)), num_threads=1)
     ix.set_ef(128)

@@ -27,6 +27,30 @@ def test_vec_literal():
     assert st.vec(np.array([1.0, -0.5, 0.25], np.float32)) == "[1,-0.5,0.25]"
 
 
+def test_legacy_build_scoped_dense_rows_migrate_to_global_record_id_bridge(conn):
+    schema = "pytest_dense_migration"
+    conn.execute(f"CREATE SCHEMA {schema}")
+    conn.execute(f"SET LOCAL search_path TO {schema}, public")
+    conn.execute("CREATE TABLE sect_build (build_id bigint PRIMARY KEY, tag text NOT NULL, created_at timestamptz NOT NULL DEFAULT now(), live boolean NOT NULL, n_nodes int, n_edges int, n_communities int, params jsonb NOT NULL DEFAULT '{}')")
+    conn.execute("CREATE TABLE sect_node (build_id bigint NOT NULL REFERENCES sect_build, ord int NOT NULL, doc_id text NOT NULL, section_idx int NOT NULL, section_title text, community int NOT NULL, x real, y real, genre_frac real, text text NOT NULL, tsv tsvector, PRIMARY KEY(build_id,ord))")
+    conn.execute("CREATE TABLE sect_embedding (build_id bigint NOT NULL, record_id int NOT NULL, emb vector(256) NOT NULL, emb_b vector(256), PRIMARY KEY(build_id,record_id))")
+    conn.execute("INSERT INTO sect_build(build_id,tag,live) VALUES (1,'xpa',false),(2,'xpa',true)")
+    vector = "[1," + ",".join(["0"] * 255) + "]"
+    for build_id in (1, 2):
+        conn.execute("INSERT INTO sect_node(build_id,ord,doc_id,section_idx,community,text) VALUES (%s,0,%s,0,0,'section')", (build_id, f"arxiv/{build_id}"))
+        conn.execute("INSERT INTO sect_embedding(build_id,record_id,emb) VALUES (%s,0,%s::vector)", (build_id, vector))
+
+    st.ensure_schema(conn)
+
+    rows = conn.execute("SELECT n.build_id,n.ord,n.record_id,v.record_id FROM sect_node n JOIN sect_embedding v USING(record_id) ORDER BY n.build_id").fetchall()
+    assert len(rows) == 2 and rows[0][2] != rows[1][2]
+    assert [row[:2] for row in rows] == [(1, 0), (2, 0)]
+    assert st.seeds_dense(conn, 2, np.eye(1, st.DIM, 0, dtype=np.float32)[0], 1) == [0]
+    cols = {r[0] for r in conn.execute("SELECT attname FROM pg_attribute WHERE attrelid='sect_embedding'::regclass AND attnum>0 AND NOT attisdropped").fetchall()}
+    assert cols == {"record_id", "emb", "emb_b"}
+    assert conn.execute("SELECT count(*) FROM sect_embedding_build_scoped").fetchone()[0] == 2
+
+
 @pytest.fixture()
 def conn():
     import sparsevec_store as ss
@@ -83,6 +107,12 @@ def test_a_second_build_supersedes_the_first_and_deletes_nothing(conn):
     assert st.live_build(conn, "pytest_section_store")[0] == b != a
     assert conn.execute("SELECT live FROM sect_build WHERE build_id = %s", (a,)).fetchone()[0] is False
     assert conn.execute("SELECT count(*) FROM sect_node WHERE build_id = %s", (a,)).fetchone()[0] == 6
+    old_ids = {r[0] for r in conn.execute("SELECT record_id FROM sect_node WHERE build_id=%s", (a,)).fetchall()}
+    new_ids = {r[0] for r in conn.execute("SELECT record_id FROM sect_node WHERE build_id=%s", (b,)).fetchall()}
+    assert len(old_ids) == len(new_ids) == 6 and old_ids.isdisjoint(new_ids)
+    assert conn.execute("SELECT count(*) FROM sect_embedding WHERE record_id=ANY(%s)", (list(old_ids | new_ids),)).fetchone()[0] == 12
+    columns = {r[0] for r in conn.execute("SELECT attname FROM pg_attribute WHERE attrelid='sect_embedding'::regclass AND attnum>0 AND NOT attisdropped").fetchall()}
+    assert columns == {"record_id", "emb", "emb_b"}
 
 
 def test_seeds_dense_orders_by_cosine(conn):

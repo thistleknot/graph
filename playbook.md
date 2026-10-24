@@ -1,6 +1,14 @@
 # Playbook: Sqrt anchors, neo4j mirror, entities v0
 Source: operator-approved queue, 2026-09-03 (previous campaign fully DONE, in git history)
 
+## Current work — T176 — Open WebUI arXiv Filter Function (updated 2026-10-21)
+
+- [DONE] Deliver a per-chat Filter for hosted Open WebUI, with graph-agent evidence and visible retrieval status/errors.
+- _Files:_ `src/owui_filter.py`, `src/arxiv_rag_api.py`, `tests/test_owui_filter.py`, `tests/test_arxiv_rag_api.py`, `README.md`
+- _Verify:_ focused filter/API checks passed (51); a saved live chat through `.18` completed in 475.3s with 74 expandable passage cards, six entities, six communities, and Subgraph, Agent trace, and Gate scores cards; retrieval reported 74 sections from 39 papers in 411.9s.
+- _Status:_ updated the existing older `raxiv_graphrag` source through Open WebUI's API. It remains active, non-global, toggleable, and attached to `qwen/qwen3.6-27b`; the updated filter passes passage text into model context and appends visible evidence.
+- _Provenance:_ [deployment record](docs/owui_refs/deployment_2026-10-17.md) contains the backup path and superseded setup notes.
+
 Settled design (do not relitigate): (1) per-source BM25 anchor allocation
 k_anchor_s ∝ n_s^0.5 over gt.run_sources, anchors selected per-source then
 merged, R1 validation unchanged, single-source runs byte-identical to today —

@@ -29,13 +29,15 @@ third_party/    ignored: vendored book companion code, re-download from upstream
 
 ## arXiv section map — start here
 
-The current work is a map over whole **sections** of 2,521 arXiv papers (80,642 usable sections), kept in Postgres
+Python and MCP runtime ownership, including the graph service and `arxiv_id_lists` paths, is tracked in `F:\Python\README.md`.
+
+The current work is a map over whole **sections** of 2,564 arXiv papers (81,473 usable sections), kept in Postgres
 (`chunkgraph-pg`, host port 5433, user/db/password `graph`). Each stage is its own module; run them in this order
 from the repo root (`python -u src\<file>.py`). `.tmp/` holds every intermediate and output.
 
 | Step | Entrypoint | What it does |
 |---|---|---|
-| 1 | `src/section_corpus.py` | cut the extracted papers into sections, keep the usable ones |
+| 1 | `src/section_corpus.py --root D:\c\arxiv_id_lists\papers\post_processed` | cut the selected Markdown root into sections and keep usable ones; default root remains in `domain_corpora.py` |
 | 2 | `src/section_embed.py`, `src/section_sparse.py` | dense (jina v5 nano through model2vec) and sparse (BPE + adjacent pair) vectors |
 | 3 | `src/section_map.py` | exact correlation edges in both spaces, one fused graph, Leiden communities, exemplars, UMAP layout |
 | 4 | `src/section_store.py --tag xpa` | write the build to Postgres: `sect_node`, `sect_edge`, `sect_community` |
@@ -135,6 +137,7 @@ map follows their idea (graph and communities in Postgres) but uses Leiden over 
 | Product intent, pipeline stage table | [.spec/steering/product.md](.spec/steering/product.md) |
 | Repo layout, conventions, architectural decisions | [.spec/steering/structure.md](.spec/steering/structure.md) |
 | End-to-end pipeline (ingest → query → analyze → interpret) | [.spec/PIPELINE.md](.spec/PIPELINE.md) |
+| Open WebUI user-toggleable arXiv Filter Function | [src/owui_filter.py](src/owui_filter.py), [src/arxiv_rag_api.py](src/arxiv_rag_api.py) |
 | Cross-cutting design and rationale | [.spec/specs/graph-explorer/design.md](.spec/specs/graph-explorer/design.md) |
 | **Multi-source ingest** (Brown + quotes + wikitext in one graph): per-source chunk fits (R19), source metadata (R20), per-source-pair block normalization with one global cut (R21), and the distribution-alignment rationale — why per-block Box-Cox-to-z handles register *and* size imbalance with no quotas | [design.md §6.14](.spec/specs/graph-explorer/design.md), "Multi-source ingest" |
 
@@ -179,6 +182,165 @@ without it the system still runs sparse-only (R5).
   runs; the fourth returns no answer (`entailed=0`). A blank answer is the known
   failure mode, not a regression — ask again. Everything BEFORE the model call is
   deterministic and reruns identically.
+
+## arXiv BM25 index and defaults
+
+The graph PostgreSQL database owns the active section map and Dunning communities (`chunkgraph-pg`, port
+5433, database/user `graph`). The lexical retrieval index lives separately in `langchain_postgres` (port
+5432, database/user `langchain`). The API reads graph sections/communities from the first connection and
+BM25 vectors, vocabulary, tokenizer, sample, and chunk keys from the second. Keep both DSNs reachable
+from the API host.
+
+| Setting | Default | Purpose |
+|---|---|---|
+| `CHUNKGRAPH_DSN` | `postgresql://graph:graph@localhost:5433/graph` | Active section graph database |
+| `ARXIV_BM25_DSN` | `postgresql://langchain:langchain@localhost:5432/langchain` | BM25 index database |
+| `ARXIV_BM25_SAMPLE_SIZE` | `80000` | Maximum deterministic source chunks in the persisted sample materialized view |
+| `ARXIV_BM25_SAMPLE_SEED` | `arxiv-bm25-sample-2026-10` | Stable sample ordering seed |
+| BPE merge budget | `10000` | BPE tokenizer merges trained from the persisted sample |
+| BM25 `k1`, `b` | `1.5`, `0.75` | Term-frequency saturation and length normalization |
+| BM25 vector scan | Exact `<#>` inner-product scan, no HNSW/IVFFlat | Rank narrow record_id-only sparse vectors joined to build-scoped metadata |
+| Sparse candidate pool | `144` | Chunks retrieved before adjacency reranking |
+| Adjacency | within-word BPE alignment ±1, adjacent BPE pairs, directed neighboring words | Rerank signal, with BM25 score as tie-break |
+| Community term boost | `0.25` maximum | Selected Dunning terms reweight fused section ranks before seed top-k |
+
+Run a one-time full rebuild after the active `xpa` section graph is updated:
+
+```powershell
+$env:CHUNKGRAPH_DSN="postgresql://graph:graph@localhost:5433/graph"
+$env:ARXIV_BM25_DSN="postgresql://langchain:langchain@localhost:5432/langchain"
+python -u src/ingest_arxiv_sparsevec.py --from-live-graph --label arxiv_sect_bpe --bpe 10000 --no-battery
+```
+
+The ingester reads every active `sect_node` section, chunks each section independently, and writes its
+stable `(doc_id, section_idx, chunk_idx)` key into the BM25 database. It creates the deterministic sample
+view `lex_sample_arxiv_sect_bpe`; when the population is below 80,000 rows, that view contains every row.
+The same sample trains BPE and estimates document frequency. Sample DFs scale to the full population;
+terms absent from the sample receive df=1. The df=1 and robust long-word gates apply only to BPE merge
+training, so all corpus terms remain in BM25 vectors. Build metadata records the graph build, sample
+view/seed/scale, tokenizer JSON, and BM25 parameters. The sparse-vector bridge contains only a globally
+unique `record_id` and `vec`; chunk text, build membership, and paper/section keys stay in `lex_chunk_meta`.
+A generation is built as non-live and becomes live only after metadata, vocabulary, and one vector per chunk validate. Empty
+vectors are retained as zero sparsevec rows. Retrieval uses exact vector operators without ANN indexes.
+The default command without `--from-live-graph`
+continues to use the old cache for legacy diagnostics; it is not the live BM25 source.
+
+For automatic refresh, `src/arxiv_bm25_worker.py --watch` polls the active graph build ID every 60 seconds
+and rebuilds only when that ID changes or the live generation is incomplete. Register and start the current-user
+logon task with `scripts/register_arxiv_bm25_task.ps1`; it uses
+`F:\Python\mcp\graph\Scripts\python.exe` and appends output to `.tmp\arxiv_bm25_worker.log`. The task uses
+the current user's `CHUNKGRAPH_DSN` and `ARXIV_BM25_DSN` environment variables when set, otherwise the defaults
+in `src/config.py`. It runs while that user is logged on and starts automatically at the next logon.
+Do not point the worker at `C:\Users\user\py310` or
+`.tmp\arxiv_section_chunks.pkl`.
+
+## Open WebUI arXiv Filter Function
+
+The in-process Filter calls the arXiv API's `POST /agent` route from its `inlet`. The API returns the agent's final
+answer separately from `evidence[]`; each accepted evidence row carries its own bounded `text` and `truncated` flag.
+The selected Open WebUI model performs synthesis inside the API pipeline. The Filter inserts the exact returned passages
+before that pipeline answer under **Model commentary** in its `outlet`; a mandatory Open WebUI generation call requests
+only an acknowledgement, which the outlet replaces, avoiding a second rewrite of the research answer.
+Expand a paper to read its passages in Markdown `text` blocks with paper/section
+links and explicit truncation notices; their text comes directly from the API rather than model transcription. Source
+backticks are preserved using a longer outer fence, and HTML is displayed literally as source text. Repeated outlet
+calls preserve that source text, including literal citations, HTML, and code fences. The outlet synchronizes both
+`content` and the final structured `output` message because this Open WebUI client displays `output`; saving only
+`content` can leave the evidence invisible. Disclosure syntax requires `<details>` and `<summary>...</summary>` on
+separate lines, with a newline after each; putting both tags on one line bypasses this client's custom Markdown
+tokenizer. Main and `_methods` source records sharing a canonical arXiv URL form one paper group and count once;
+their original passages and citation keys remain distinct, with methods variants labeled. Entity/community TOON
+tables remain visible; the overview and subgraph are visible Mermaid diagrams after commentary. Agent trace and
+gate scores remain expandable, and the seed-reweighting table appears only when terms were applied. Reasoning
+and tool records are preserved. The selected Open WebUI model in `body["model"]` is forwarded to the API pipeline.
+The cross-encoder checks relevance, not entailment; rejected questions have no
+accepted evidence. Background prompts beginning `### Task:` bypass retrieval.
+
+For live Filter checks, leave `params.max_tokens` unset so the selected model's configured defaults apply. In the
+2026-10-22 Qwen control, a 100-token cap ended with `finish_reason=length` and no final content; the model-default
+request completed, and the Filter's saved response contained all 18 passage cards.
+
+Run the API on the graph host (`192.168.3.122`) with the graph database, `OPENROUTER_API_KEY`, and section-model assets available:
+
+```powershell
+python -u src/arxiv_rag_api.py --serve --host 0.0.0.0 --port 8780
+```
+
+The API exposes `POST /agent` alongside whole-section `GET /search`. At startup it checks the live build and warms the
+dense query encoder and cross-encoder before reporting ready; restart it after updating `src/arxiv_rag_api.py`.
+In Open WebUI, import `src/owui_filter.py` under **Admin Settings → Functions** and leave it active but non-global.
+Attach it to the intended model under **Workspace → Models → Edit → Filters**. The Filter sets `self.toggle = True`,
+so you can turn it on for a chat from the Integrations menu or its input-bar chip; the model's **Start enabled in new
+chats** setting controls its initial state. Global filters are forced on, so leave the Global switch off for opt-in use.
+The default `rag_api_url` is `http://192.168.3.122:8780`, where the graph service runs; make sure that address is
+reachable from the Open WebUI server at `192.168.3.18`. `api_key` forwards a bearer token for an API deployment
+protected by a reverse proxy.
+
+The filter shows **Searching arXiv graph…**, then the retrieved evidence/paper counts or an explicit error.
+An active Function attached to a model is available for selection; that alone does not prove it ran for a chat.
+Check for the retrieval status and **Retrieved graph evidence** before treating an answer as corpus-grounded.
+In direct chat API requests, include `"filter_ids": ["raxiv_graphrag"]`; in the UI, enable **raxiv graphrag** under
+Integrations before sending or regenerating. On 2026-10-23, an answer proposing a Python harness had neither
+retrieval status nor injected evidence; the same query with the Function explicitly selected retrieved 19 passages.
+`timeout_seconds` defaults to 600; retrieval failures stop the chat before model generation.
+The graph API's separate `AgentRequest.timeout_seconds` defaults to 180 seconds (range 5–480), shared across
+history resolution, community summaries, agent actions, and final synthesis. Internal OpenRouter task calls disable
+optional reasoning and reject empty or unfinished output; each network wait is capped at 60 seconds or the remaining
+budget. Final pipeline synthesis allows 2048 completion tokens; action and summary calls retain 1024. Pipeline
+synthesis compares methods on source-defined criteria and checks a canonical-paper inventory for additional approaches
+outside the principal comparison table. Instructions preserve parameter-changing extensions,
+attribute recommendations/proposals, and mark unsupported table values as not reported. These instructions guide
+interpretation; source text remains independently inspectable and is not guaranteed correct by citation-key checks.
+The mandatory acknowledgement generation keeps the selected model's configured limits. Budget exhaustion returns
+HTTP 504; upstream model failures return HTTP 502. Increasing the Filter timeout does not fix empty internal actions.
+This repairs a reproduced Qwen failure: default reasoning consumed all 1,024 completion tokens and returned no
+action after 31.62 seconds; the matched task with reasoning disabled returned a valid action in 2.52 seconds.
+Restart the graph API after updating its Python modules; this server-side repair requires no Function re-upload.
+The exact query `recursive self improvement agentic harness design` subsequently completed through `.18` in
+122.8 seconds, with final text and 19 passage cards from nine papers; the Filter reported 77.1 seconds for the
+graph response. [Open the verified chat](http://192.168.3.18:8080/c/70e15c7e-c6a3-431a-bf04-a951a0b0c1b5).
+On 2026-10-22, the hosted Function was synced from `src/owui_filter.py` through the authenticated Functions API; its
+source AST matches the repository, and it remains active, non-global, and toggleable. Its dynamic `selected_terms`
+multiselect loads live Dunning terms. A completed Qwen chat called `/agent`, retrieved 18 evidence sections from 17
+papers, and persisted one graph summary card, 18 passage cards, and arXiv links. That memory-topic result did not
+cover the later harness-design timeout; its internal action-response failure is documented above. The first headless attempt capped
+generation tokens and returned no final answer; the corrected model-default request completed normally. Current
+deployment state and prior verification history are in [the deployment record](docs/owui_refs/deployment_current.md).
+The authenticated `/api/v1/tasks/queries/completions` endpoint is not used by the Filter.
+
+### BM25/community-term implementation status
+
+The checked-in API now exposes `GET /community-terms`, accepts `selected_terms` on `POST /agent`, and the Filter
+loads those terms into an optional multiselect. Selected terms are added to the sparse query; their community G²
+affinity is applied after RRF and before seed top-k. Sparse candidates default to 144 chunks and use within-word
+BPE alignment, adjacent BPE pairs, and directed adjacent-word pairs before collapsing to section keys.
+
+As of 2026-10-22, the API at `192.168.3.122:8780` serves graph build 1163 and BM25 build 3, with matching source
+IDs. `/community-terms` returns 1,719 live multiselect options. Exact sparse search retrieved the newly ingested
+paper `arxiv/2610.02163` for each of three title/body queries; the hybrid top-three query did not rank it high
+enough, so the corpus check uses the sparse arm. The Filter's option callback returned the same live options.
+The authenticated Qwen `/agent` route returned HTTP 200; selected-term ranking was verified against the live
+retriever, and the completed Open WebUI chat persisted its graph evidence cards. The current code defaults are
+`CHUNKGRAPH_DSN=postgresql://graph:graph@localhost:5433/graph` and
+`ARXIV_BM25_DSN=postgresql://langchain:langchain@localhost:5432/langchain`.
+
+The data lanes are separate: `arxiv_graph_service.py` incrementally updates the older `arxiv_sect` chunk graph;
+the section map (`xpa`) is the source for this BM25 index. The 2026-10-22 refresh read the extracted Markdown root;
+the active build now includes 81,473 sections from 2,564 papers. Its matching BM25 build contains 82,512 chunks,
+including every graph section key, with an 80,000-row sample. The section cache builder accepts an explicit root with
+`python -u src/section_corpus.py --root D:\c\arxiv_id_lists\papers\post_processed`. The active `xpa` and BM25
+builds have been refreshed from those records. Incremental graph-paper writes embed
+before writing and commit replacement, metadata, vectors, assignments, and mentions atomically. Later cycles retry
+stored papers missing vectors or assignments, repairing partial rows left by a failed encoder load.
+
+For the legacy chunk lane, the source is `D:\c\arxiv_id_lists\papers\post_processed`; run
+`F:\Python\mcp\graph\Scripts\python.exe -u src\arxiv_graph_service.py --once --root D:\c\arxiv_id_lists\papers\post_processed`
+for one pass or add `--watch` for the existing 30-minute watcher. The new `--root` option applies to both modes.
+Its frozen encoder is `sentence-transformers/all-MiniLM-L6-v2`, CUDA, 250-token windows, at most 32 windows per
+chunk. `C:\Users\user\py310` still has CPU-only Torch paired with CUDA torchvision and fails model import; the
+F: graph environment is verified and scheduled tasks now use it for API and legacy graph ingestion. The BM25
+watcher is registered as a current-user logon task; setup details are in
+[`F:\Python\README.md`](F:\Python\README.md).
 
 ## Checking it works
 

@@ -248,6 +248,82 @@ def test_new_documents_are_stored_flagged_vectorised_with_frozen_statistics_and_
     assert placed == [(3, 0, "nearest-centroid", None, None), (5, 1, "nearest-centroid", None, None)]   # S4; alpha -> 0, beta -> 1
 
 
+def test_embedding_failure_writes_nothing_and_preserves_replaced_paper(conn):
+    make_build(conn)
+    st = svc.frozen(conn, LABEL)
+    svc.ingest_new(conn, LABEL, ["arxiv/2601_9"], [PAPER_V1], st, fake_embed,
+                   versions={"arxiv/2601_9": 1})
+    before_meta = conn.execute("SELECT ord, text, version FROM lex_chunk_meta WHERE label = %s AND doc_id = %s ORDER BY ord",
+                               (LABEL, "arxiv/2601_9")).fetchall()
+    before_dense = conn.execute(f"SELECT ord FROM {ss._table(LABEL, 'dense')} WHERE ord = ANY(%s) ORDER BY ord",
+                                ([row[0] for row in before_meta],)).fetchall()
+
+    def broken_embed(_texts):
+        raise RuntimeError("encoder unavailable")
+
+    with pytest.raises(RuntimeError, match="encoder unavailable"):
+        svc.ingest_new(conn, LABEL, ["arxiv/2601_9"], [PAPER_V2], svc.frozen(conn, LABEL), broken_embed,
+                       versions={"arxiv/2601_9": 2}, replace={"arxiv/2601_9"})
+    after_meta = conn.execute("SELECT ord, text, version FROM lex_chunk_meta WHERE label = %s AND doc_id = %s ORDER BY ord",
+                              (LABEL, "arxiv/2601_9")).fetchall()
+    after_dense = conn.execute(f"SELECT ord FROM {ss._table(LABEL, 'dense')} WHERE ord = ANY(%s) ORDER BY ord",
+                               ([row[0] for row in before_meta],)).fetchall()
+    assert after_meta == before_meta
+    assert after_dense == before_dense
+    assert svc.incomplete_papers(conn, LABEL, st["build"]) == []
+
+
+def test_persistence_failure_rolls_back_replacement_and_all_new_rows(conn, monkeypatch):
+    make_build(conn)
+    svc.ingest_new(conn, LABEL, ["arxiv/2601_9"], [PAPER_V1], svc.frozen(conn, LABEL), fake_embed,
+                   versions={"arxiv/2601_9": 1})
+    old_rows = conn.execute("SELECT ord, text, version FROM lex_chunk_meta WHERE label = %s AND doc_id = %s ORDER BY ord",
+                            (LABEL, "arxiv/2601_9")).fetchall()
+    original_write = ss.write_chunks
+
+    def fail_cosine(conn_arg, label_arg, dim_arg, rows_arg, replace=False, kind="chunk"):
+        if kind == "cos":
+            raise RuntimeError("cosine write failed")
+        return original_write(conn_arg, label_arg, dim_arg, rows_arg, replace=replace, kind=kind)
+
+    monkeypatch.setattr(ss, "write_chunks", fail_cosine)
+    with pytest.raises(RuntimeError, match="cosine write failed"):
+        svc.ingest_new(conn, LABEL, ["arxiv/2601_9"], [PAPER_V2], svc.frozen(conn, LABEL), fake_embed,
+                       versions={"arxiv/2601_9": 2}, replace={"arxiv/2601_9"})
+    assert conn.execute("SELECT ord, text, version FROM lex_chunk_meta WHERE label = %s AND doc_id = %s ORDER BY ord",
+                        (LABEL, "arxiv/2601_9")).fetchall() == old_rows
+    assert svc.incomplete_papers(conn, LABEL, svc.frozen(conn, LABEL)["build"]) == []
+
+
+def test_incomplete_paper_is_detected_and_reloaded_from_its_current_markdown(conn, tmp_path):
+    make_build(conn)
+    st = svc.frozen(conn, LABEL)
+    partial = [{"doc_id": "arxiv/2601_0001", "version": 1, "section_idx": 0, "chunk_idx": 0,
+                "section_title": "Partial", "is_reference": False, "is_junk": False, "text": ALPHA_DOC}]
+    ss.append_chunk_meta(conn, LABEL, partial, min_ord=st["n_chunks"])
+    assert svc.incomplete_papers(conn, LABEL, st["build"]) == ["arxiv/2601_0001"]
+    (tmp_path / "2601_0001.md").write_text(BETA_DOC, encoding="utf-8")
+    papers = svc.load_incomplete_papers(str(tmp_path), ["arxiv/2601_0001"], {"arxiv/2601_0001": 1})
+    assert len(papers) == 1 and papers[0]["doc_id"] == "arxiv/2601_0001"
+    assert papers[0]["text"] == BETA_DOC and papers[0]["repair"] is True
+    assert svc.load_incomplete_papers(str(tmp_path), ["arxiv/2601_0001"], {"arxiv/2601_0001": 2}) == []
+
+
+def test_cli_passes_explicit_markdown_root_to_one_shot_and_watch(monkeypatch):
+    root = r"D:\c\arxiv_id_lists\papers\post_processed"
+    seen = []
+    monkeypatch.setattr(svc, "acquire_lock", lambda: True)
+    monkeypatch.setattr(svc, "ensure_docker", lambda: True)
+    monkeypatch.setattr(svc, "cycle", lambda label, root=None: seen.append((label, root)))
+    monkeypatch.setattr(svc, "release_lock", lambda: None)
+    monkeypatch.setattr(svc, "watch", lambda label, root=None: seen.append((label, root)))
+    monkeypatch.setattr(svc.sys, "argv", ["arxiv_graph_service.py", "--once", "--root", root])
+    svc.main()
+    monkeypatch.setattr(svc.sys, "argv", ["arxiv_graph_service.py", "--watch", "--root", root])
+    svc.main()
+    assert seen == [(svc.LABEL, root), (svc.LABEL, root)]
+
+
 def test_ingesting_the_same_documents_again_adds_nothing_and_a_known_text_is_skipped(conn, tmp_path, monkeypatch):
     make_build(conn)
     fresh_map(tmp_path, monkeypatch, age_s=+3600)
@@ -378,8 +454,8 @@ def test_a_methods_extract_is_a_part_of_the_paper_not_a_version_of_it(conn, tmp_
 def test_a_paper_stored_with_its_version_in_the_id_is_recognised_and_not_ingested_a_second_time(conn, tmp_path, monkeypatch):
     make_build(conn)
     fresh_map(tmp_path, monkeypatch, age_s=+3600)
-    ss.append_chunk_meta(conn, LABEL, [{"doc_id": "arxiv/2601_0009v1", "section_idx": 0, "chunk_idx": 0, "section_title": "T",
-                                        "is_reference": False, "is_junk": False, "text": "stored before versions were a key"}], min_ord=3)
+    svc.ingest_new(conn, LABEL, ["arxiv/2601_0009v1"], [PAPER_V1], svc.frozen(conn, LABEL), fake_embed,
+                   versions={"arxiv/2601_0009v1": 1})
     _touch_md(tmp_path, **{"2601_0009v1": PAPER_V1})                                       # the file the id came from
     out = _cycle(conn, tmp_path, [])
     assert out["new_docs"] == 0 and out["upgraded_docs"] == 0 and "chunks" not in out
@@ -493,3 +569,58 @@ def test_freezing_without_parameters_uses_the_sweeps_winner_and_records_it_S9(co
     assert p["min_tok_len"] == 2 and svc.ENTITY_K == 40_000                                   # the full-corpus k, not the 841-paper one
     import inspect
     assert inspect.signature(svc.freeze_entities).parameters["k"].default == svc.ENTITY_K
+
+
+# ------------------------------------------------------------------ S10: docker ----
+class FakeDocker:
+    """Scripted `docker` CLI: the engine answers `engine_after` polls after Desktop is started; the container
+    turns healthy `healthy_after` polls after compose up. Records every command and every Desktop start."""
+
+    def __init__(self, engine_up=True, healthy=True, engine_after=1, healthy_after=1):
+        self.engine_up, self.healthy = engine_up, healthy
+        self.engine_after, self.healthy_after = engine_after, healthy_after
+        self.started, self.composed, self.cmds = 0, 0, []
+
+    def run(self, cmd, **_):
+        self.cmds.append(cmd)
+        if cmd[1] == "info":
+            if not self.engine_up and self.started:
+                self.engine_after -= 1
+                self.engine_up = self.engine_after <= 0
+            return subprocess.CompletedProcess(cmd, 0 if self.engine_up else 1, "28.5.2" if self.engine_up else "", "")
+        if cmd[1] == "inspect":
+            if not self.healthy and self.composed:
+                self.healthy_after -= 1
+                self.healthy = self.healthy_after <= 0
+            return subprocess.CompletedProcess(cmd, 0, "healthy" if self.healthy else "starting", "")
+        if cmd[1] == "compose":
+            self.composed += 1
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    def start(self, cmd):
+        self.started += 1
+
+
+def test_a_running_engine_and_healthy_postgres_start_nothing_S10():
+    d = FakeDocker()
+    assert svc.ensure_docker(d.run, d.start, sleep=lambda s: None) is True
+    assert d.started == 0 and d.composed == 0
+
+
+def test_a_stopped_engine_gets_docker_desktop_started_and_is_waited_for_S10():
+    d = FakeDocker(engine_up=False, engine_after=3)
+    assert svc.ensure_docker(d.run, d.start, sleep=lambda s: None) is True
+    assert d.started == 1 and d.composed == 0
+
+
+def test_an_unhealthy_postgres_gets_compose_up_graphdb_and_is_waited_for_S10():
+    d = FakeDocker(healthy=False, healthy_after=2)
+    assert svc.ensure_docker(d.run, d.start, sleep=lambda s: None) is True
+    compose = [c for c in d.cmds if c[1] == "compose"]
+    assert d.composed == 1 and compose[0][-3:] == ["up", "-d", "graphdb"]
+
+
+def test_an_engine_that_never_answers_skips_the_cycle_without_touching_postgres_S10():
+    d = FakeDocker(engine_up=False, engine_after=10**9)
+    assert svc.ensure_docker(d.run, d.start, sleep=lambda s: None, wait_s=0.0) is False
+    assert d.started == 1 and not any(c[1] in ("inspect", "compose") for c in d.cmds)

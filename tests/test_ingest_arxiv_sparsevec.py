@@ -57,6 +57,35 @@ def test_query_terms_weights_are_idf_times_qtf_over_known_terms_only():
     assert query_terms("zzz qqq", col, idf) == ([], [])
 
 
+def test_sampled_bm25_scales_df_and_assigns_singleton_weight_to_terms_absent_from_sample():
+    from ingest_arxiv_sparsevec import sampled_bm25_matrix
+    docs = [["common", "common"], ["common", "seen_once"], ["rare_outside_sample"],
+            ["rare_outside_sample"], ["rare_outside_sample"]]
+    BM, TF, terms, df, sample_df, avgdl = sampled_bm25_matrix(docs, [0, 1])
+    col = {str(term): i for i, term in enumerate(terms)}
+    assert sample_df[col["common"]] == 2 and df[col["common"]] == 5
+    assert sample_df[col["seen_once"]] == 1 and df[col["seen_once"]] == 2
+    assert sample_df[col["rare_outside_sample"]] == 0 and df[col["rare_outside_sample"]] == 1
+    assert BM.shape == TF.shape == (5, 3) and np.isclose(avgdl, 1.4)
+
+
+def test_sampled_bm25_accepts_all_rows_when_population_is_under_limit():
+    from ingest_arxiv_sparsevec import sampled_bm25_matrix
+    docs = [["alpha", "beta"], ["beta", "gamma"], ["delta"]]
+    _, _, terms, df, sample_df, _ = sampled_bm25_matrix(docs, [0, 1, 2])
+    assert np.array_equal(df, sample_df)
+    assert np.all((df >= 1) & (df <= len(docs)))
+
+
+def test_bpe_training_sample_does_not_remove_non_sample_terms_from_encoded_corpus():
+    from ingest_arxiv_sparsevec import bpe_docs
+    docs = [["abcabc"], ["abab"], ["abca"]]
+    training = docs[:-1]
+    encoded, to_pieces = bpe_docs(docs, merges=40, training_token_docs=training)
+    assert _join(encoded[-1]) == "abca"
+    assert "[UNK]" not in to_pieces(["abca"])
+
+
 # ---- doc_row must reproduce a full build's rows from frozen statistics (V7, the incremental path)
 
 CORPUS = DOCS + [["graph", "graph", "graph", "tensor", "rank", "node"], [], ["leiden", "bm25", "sparse", "vector", "graph"]]

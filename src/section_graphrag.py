@@ -1,22 +1,17 @@
-"""section_graphrag.py -- hybrid GraphRAG over the section map in Postgres: a SUBGRAPH answer from the retrieved sections and a GLOBAL answer from community summaries, then one synthesis.
+"""| Stage | Mechanism | Tag | Ref |
+|---|---|---|---|
+| SEED | Rank sections by dense cosine and retrieve top 144 BM25 chunks by exact sparse inner product. | [mandatory] | G1, G18 |
+| RERANK | Score token/term adjacency, then collapse chunk hits to section IDs. | [mandatory] | G18 |
+| FUSE | Combine dense and sparse section ranks with reciprocal rank fusion. | [mandatory] | G1 |
+| REWEIGHT | Apply selected-term community affinity after fusion and before top-k. | [optional] | G16 |
+| EXPAND | Walk up to HOPS edges from each seed and rank neighbours by edge weight. | [mandatory] | G2, G13 |
+| CANDIDATE | Select eligible summarized communities and score sections with the cross-encoder. | [mandatory] | G3, G15 |
+| ANSWER | Compare methods on source-defined axes using retained section evidence. | [mandatory] | G4, G5, G7, G14, G22 |
+| BOUND | Share the caller's deadline across every internal textual model call. | [contract] | G21 |
+| TRAVERSE | Let the ReAct loop request bounded additional searches and reads. | [optional] | G8-G14 |
+| STORE | Read graph state from `section_store.py` and lexical state from `sparsevec_store.py`. | [contract] | G17, G19 |
 
-Spec: operator 2026-10-07 (Agentic GraphRAG ch.1: "pregenerate community summaries ... map-reduce"; "Hybrid GraphRAG: vector search, graph traversal, context
-synthesis"; "leverage pgvector in docker"; approved plan C:\\Users\\user\\.claude\\plans\\jolly-soaring-moler.md). Task: playbook.md T172. No other governing spec.
-
-    STAGE     MECHANISM                                                                                                   GUARD
-    SEED      pgvector exact cosine over the centred section vectors + Postgres full text over the body, fused by RRF k=60   G1
-    EXPAND    one hop over sect_edge_sym from each seed, strongest edges first; neighbours ranked by RRF over seed lists     G2
-    CANDIDATE every multi-section community with a draft summary, largest first                                               G15
-    SCORE     the cross-encoder scores (question, section) for the CE_POOL best hybrid sections                                 G15
-    PARTIAL   generation calls only for the communities holding a section at/above CE_TAU, after all scores are collected    G15
-    REDUCE    one query-focused summary of the partial answers                                                               G4
-    ANSWER    one call over (global answer, evidence): the typical section of each of the top 3 communities, then the 6          G5, G7
-              subgraph sections nearest the question; every claim cites a section key
-    TRAVERSE  the question's subgraph is HOPS hops out (PER_QUERY = 18 sections); a ReAct agent sees it and a Box-Cox-sampled map of the communities, and   G8, G9, G10, G11, G13
-              makes up to AGENT_QUERIES more searches, each its own subgraph kept apart from the earlier ones (top-up or mask); the final interpretation reads all of them   G14
-    STORE     src/section_store.py: sect_node / sect_edge / sect_community (python -u src\\section_store.py --tag xpa)
-
-G1  The seed arms are the live service's (arxiv_rag_api.search) moved onto SECTIONS: the live build is chunks, this map is sections.
+G1  The dense and BPE BM25 feature spaces are frozen for the live builds. Stored sparse vectors carry saturated term frequency; query weights carry IDF times query frequency. Dense and sparse scores are fused by rank because their scales differ.
 G6  WHEN the build holds the genre axes (section_store D7) the dense arm seeds from the vectors with them removed and projects the question the same way: hybrid recall@50 on the known-item
     battery .690 -> .748 (paired 30 against 7). The community-by-summary ranking stays in the original space (not measured with the axes removed).
 G2  A neighbour is ranked by the weight of its edge (section_store D5): the significance the communities were built from, not a raw nearest-neighbour rank.
@@ -68,12 +63,25 @@ G15 (operator 2026-10-13: "I now officially regret JEV ... just use query + sect
     NO FALLBACK (operator 2026-10-12: "fallback = failure ... if no community came back, I would reject the question"): when no section passes, the question is REJECTED (`question_rejected`):
     no global view, no agent, no evidence, no answer. Amended 2026-10-13: a question with a passing section is not rejected because the partials said NO; with the Jev gate removed the cross-encoder is
     the judge of relevance, and in the first run the memory question's six passing sections (all c21) were rejected by c21's summary-level NO. The global view is then empty, never substituted.
+G16 (operator 2026-10-21): selected community Dunning terms steer retrieval. Keep the user's question unchanged for dense embedding and answer generation; append selected terms only to the sparse query. After RRF, map every fused candidate to its stored community and compute mean per-term affinity `G2(c,t) / max_c G2(c,t)`. Multiply the fused score by `1 + 0.25 * affinity`, sort, then truncate to `k`. No selected terms means the exact existing RRF order. The 0.25 multiplier is an initial design value, not a measured optimum.
+G17 Chat retrieval's sparse arm SHALL use the live `arxiv_sect_bpe` generation, its frozen BPE tokenizer and build-scoped IDF. It exact-scans the record_id-only sparse vector bridge joined to chunk metadata; `tsvector` and ANN are not fallbacks. Startup requires matching vocabulary and tokenizer metadata.
+G18 (operator 2026-10-21): retrieve the top 144 chunks by BM25 sparsevec; rerank their text by within-word BPE position (offset at most one), within-word adjacent BPE pairs, and directed adjacent word pairs, with repeated matches capped by query multiplicity. Average available ratios, preserve sparse BM25 score as the tie-break, collapse repeated chunk hits to their containing section, then fuse that order with dense section results. Community Dunning reweighting remains after fusion and before top-k. Full section text is used for graph reads after candidate ranking.
+G19 The graph connection owns section metadata, communities, and record_id-only `sect_embedding` rows; the BM25 connection owns the lexical build, record_id-only sparse vectors, metadata, sample, tokenizer, and IDF. Every graph section key must be represented in the pinned BM25 metadata before the API serves retrieval; unmatched BM25 keys are excluded and counted.
+G20 Dense and sparse bridge record_id values are globally unique within their owning database. Build membership and business keys are resolved only through the metadata row; ord remains the section/chunk-local ID returned to retrieval callers.
+G21 WHEN a request supplies a monotonic deadline, all partial, reduction, action, and final model calls SHALL share it; empty or unfinished model replies SHALL fail before agent parsing. Internal reasoning is disabled by the textual task client.
+G22 WHEN sources supply comparison criteria, final synthesis SHALL preserve those axes as criteria, actual methods as alternatives, distinct change targets, and proposals versus demonstrated findings. The canonical-paper inventory requires additional approaches outside the principal table; unsupported table cells say not reported. Final synthesis allows 2048 completion tokens; action and summary calls retain their 1024-token default. The agent SHALL seek comparison sections and methods crossing category boundaries.
+
+CLOSED: Selected terms are not LLM-rewritten query text and do not hard-filter communities. Their lexical effect enters the sparse arm; their Dunning effect reweights fused candidates before top-k.
+Preconditions: selected terms come from the active build's Dunning inventory; unknown or legacy terms without G² contribute no community affinity.
+Failure modes: legacy string-only term rows cannot reweight until refreshed. Missing BPE chunk rows, vocabulary/IDF, or frozen tokenizer metadata stop API startup; there is no `tsvector` fallback.
 """
 from __future__ import annotations
 
 import os
+import logging
 import re
 import sys
+import time
 from collections import defaultdict
 
 import numpy as np
@@ -83,13 +91,19 @@ sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "src"))
 
 import section_store as st
+import section_sparse as sparse
+import sparsevec_store as sparsevec
+from ingest_arxiv_sparsevec import query_terms
+
+LOG = logging.getLogger(__name__)
 
 SEARCH_N, SNIPPET_CHARS, READ_CHARS, MAX_READS = 3, 160, 6000, 2                                    # G8, G13: seeds per query
 HOPS, AGENT_QUERIES, PER_QUERY, HOP_CAP, HOP_NEIGHBOURS = 3, 3, 18, 15, 10                           # G8, G13: the two tunable depths (tried at 1, 2, 3), the sections shown per query (18: 13 dropped the survey section, see G13), the cap per hop
 CATALOGUE_K = 12                                                                                     # G10
 ANSWER_BUDGET_CHARS, MIN_SECTION_CHARS = 270000, 1200                                                # G14: at the maximum 72 sections, allocate 3,750 characters each so the 3,644-character memory taxonomy fits whole
+ANSWER_TOKENS = 2048                                                                              # G22: comparison tables need room beyond the action/summary default
 ACTIONS, KEY_ACTIONS = ("READ", "SEARCH", "ANSWER"), ("READ",)
-RRF_K, POOL, PER_SEED, MAX_CANDIDATES = 60, 100, 5, 12
+RRF_K, POOL, SPARSE_POOL, PER_SEED, MAX_CANDIDATES = 60, 100, 144, 5, 12
 CENTRE_K, CLOSEST_K, MIN_MEMBERS = 3, 6, 2      # G7: typical sections of the top 3 communities holding >= 2 subgraph sections, then the 6 subgraph sections nearest the question
 CE_DIR, CE_TAU, CE_POOL, CE_CHARS = os.path.expanduser("~/models/ce-ms-marco-minilm-l6"), 0.0, 50, 2500   # G15: the cross-encoder, the pass score, sections scored, characters of a section it is given
 MAP_PROMPT = """You answer ONE question using ONLY the summary of one cluster of sections from research papers.
@@ -128,10 +142,21 @@ Question: {question}
 GLOBAL view:
 {global_answer}
 
+Canonical source inventory (each relevant paper needs a contribution in the answer):
+{paper_inventory}
+
 SUBGRAPH view (each section has a key in square brackets; after every claim you take from it, cite that key exactly as printed, the document id AND the # and section number, in square brackets, in the form [<document id>#<section number>]):
 {sections}
 
-Write ONE answer to the question, in at most four short paragraphs, for a reader who has not seen the context. Every bracketed citation must exactly match a section key printed in the SUBGRAPH. The [c12]-style tags in the GLOBAL view are cluster tags, never cite them or replace them with labels such as [GLOBAL view]. If a global claim has no supporting subgraph section, omit it. Do not describe the views ("the GLOBAL view says") and print no heading or label; begin with the answer. Before drafting, map the question's requested dimensions to evidence. For a question about methods or approaches, distinguish what the approaches do (their operations, workflows, or mechanisms) from how sources classify their variants (named families, taxonomies, or other organizing axes). Include other dimensions when the question asks for them or they materially distinguish the approaches. A taxonomy is an organizing view of the methods, not a substitute for describing them; preserve its useful hierarchy and named members. When labels classify different axes (for example, a memory's function versus its storage form), name the axis for each label and explain how they can combine; do not flatten them into one list of competing approaches. When a term has different meanings across fields, use the definition given by the relevant source and do not transfer a same-named concept from another field without evidence. Prefer a source's systematic account over an isolated example. Mention an evidence gap only when it concerns an explicit part of the question that the context does not answer. Do not add generic caveats about unrelated topics, or say that the text does not specify details the question did not ask for. End after answering. Use nothing but the two kinds of context."""
+Write one answer using only supported evidence.
+- Before drafting, map the question's requested dimensions to evidence; distinguish what the approaches do from how sources classify their variants. A taxonomy is an organizing view of the methods, not a replacement for describing them. Preserve useful hierarchies and separate independent classification axes.
+- When a term has different meanings across fields, keep the relevant source's definition tied to its field.
+- Every bracketed citation must exactly match a section key printed in the SUBGRAPH. Never cite GLOBAL cluster tags or replace them with labels such as [GLOBAL view]. Omit global claims without subgraph support.
+- Preserve distinct change targets, including changes to an executor, its workflow, its improvement procedure, or its parameters. Include boundary-crossing methods such as distillation when supported.
+- Separate demonstrated results from proposals and future work; attribute recommendations to their source. Never infer a table value from a proposed extension; write "not reported" for an unsupported value.
+- Mention an evidence gap only when it concerns an explicit part of the question. Do not add generic caveats about unrelated topics. Do not describe the views or add a preamble.
+
+OUTPUT CONTRACT: If a source explicitly names comparison criteria, START with a Markdown table whose columns are Method, those criteria USING THEIR EXACT SOURCE NAMES, and Evidence. Put actual named methods in the rows, never the criterion names. Cite the supporting section key in EVERY row's Evidence cell. Then check the canonical source inventory: for EACH relevant paper not represented in that main table, include a row in an Additional retrieved approaches table with Paper/method, Distinct contribution, and Evidence. Include methods outside the principal source's classification, particularly changes to learned parameters rather than only a surrounding workflow, even if just one sentence describes them. The principal table does not define the scope of the other papers. Finish with a short interpretation distinguishing demonstrated results and proposals. Check all supplied papers before asserting that all methods share a restriction. Otherwise answer in concise cited prose using the source's structure. End after answering."""
 AGENT_PROMPT = """You search a graph of sections from research papers to answer a question. You choose the words of each new search, and you may stop as soon as you have enough.
 Sections are nodes. A VECTOR edge joins two sections that read alike. Every search returns a subgraph: the sections best matching its words plus their neighbours out to hop {hops}, {per_query} in all. A section an earlier search already showed is never shown again, so a new search always returns new sections.
 
@@ -162,7 +187,7 @@ or
 or
   ACTION: ANSWER
   WHY: one sentence.
-Choose reads and searches to cover the information dimensions the question asks for. For a methods or approaches question, track both what the approaches do (operations, workflows, mechanisms) and how sources classify their variants (named families, taxonomies, other organizing axes); also track any additional dimensions explicit in the question. A classification is one view of the methods, not a replacement for the methods themselves. If labels refer to different axes, such as function versus storage form, keep those axes separate and look for evidence that explains how they combine. When a term has different meanings across fields, read a relevant source that defines it and keep that meaning tied to its field. Search for a meaningful uncovered dimension rather than another example of one already covered. Where sources give a hierarchy, check whether useful subtypes are represented before treating a broad category as complete. Prefer systematic accounts when available. Before answering, compare the evidence across dimensions and preserve distinct classifications and levels. The first words of a section are clues, not evidence; read it before relying on its claims. Replies left this round: {left}."""
+Choose reads and searches to cover the information dimensions the question asks for. For a methods or approaches question, track both what the approaches do (operations, workflows, mechanisms) and how sources classify their variants (named families, taxonomies, other organizing axes); also track any additional dimensions explicit in the question. A classification is one view of the methods, not a replacement for the methods themselves. If labels refer to different axes, such as function versus storage form, keep those axes separate and look for evidence that explains how they combine. When a term has different meanings across fields, read a relevant source that defines it and keep that meaning tied to its field. Search for a meaningful uncovered dimension rather than another example of one already covered. Where sources give a hierarchy, check whether useful subtypes are represented before treating a broad category as complete. Prefer systematic accounts when available. Read sections that state explicit comparison criteria and relevant methods that cross an apparent category boundary, such as changing parameters instead of only surrounding workflow, before declaring those dimensions covered. Before answering, compare the evidence across dimensions and preserve distinct classifications and levels. The first words of a section are clues, not evidence; read it before relying on its claims. Replies left this round: {left}."""
 ROUND_SEARCH = "You are in search round {round} of {queries}. You may READ up to {reads} sections first, then SEARCH once; the search runs and you see its sections next round. If what you have is already enough, ANSWER."
 ROUND_CLOSE = "No more searches. You may READ up to {reads} more sections, then ANSWER."
 
@@ -267,8 +292,23 @@ def strip_cluster_tags(text: str) -> str:
 
 
 def answer_prompt(question: str, global_answer: str, items: list[dict], section_chars: int = 6000) -> str:
-    """G5. Guarantee: the final synthesis prompt over the global answer (cluster tags removed) and the subgraph sections."""
+    """Build the final evidence comparison prompt for answer and agent_answer.
+
+    Args:
+        question: User question whose requested dimensions govern the comparison.
+        global_answer: Draft community synthesis; cluster tags are removed.
+        items: Evidence dictionaries carrying key, role, and source text.
+        section_chars: Per-source character allowance; cuts receive a visible marker.
+
+    Returns:
+        The G5/G22 prompt with exact citation keys and the source-defined comparison contract.
+
+    Raises:
+        KeyError: A required evidence field is absent.
+    """
+    inventory = dict.fromkeys(item["key"].split("#", 1)[0].removesuffix("_methods") for item in items)
     return ANSWER_PROMPT.format(question=question, global_answer=strip_cluster_tags(global_answer).strip() or "(no community summary bore on the question)",
+                                paper_inventory="\n".join(f"- {paper}" for paper in inventory),
                                 sections=sections_block(items, section_chars))
 
 
@@ -471,8 +511,9 @@ def run_agent(question: str, global_answer: str, initial: list[dict], tools, ask
 class Explorer:
     """G8, G13. The agent's database actions over one retrieval `got` of a SectionGraph: it turns section ords into node dicts, remembers which key is which ord, and runs each query's masked walk."""
 
-    def __init__(self, sg: "SectionGraph", got: dict, hops: int = HOPS, per_query: int = PER_QUERY, mode: str = "topup"):
+    def __init__(self, sg: "SectionGraph", got: dict, hops: int = HOPS, per_query: int = PER_QUERY, mode: str = "topup", selected_terms: list[str] | None = None):
         self.sg, self.got, self.ord, self.queries, self.hops, self.per_query, self.mode, self.stats = sg, got, {}, 1, hops, per_query, mode, {}
+        self.selected_terms = selected_terms or []
 
     def tag(self, nodes: list[dict], query: int, text: str) -> list[dict]:
         """G11. Guarantee: `nodes` each tagged with the query number and words that led to it."""
@@ -501,7 +542,7 @@ class Explorer:
         the shown sections the walk met. Mode 'topup' (the default, operator 2026-10-09): the query's own natural subgraph (the 'mask' walk with nothing masked), minus what is shown, plus as many
         more as were shown, hopped out along vector edges (`top_up`); `masked` in the stats is that count, k."""
         conn, build = self.sg.conn, self.sg.build
-        arms = self.sg.ranked(words)
+        arms = self.sg.ranked(words, self.selected_terms)
         room = HOP_NEIGHBOURS + len(masked)
         if (mode or self.mode) == "topup":
             chosen, hop, stats, _ = self.pick(words, set(), "mask")
@@ -534,38 +575,176 @@ class Explorer:
         return self.walk(words, self.queries, {self.ord[k] for k in seen})
 
 
-class SectionGraph:
-    """The persisted section map made queryable. Reads sect_* rows only; embeds the question with the same model and centring mean the build used."""
+def community_term_affinities(selected_terms: list[str], terms_by_community: dict[int, list[dict]]) -> dict[int, float]:
+    """G16. Require: selected terms and stored `{term, g2}` records. Guarantee: mean per-term G² normalized to each term's corpus maximum, bounded to [0, 1]."""
+    normalized = {term.casefold() for term in selected_terms if isinstance(term, str) and term.strip()}
+    maxima: dict[str, float] = {}
+    for records in terms_by_community.values():
+        for record in records:
+            term, score = record["term"], float(record["g2"])
+            if term in normalized and score > 0:
+                maxima[term] = max(maxima.get(term, 0.0), score)
+    if not maxima:
+        return {}
+    return {
+        cid: sum(
+            float(record["g2"]) / maxima[record["term"]]
+            for record in records
+            if record["term"] in maxima
+        ) / len(maxima)
+        for cid, records in terms_by_community.items()
+    }
 
-    def __init__(self, conn, tag: str = "xpa", model_dir: str | None = None, exclude_genre: bool = False):
+
+class SectionGraph:
+    """Query the section graph with dense section rows and chunk-level BPE BM25 sparsevec rows.
+
+    Require:
+        The live graph and BPE chunk builds, tokenizer, vocabulary, IDF, vectors, and metadata are available.
+    Guarantee:
+        Dense search ranks graph sections; sparse search reranks chunks before mapping them to graph sections.
+    Maintain:
+        Selected terms enter only the sparse query; the original question remains the dense and generation input.
+    Assert:
+        The BPE tokenizer, sparse dimension, vocabulary, and IDF values match the live chunk build metadata.
+    """
+
+    def __init__(self, conn, tag: str = "xpa", model_dir: str | None = None, exclude_genre: bool = False,
+                 chunk_label: str = "arxiv_sect_bpe", bm25_conn=None):
         live = st.live_build(conn, tag)
         assert live is not None, "no live sect_build for tag %r: run python -u src\\section_store.py --tag %s" % (tag, tag)
-        self.conn, (self.build, self.params), self.exclude_genre = conn, live, exclude_genre
+        self.conn, self.bm25_conn, (self.build, self.params), self.exclude_genre = conn, bm25_conn or conn, live, exclude_genre
+        chunk_live = sparsevec.live_build(self.bm25_conn, chunk_label)
+        assert chunk_live is not None, "no live BPE chunk build for %r: rebuild it with --label %s --bpe 10000" % (chunk_label, chunk_label)
+        self.chunk_build, self.chunk_count, self.chunk_params = chunk_live
+        assert self.chunk_params.get("source_graph_build") == self.build, \
+            "BM25 generation was built from a different section graph; rebuild the lexical index"
+        chunk_tokenizer = self.chunk_params.get("tokenizer", {})
+        assert chunk_tokenizer.get("kind") == "bpe" and chunk_tokenizer.get("json"), \
+            "live %s build has no frozen BPE tokenizer; rebuild it with the current ingest script" % chunk_label
+        self.chunk_label = chunk_label
+        self.chunk_tokenizer = sparse.Tokenizer.from_str(chunk_tokenizer["json"])
+        self.chunk_dim = int(self.chunk_params["bm25"]["dim"])
+        # PostgreSQL vocabulary columns are 1-based; query_terms and _literal use zero-based Python columns.
+        self.chunk_vocab = {piece: (col - 1, float(idf)) for col, piece, idf in self.bm25_conn.execute(
+            "SELECT col, piece, idf FROM lex_build_vocab WHERE build_id = %s ORDER BY col", (self.chunk_build,)).fetchall()}
+        chunk_cols = {col for col, _ in self.chunk_vocab.values()}
+        assert len(self.chunk_vocab) == self.chunk_dim and chunk_cols == set(range(self.chunk_dim)) \
+            and all(np.isfinite(idf) for _, idf in self.chunk_vocab.values()), \
+            "live BPE chunk vocabulary or IDF does not match its sparsevec dimension"
+        self.chunk_col = {piece: col for piece, (col, _) in self.chunk_vocab.items()}
+        self.chunk_idf = np.asarray([idf for _, (_, idf) in
+                                    sorted(self.chunk_vocab.items(), key=lambda item: item[1][0])], np.float32)
+        self.chunk_section_ord = {(doc_id, section_idx): ord_ for ord_, doc_id, section_idx in conn.execute(
+            "SELECT ord, doc_id, section_idx FROM sect_node WHERE build_id = %s", (self.build,)).fetchall()}
+        bm25_keys = {(doc_id, section_idx) for doc_id, section_idx in self.bm25_conn.execute(
+            "SELECT DISTINCT doc_id, section_idx FROM lex_chunk_meta WHERE label = %s AND build_id = %s",
+            (chunk_label, self.chunk_build)).fetchall()}
+        graph_keys = set(self.chunk_section_ord)
+        missing_keys = graph_keys - bm25_keys
+        self.bm25_coverage = {"graph_sections": len(graph_keys), "bm25_sections": len(bm25_keys),
+                              "missing_graph_sections": len(missing_keys),
+                              "unmatched_bm25_sections": len(bm25_keys - graph_keys)}
+        assert not missing_keys, "BM25 metadata is missing %d active graph sections; rebuild from the live section build" % len(missing_keys)
         self.mu = np.asarray(self.params["mu"], np.float32)
         from model2vec import StaticModel
         self.model = StaticModel.from_pretrained(model_dir or os.path.expanduser("~/models/m2v-jina-v5-nano-256"))
         self.genre = {r[0] for r in conn.execute("SELECT cid FROM sect_community WHERE build_id = %s AND genre_flag", (self.build,)).fetchall()} if exclude_genre else set()
         self.V = np.asarray(self.params["genre_axes"], np.float64) if self.params.get("genre_axes") else None       # G6: the genre axes the dense arm projects out, when the build holds them
         self.small = {r[0] for r in conn.execute("SELECT cid FROM sect_community WHERE build_id = %s AND size < 2", (self.build,)).fetchall()}      # G3: a community of one section is never a candidate (408 of 823 on the xpa map)
+        self._community_terms = None
 
     def embed(self, text: str) -> np.ndarray:
         import section_embed as se
         return se.center(se.pool(self.model, [text]), self.mu)[0][0]
 
-    def ranked(self, question: str) -> dict:
-        """G1, G6, G13. Guarantee: {q, qd, col, arms, ranked}: the question's vector, the vector and column the dense arm uses, the two arms' POOL-long lists, and their RRF order (all ords, best first)."""
+    def ranked(self, question: str, selected_terms: list[str] | None = None,
+               include_references: bool = False) -> dict:
+        """G1, G6, G13, G16. Require: original question and optional live Dunning terms. Guarantee: dense rank from the question, lexical rank from question plus terms, fused and community-reweighted order with score trace."""
+        requested_terms = list(dict.fromkeys(term.strip().casefold() for term in (selected_terms or []) if isinstance(term, str) and term.strip()))
+        if requested_terms and self._community_terms is None:
+            self._community_terms = st.community_dunning_terms(self.conn, self.build)
+        known_terms = {record["term"] for records in (self._community_terms or {}).values() for record in records}
+        selected_terms = [term for term in requested_terms if term in known_terms]
+        ignored_terms = [term for term in requested_terms if term not in known_terms]
         q = self.embed(question)
         if self.V is None:
             qd, self.col = q, "emb"
         else:
             import section_genre as sgn
             qd, self.col = sgn.remove_axes(q[None, :], self.V)[0], "emb_b"
-        arms = {"dense": st.seeds_dense(self.conn, self.build, qd, POOL, col=self.col), "lexical": st.seeds_lexical(self.conn, self.build, question, POOL)}
-        return {"q": q, "qd": qd, "col": self.col, "arms": arms, "ranked": [o for o, _ in rrf(list(arms.values()))]}
+        sparse_orders, sparse_detail = self.reranked_chunk_sections(
+            question, selected_terms, include_references=include_references
+        )
+        arms = {"dense": st.seeds_dense(self.conn, self.build, qd, POOL, col=self.col), "sparse": sparse_orders}
+        fused = rrf(list(arms.values()))
+        affinities, community_by_ord = {}, {}
+        if selected_terms:
+            affinities = community_term_affinities(selected_terms, self._community_terms)
+            community_by_ord = st.community_of(self.conn, self.build, [ord_ for ord_, _ in fused])
+        details = []
+        for ord_, score in fused:
+            cid = community_by_ord.get(ord_)
+            affinity = affinities.get(cid, 0.0)
+            details.append({"ord": ord_, "community": cid, "rrf_score": score,
+                            "affinity": affinity, "adjusted_score": score * (1.0 + 0.25 * affinity),
+                            **sparse_detail.get(ord_, {})})
+        details.sort(key=lambda row: (-row["adjusted_score"], row["ord"]))
+        return {"q": q, "qd": qd, "col": self.col, "arms": arms, "ranked": [row["ord"] for row in details],
+                "selected_terms": selected_terms, "ignored_terms": ignored_terms, "rank_details": details,
+                "bm25_coverage": self.bm25_coverage}
 
-    def retrieve(self, question: str, k: int = 3, per_seed: int = PER_SEED, m: int = MAX_CANDIDATES) -> dict:
+    def reranked_chunk_sections(self, question: str, selected_terms: list[str],
+                                include_references: bool = False) -> tuple[list[int], dict[int, dict]]:
+        """Retrieve chunk BM25 candidates, rerank locally, then fold to graph sections.
+
+        Require:
+            The live BPE chunk build has matching sparsevec rows, vocabulary IDF, tokenizer JSON, and chunk metadata.
+        Guarantee:
+            Up to 144 unique containing section ords, ordered by adjacency score then original BM25 score.
+        Maintain:
+            The initial candidate unit remains a chunk; section text is not used until graph expansion/read.
+        Assert:
+            Every returned section ord belongs to this graph build.
+        """
+        sparse_query = " ".join([question, *selected_terms]) if selected_terms else question
+        def bpe_terms(text: str) -> list[str]:
+            return [piece for word in sparse.tokenize(text) for piece in self.chunk_tokenizer.encode(word).tokens]
+
+        cols, weights = query_terms(sparse_query, self.chunk_col, self.chunk_idf, bpe_terms)
+        if not cols:
+            return [], {}
+        hits = sparsevec.query_generation(self.bm25_conn, self.chunk_label, self.chunk_build,
+                                          self.chunk_dim, cols, SPARSE_POOL, weights=weights)
+        ords = [ord_ for ord_, score in hits if score > 0.0]
+        if not ords:
+            return [], {}
+        meta = {row[0]: row for row in self.bm25_conn.execute(
+            "SELECT ord, doc_id, section_idx, text, is_reference, is_junk FROM lex_chunk_meta "
+            "WHERE label = %s AND build_id = %s AND ord = ANY(%s)",
+            (self.chunk_label, self.chunk_build, ords)).fetchall()}
+        eligible = [(ord_, score, meta[ord_]) for ord_, score in hits
+                    if ord_ in meta and not meta[ord_][5] and (include_references or not meta[ord_][4])
+                    and (meta[ord_][1], meta[ord_][2]) in self.chunk_section_ord]
+        if not eligible:
+            return [], {}
+        adj = sparse.adjacency_scores([question, *selected_terms], [row[2][3] for row in eligible], self.chunk_tokenizer)
+        ranked = sorted(zip(eligible, adj), key=lambda item: (-item[1]["score"], -item[0][1], item[0][0]))
+        section_orders, detail = [], {}
+        for (chunk_ord, bm25_score, row), score in ranked:
+            section_ord = self.chunk_section_ord[(row[1], row[2])]
+            if section_ord in detail:
+                continue
+            section_orders.append(section_ord)
+            detail[section_ord] = {**score, "bm25_score": float(bm25_score), "matched_chunk_ord": int(chunk_ord)}
+            if len(section_orders) == SPARSE_POOL:
+                break
+        assert all(ord_ in self.chunk_section_ord.values() for ord_ in section_orders)
+        return section_orders, detail
+
+    def retrieve(self, question: str, k: int = 3, per_seed: int = PER_SEED, m: int = MAX_CANDIDATES, selected_terms: list[str] | None = None) -> dict:
         """G15. Return the candidates for global scoring: every multi-section community with a draft summary, largest first. `m` remains accepted for call compatibility but no longer caps this global lens."""
-        r = self.ranked(question)
+        r = self.ranked(question, selected_terms)
         q, qd, arms = r["q"], r["qd"], r["arms"]
         seeds = r["ranked"][:k]
         sub = expand(seeds, st.neighbours(self.conn, self.build, seeds, per_seed))
@@ -573,8 +752,11 @@ class SectionGraph:
         candidates = [c for c, _, _ in st.community_catalogue(self.conn, self.build)]
         if self.exclude_genre:
             candidates = [c for c in candidates if c not in self.genre]
+        seed_set = set(seeds)
         return {"question": question, "seeds": seeds, "arms": arms, "subgraph": sub, "lab_of": lab_of, "qd": qd, "col": self.col,
-                "candidates": candidates, "ranked": r["ranked"]}
+                "candidates": candidates, "ranked": r["ranked"], "selected_terms": r["selected_terms"],
+                "ignored_terms": r["ignored_terms"], "bm25_coverage": r["bm25_coverage"],
+                "seed_scores": [row for row in r["rank_details"] if row["ord"] in seed_set]}
 
     def items(self, got: dict, centre_k: int = CENTRE_K, closest_k: int = CLOSEST_K) -> list[dict]:
         """G5, G7. Guarantee: the evidence list for the final step: the centrepoint of each of the top `centre_k` communities (by how many subgraph sections they hold), then the `closest_k`
@@ -628,8 +810,22 @@ def passing_communities(scores: list[dict], threshold: float, candidates: set[in
     return sorted(best, key=lambda c: -best[c])
 
 
-def global_view(sg: SectionGraph, got: dict, model: str) -> dict:
-    """G15. Score the CE_POOL best hybrid sections against the question with the cross-encoder, then generate partials for the communities of the passing sections and reduce them."""
+def global_view(sg: SectionGraph, got: dict, model: str, *, deadline: float | None = None) -> dict:
+    """Score fused sections, then summarize passing communities within the caller's deadline.
+
+    Args:
+        sg: Graph with live stores and models.
+        got: Ranked retrieval result and original question.
+        model: OpenRouter textual task model.
+        deadline: Optional shared monotonic deadline, never reset per community.
+
+    Returns:
+        Relevance scores, accepted/rejected partials, and the reduced global answer.
+
+    Raises:
+        TimeoutError: The shared model budget expired.
+        ValueError: A model response was empty or unfinished.
+    """
     import summarize_clusters as scz
     pool = got["ranked"][:CE_POOL]
     rows = st.sections(sg.conn, sg.build, pool)
@@ -645,7 +841,7 @@ def global_view(sg: SectionGraph, got: dict, model: str) -> dict:
         for c, rec in page.items():
             shown = "\n\n".join("[%s] %s" % (s["key"], " ".join(rows[s["ord"]]["text"].split())[:PARTIAL_CHARS]) for s in best[c])
             reply = scz.chat(model, PARTIAL_PROMPT.format(question=got["question"], cid=c, size=rec["size"],
-                                                          title=rec["title"], summary=rec["summary"], sections=shown))["content"]
+                                                          title=rec["title"], summary=rec["summary"], sections=shown), deadline=deadline)["content"]
             relevant, text = parse_map(reply)
             if relevant:
                 partials.append((c, text))
@@ -655,7 +851,7 @@ def global_view(sg: SectionGraph, got: dict, model: str) -> dict:
     partials.sort(key=lambda p: selected.index(p[0]))            # best-scoring section's community first
     return {"partials": partials, "not_relevant": len(scores) - sum(1 for s in scores if s["score"] >= threshold), "unparsed": unparsed, "partials_rejected": rejected,
             "section_scores": scores, "section_threshold": threshold, "question_rejected": rejection_reason(scores, threshold),
-            "global_answer": scz.chat(model, reduce_prompt(got["question"], partials))["content"] if partials else ""}
+            "global_answer": scz.chat(model, reduce_prompt(got["question"], partials), deadline=deadline)["content"] if partials else ""}
 
 
 def rejection_reason(scores: list[dict], threshold: float) -> str:
@@ -670,7 +866,23 @@ def rejection_reason(scores: list[dict], threshold: float) -> str:
 
 
 def answer(sg: SectionGraph, question: str, k: int = 3, model: str | None = None, per_seed: int = PER_SEED, m: int = MAX_CANDIDATES) -> dict:
-    """Guarantee: {..retrieve.., partials, not_relevant, global_answer, final}. LLM calls: one per candidate community, one reduce, one final (summarize_clusters.chat: never truncates)."""
+    """Answer directly from the loaded graph and retained evidence.
+
+    Args:
+        sg: Matching live graph and lexical generation with its query encoder loaded.
+        question: User question.
+        k: Hybrid seed count.
+        model: Textual OpenRouter model, or the shared client's default.
+        per_seed: Neighbours retained per seed.
+        m: Candidate community limit.
+
+    Returns:
+        Retrieval, global synthesis, source keys, and the G22 final comparison; a rejection has no evidence.
+
+    Raises:
+        ValueError: An internal model completion is empty or unfinished.
+        urllib.error.HTTPError: The upstream textual model request fails.
+    """
     import summarize_clusters as scz
     model = model or scz.MODEL
     got = sg.retrieve(question, k, per_seed, m)
@@ -678,7 +890,7 @@ def answer(sg: SectionGraph, question: str, k: int = 3, model: str | None = None
     if glob["question_rejected"]:
         return {**got, **glob, "final": glob["question_rejected"], "evidence": []}
     items = sg.items(got)
-    final = keep_grounded_sentences(scz.chat(model, answer_prompt(question, glob["global_answer"], items))["content"], items)
+    final = keep_grounded_sentences(scz.chat(model, answer_prompt(question, glob["global_answer"], items), max_tokens=ANSWER_TOKENS)["content"], items)
     return {**got, **glob, "final": final, "evidence": [{"key": i["key"], "ord": i["ord"], "role": i["role"]} for i in items]}
 
 
@@ -717,23 +929,49 @@ def answer_chars(n_sections: int, budget: int = ANSWER_BUDGET_CHARS) -> int:
 
 
 def agent_answer(sg: SectionGraph, question: str, k: int = 3, model: str | None = None, per_seed: int = PER_SEED, m: int = MAX_CANDIDATES, agent_model: str | None = None,
-                 catalogue_mode: str = "sample", hops: int = HOPS, queries: int = AGENT_QUERIES, per_query: int = PER_QUERY) -> dict:
-    """G8, G9, G10, G13. Guarantee: answer()'s fields plus `agent` = run_agent's {nodes, read, trace, stop, shown} and `traversal` = traversal_summary. The question's own subgraph is `hops` hops out and
-    `per_query` sections; the agent (`agent_model`, default `model`) sees it and the global view, sees a Box-Cox sample of communities each round (`catalogue_mode` 'top' shows the largest instead,
-    'none' shows none), may make up to `queries` more searches, each its own masked subgraph, and may stop at any reply; the final answer is G5's synthesis over the global view and the evidence:
-    FIRST every section the agent read (role 'read by the agent': it chose them), then the standard evidence it did not read (observed 2026-10-08 with the reads last: two speculative-decoding
-    sections the agent found were cited by neither of the answer's two paragraphs on that topic)."""
+                 catalogue_mode: str = "sample", hops: int = HOPS, queries: int = AGENT_QUERIES, per_query: int = PER_QUERY, selected_terms: list[str] | None = None,
+                 deadline: float | None = None) -> dict:
+    """Investigate the question and compare its evidence for the API's agent endpoint.
+
+    Args:
+        sg: Matching live graph and lexical generations with query encoding available.
+        question: User question, unchanged by selected lexical terms.
+        k: Hybrid seed count.
+        model: Textual model for community and final synthesis.
+        per_seed: Neighbours retained per seed.
+        m: Candidate community limit.
+        agent_model: Action model; defaults to model.
+        catalogue_mode: Sample communities, show top communities, or disable the catalogue.
+        hops: Expansion depth for each query's subgraph.
+        queries: Additional search allowance.
+        per_query: Sections exposed per search.
+        selected_terms: Validated community terms used by lexical ranking.
+        deadline: Absolute monotonic deadline shared across every model call.
+
+    Returns:
+        Retrieval and synthesis plus agent trace, traversal, and evidence keys. Agent-read sections
+        precede remaining evidence (G9/G14); G22 final synthesis uses its own completion allowance.
+
+    Raises:
+        TimeoutError: The shared request budget expires.
+        ValueError: An internal model returns unusable task text.
+        urllib.error.HTTPError: The upstream textual model request fails.
+    """
     import zlib
     import summarize_clusters as scz
     model = model or scz.MODEL
     agent_model = agent_model or model
-    got = sg.retrieve(question, k, per_seed, m)
-    glob = global_view(sg, got, model)
+    started = time.monotonic()
+    got = sg.retrieve(question, k, per_seed, m, selected_terms)
+    LOG.info("Graph stage=retrieval elapsed=%.2fs seeds=%d", time.monotonic() - started, len(got["seeds"]))
+    glob = global_view(sg, got, model, deadline=deadline)
+    LOG.info("Graph stage=global elapsed=%.2fs passing=%d", time.monotonic() - started,
+             sum(row["score"] >= glob["section_threshold"] for row in glob["section_scores"]))
     if glob["question_rejected"]:                    # G15: no agent, no evidence, no answer
         return {**got, **glob, "final": glob["question_rejected"], "evidence": [], "traversal": None,
                 "agent": {"nodes": {}, "read": {}, "trace": [], "stop": "rejected", "shown": []}}
-    ex = Explorer(sg, got, hops, per_query)
-    run = run_agent(question, glob["global_answer"], ex.initial(), ex, lambda p: scz.chat(agent_model, p)["content"], queries,
+    ex = Explorer(sg, got, hops, per_query, selected_terms=got["selected_terms"])
+    run = run_agent(question, glob["global_answer"], ex.initial(), ex, lambda p: scz.chat(agent_model, p, deadline=deadline)["content"], queries,
                     catalogue=None if catalogue_mode == "none" else st.community_catalogue(sg.conn, sg.build), seed=zlib.crc32(question.encode()), mode=catalogue_mode,
                     facts=st.community_entity_lines(sg.conn, sg.build), hops=hops, per_query=per_query)
     seen = [n["ord"] for n in run["nodes"].values()]
@@ -749,5 +987,7 @@ def agent_answer(sg: SectionGraph, question: str, k: int = 3, model: str | None 
     lab |= {o: r["community"] for o, r in away.items()}
     items = [{"key": o["key"], "ord": o["ord"], "community": lab[o["ord"]], "role": o["role"],
               "text": run["read"][o["key"]] if o["role"] == "read by the agent" else text[o["ord"]]["text"]} for o in order]
-    final = keep_grounded_sentences(scz.chat(model, answer_prompt(question, glob["global_answer"], items, answer_chars(len(items))))["content"], items)
+    LOG.info("Graph stage=traversal elapsed=%.2fs sections=%d stop=%s", time.monotonic() - started, len(items), run["stop"])
+    final = keep_grounded_sentences(scz.chat(model, answer_prompt(question, glob["global_answer"], items, answer_chars(len(items))), deadline=deadline, max_tokens=ANSWER_TOKENS)["content"], items)
+    LOG.info("Graph stage=complete elapsed=%.2fs evidence=%d", time.monotonic() - started, len(items))
     return {**got, **glob, "final": final, "agent": run, "traversal": traversal, "evidence": [{"key": i["key"], "ord": i["ord"], "role": i["role"]} for i in items]}

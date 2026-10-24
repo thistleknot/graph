@@ -1,13 +1,17 @@
-"""section_corpus.py -- the nodes of the section map: every header block of every paper, filtered to the usable ones, cached.
+"""Build the usable section corpus cache from a selected Markdown root.
 
-Spec: operator 2026-10-05 ("derive the graph based on sections", approved plan C:\\Users\\user\\.claude\\plans\\jolly-soaring-moler.md, step A1)
-and domain_corpora.py guard C13. Task: playbook.md T149.
+| Stage | Mechanism | Tag | Ref |
+|---|---|---|---|
+| SOURCE | Read the latest Markdown version per paper from the chosen root. | [mandatory] | R1 |
+| SECTION | Split documents into stable paper/section records and apply usability filters. | [mandatory] | R2 |
+| CACHE | Save records and source statistics for the map pipeline. | [contract] | R3 |
 
-    python -u src\\section_corpus.py          writes .tmp/arxiv_sections.pkl and prints what was kept and why the rest was not
+R1 `--root` points to the top-level `papers/post_processed` directory; default uses `domain_corpora.ARXIV_DIR`.
+R2 Each record retains its `(doc_id, section_idx)` key and whole section text.
+R3 `--output` selects a cache path; the default remains `.tmp/arxiv_sections.pkl`.
 
-The cache is {"records": [usable section records], "stats": usable_sections' stats, "papers": n}. A record is {doc_id, section_idx,
-chunk_idx 0, section_title, is_reference, is_junk, body_chars, text = header + body}; (doc_id, section_idx) is the key the
-section_lengths.csv of 2026-10-05 uses.
+Preconditions: Markdown files use recognized arXiv filenames and the target cache directory is writable.
+Failure modes: malformed source files or filesystem errors propagate without replacing another cache path.
 """
 from __future__ import annotations
 
@@ -50,8 +54,13 @@ def index_text(rec: dict) -> str:
 
 
 if __name__ == "__main__":
+    import argparse
     t0 = time.time()
-    out = build()
+    parser = argparse.ArgumentParser(description="Build the usable arXiv section cache.")
+    parser.add_argument("--root", help="Markdown papers/post_processed directory")
+    parser.add_argument("--output", default=CACHE, help="cache output path")
+    args = parser.parse_args()
+    out = build(path=args.output, root=args.root)
     st = out["stats"]
     print("papers %d | sections %d | empty %d | reference %d | short (< %.0f chars) %d | junk %d | KEPT %d  (%.0fs) -> %s"
           % (out["papers"], st["all"], st["empty"], st["reference"], st["floor"], st["short"], st["junk"], st["kept"], time.time() - t0, CACHE))

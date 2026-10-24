@@ -1,19 +1,42 @@
-"""section_store.py -- the section map in Postgres/pgvector: nodes (text, vector, tsvector), fused significant edges, communities with summaries, and the SQL that seeds, expands and ranks.
+"""Persist/query section metadata and exact dense-vector bridge scans.
+
+| Stage | Mechanism | Tag | Ref |
+|---|---|---|---|
+| LOAD | Read section records, saved map state, summaries, and Dunning terms. | [mandatory] | R1 |
+| BUILD | Persist metadata, globally unique IDs, vectors, edges and communities transactionally. | [mandatory] | R2-R4 |
+| ENTITY | Persist frozen-entity mentions and document frequencies atomically for the live section build. | [optional] | R10 |
+| REFRESH | Replace only live community term/G² JSON from the saved artifact. | [opt] | R5 |
+| QUERY | Resolve vector hits through metadata; rank with exact pgvector operators. | [contract] | R6-R9 |
+
+R1 `--refresh-terms` requires the saved artifact for the same community IDs as the live tagged build.
+R2 Every section metadata row owns a globally unique record_id; `(build_id, ord)` remains its logical key.
+R3 `sect_embedding` contains only record_id and vector columns; build membership and section fields stay in `sect_node`.
+R4 A failed migration or persist leaves the previous vector table and live graph build intact.
+R5 A term refresh changes only `sect_community.terms`; legacy strings remain readable with G²=0.
+R6 Dense ranking joins by record_id, filters build through metadata, and breaks score ties by record_id.
+R7 The active lane uses no HNSW/IVFFlat indexes or ANN session settings.
+R8 Every vector maps to exactly one metadata row and returned hits belong to the requested build.
+R9 Metadata indexes are retained only when active query predicates use them.
+R10 `--entities` replaces mentions and entity rows in one transaction; its DF aggregate is materialized and nested-loop joins are disabled locally because the newly copied rows are absent from planner statistics.
+
+Closed: HNSW/IVFFlat and vector-table metadata fields; exact scans use a record_id-only vector bridge.
+Preconditions: writable PostgreSQL with pgvector. Failure modes: ID collision/orphan, schema mismatch, invalid dimension, and database errors abort the operation.
 
 Spec: operator 2026-10-07 ("look at louvain_pg.py and psql_graph.md; we should be leveraging these capabilities since we have pgvector hosted locally in docker"; "yes do the
 obvious based on my inputs"), the persist step of playbook.md T165 (operator go 2026-10-07), approved plan C:\\Users\\user\\.claude\\plans\\jolly-soaring-moler.md. Task: playbook.md T172.
-Tables are NEW (sect_*); `arxiv_sect` and every lex_* table are read by nothing here and written by nothing.
+Tables are NEW (sect_*); sparse chunk retrieval reads `arxiv_sect_bpe` and its lex_* tables separately.
 
     sect_build      one row per persisted map: tag, live flag, params (jsonb, incl. the centring mean the query side needs)
-    sect_node       (build_id, ord) -> doc_id, section_idx, title, community, x, y, genre_frac, text (whole), emb vector(256), tsv tsvector of the body (heading stripped)
+    sect_node       (build_id, ord) -> globally unique record_id, doc_id, section_idx, title, community, x, y, genre_frac, text, tsvector
+    sect_embedding  (record_id) -> emb vector(256), optional emb_b vector(256)
     sect_edge       (build_id, a < b) -> fused weight, dense/sparse similarity and z, significance bitmask, backbone bitmask; sect_edge_sym is the undirected view
-    sect_community  (build_id, cid) -> size, genre score and flag, title, summary, status, Dunning terms (jsonb), emb vector(256) of the summary
+    sect_community  (build_id, cid) -> size, genre score and flag, title, summary, status, Dunning term/G2 records (jsonb), emb vector(256) of the summary
 
 D1  A persist is one transaction; a failure leaves nothing. A new build for a tag marks the tag's earlier builds not live and deletes nothing (supersede, never delete).
-D2  Section text is stored whole. Nothing is cut on the way in or out; the 191M characters of 80,642 sections are about 200 MB before compression.
-D3  The lexical arm indexes the BODY (heading stripped, section_corpus.index_text): a heading is a stop-phrase here as in the embedding.
-D4  Seeds and community ranking are exact (`<=>` scan, no ANN index): 80,642 x 256 is a sequential scan, and the operator dropped HNSW for the graph. An index can be added when a scan is measured too slow.
-D6  The lexical arm weights each question word by idf = ln(N / df) times its ts_rank_cd per section (document frequencies measured 2026-10-07: models 52%, evaluate 26%, language 19%, safety 2.1%).
+D2  Section text is stored whole. Nothing is cut on the way in or out; the active 81,473 sections are stored without clipping.
+D3  Section-level unigram and adjacent-pair rows build graph edges; chat retrieval uses the separately persisted BPE chunk sparsevec index.
+D4  Seeds and community ranking are exact `<=>` scans over record_id vectors joined to build-scoped section metadata; no ANN index or setting is used.
+D6  Legacy `sect_node.tsv` is retained for compatibility but is not used to rank chat retrieval; the sparse arm queries BPE BM25 chunk rows before section expansion.
 D7  The dense arm may seed from `emb_b`, the vectors with the 8 within-paper genre axes removed (section_genre.role_axes), the question projected the same way. On the 400-query known-item
     battery (2026-10-07) hybrid recall@50 went .690 -> .748, and dense alone .427 -> .578; the paired counts are 79 against 19 and 30 against 7.
 D8  A community's centrepoint is the member nearest the mean of its members' vectors (the representative, global view of that community); a section's similarity to a question is a
@@ -25,11 +48,14 @@ D10 Entity edges are a second layer with entities as nodes: `co_mention` = two e
     this evidence apart from the section vector edges of sect_edge (operator 2026-10-08, "entities and their edges vs vector edges"; RL_V2 measured the two rank different neighbours,
     top-5 Jaccard 0.036 against 0.008 by chance). Entities are never nodes of sect_edge and an entity vector is never an edge.
 D11 A community's entities are the ones a Dunning G2 against the whole corpus marks as over-represented in it, stored beside (not inside) its Dunning words.
+D14 Community term records retain each derived Dunning G2 score, so query-time community reweighting uses the measured lexical association rather than a presence flag.
+D15 `--refresh-terms` updates only the live build's term JSON from the section renderer artifact; it does not rebuild vectors, edges, summaries, or communities.
 D5  A neighbour is ranked by edge WEIGHT (mean z over the spaces that saw the pair, plus the edge floor), the significance the map's communities were built from; the weight is returned, not hidden.
 """
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import sys
@@ -47,10 +73,9 @@ DDL = [
         build_id bigserial PRIMARY KEY, tag text NOT NULL, created_at timestamptz NOT NULL DEFAULT now(),
         live boolean NOT NULL DEFAULT true, n_nodes int, n_edges int, n_communities int, params jsonb NOT NULL DEFAULT '{}')""",
     """CREATE TABLE IF NOT EXISTS sect_node (
-        build_id bigint NOT NULL REFERENCES sect_build ON DELETE CASCADE, ord int NOT NULL, doc_id text NOT NULL, section_idx int NOT NULL,
-        section_title text, community int NOT NULL, x real, y real, genre_frac real, text text NOT NULL, emb vector(%d), tsv tsvector,
-        PRIMARY KEY (build_id, ord))""" % DIM,
-    "ALTER TABLE sect_node ADD COLUMN IF NOT EXISTS emb_b vector(%d)" % DIM,
+        build_id bigint NOT NULL REFERENCES sect_build ON DELETE CASCADE, ord int NOT NULL, record_id bigserial NOT NULL UNIQUE, doc_id text NOT NULL, section_idx int NOT NULL,
+        section_title text, community int NOT NULL, x real, y real, genre_frac real, text text NOT NULL, tsv tsvector,
+        PRIMARY KEY (build_id, ord))""",
     "CREATE INDEX IF NOT EXISTS sect_node_doc ON sect_node (build_id, doc_id, section_idx)",
     "CREATE INDEX IF NOT EXISTS sect_node_comm ON sect_node (build_id, community)",
     "CREATE INDEX IF NOT EXISTS sect_node_tsv ON sect_node USING gin (tsv)",
@@ -93,9 +118,59 @@ def or_query(question: str) -> str:
 
 
 def ensure_schema(conn) -> None:
-    """Guarantee: the sect_* tables, indexes and view exist (the vector extension is already installed)."""
-    for stmt in DDL:
-        conn.execute(stmt)
+    """Ensure section storage and migrate to a record_id-only dense-vector bridge.
+
+    Require:
+        PostgreSQL has pgvector installed and the section schema is writable.
+    Guarantee:
+        Section metadata owns globally unique IDs and vectors live separately by record_id.
+    Maintain:
+        Existing section ordinals and projected vectors retain their values.
+    Assert:
+        Every migrated vector resolves to one section; old vector storage remains available for rollback.
+    """
+    with conn.transaction():
+        for stmt in DDL:
+            conn.execute(stmt)
+        conn.execute("ALTER TABLE sect_node ADD COLUMN IF NOT EXISTS record_id bigserial")
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS sect_node_record_id_key ON sect_node(record_id)")
+        vector_exists = conn.execute("SELECT to_regclass('sect_embedding')").fetchone()[0] is not None
+        if not vector_exists:
+            conn.execute("""CREATE TABLE sect_embedding (
+                record_id bigint PRIMARY KEY REFERENCES sect_node(record_id) ON DELETE CASCADE,
+                emb vector(%d) NOT NULL, emb_b vector(%d))""" % (DIM, DIM))
+        cols = {row[0] for row in conn.execute(
+            "SELECT attname FROM pg_attribute WHERE attrelid='sect_embedding'::regclass AND attnum > 0 AND NOT attisdropped"
+        ).fetchall()}
+        if "build_id" in cols:
+            if conn.execute("SELECT to_regclass('sect_embedding_build_scoped')").fetchone()[0] is not None:
+                raise RuntimeError("sect_embedding_build_scoped already exists; inspect prior migration before retrying")
+            conn.execute("CREATE TEMP TABLE sect_embedding_migration_stage (record_id bigint PRIMARY KEY, emb vector(%d) NOT NULL, emb_b vector(%d)) ON COMMIT DROP" % (DIM, DIM))
+            old_n = conn.execute("SELECT count(*) FROM sect_embedding").fetchone()[0]
+            conn.execute("""INSERT INTO sect_embedding_migration_stage (record_id,emb,emb_b)
+                SELECT n.record_id,e.emb,e.emb_b FROM sect_embedding e
+                JOIN sect_node n ON n.build_id=e.build_id AND n.ord=e.record_id""")
+            new_n = conn.execute("SELECT count(*) FROM sect_embedding_migration_stage").fetchone()[0]
+            if old_n != new_n:
+                raise RuntimeError("section vector migration found %d orphan rows" % (old_n - new_n))
+            conn.execute("ALTER TABLE sect_embedding RENAME TO sect_embedding_build_scoped")
+            conn.execute("CREATE TABLE sect_embedding_migration_new (record_id bigint PRIMARY KEY REFERENCES sect_node(record_id) ON DELETE CASCADE, emb vector(%d) NOT NULL, emb_b vector(%d))" % (DIM, DIM))
+            conn.execute("INSERT INTO sect_embedding_migration_new SELECT * FROM pg_temp.sect_embedding_migration_stage")
+            conn.execute("ALTER TABLE sect_embedding_migration_new RENAME TO sect_embedding")
+        old_columns = {row[0] for row in conn.execute(
+            "SELECT attname FROM pg_attribute WHERE attrelid='sect_node'::regclass AND attnum > 0 AND NOT attisdropped"
+        ).fetchall()}
+        if "emb" in old_columns:
+            emb_b = "emb_b" if "emb_b" in old_columns else "NULL::vector(%d)" % DIM
+            conn.execute("INSERT INTO sect_embedding (record_id,emb,emb_b) SELECT record_id,emb," + emb_b +
+                         " FROM sect_node WHERE emb IS NOT NULL ON CONFLICT (record_id) DO NOTHING")
+            missing = conn.execute("SELECT count(*) FROM sect_node n LEFT JOIN sect_embedding v ON v.record_id=n.record_id "
+                                   "WHERE n.emb IS NOT NULL AND v.record_id IS NULL").fetchone()[0]
+            if missing:
+                raise RuntimeError("section metadata retains %d legacy vectors without bridge rows" % missing)
+            conn.execute("ALTER TABLE sect_node DROP COLUMN emb")
+            if "emb_b" in old_columns:
+                conn.execute("ALTER TABLE sect_node DROP COLUMN emb_b")
 
 
 def persist(conn, tag: str, recs: list[dict], X: np.ndarray, lab: np.ndarray, XY: np.ndarray, frac: np.ndarray, fused: dict, comm: dict, S: np.ndarray, params: dict) -> int:
@@ -117,10 +192,17 @@ def _persist(conn, tag, recs, X, lab, XY, frac, fused, comm, S, params) -> int:
                          (tag, N, len(fused["i"]), len(comm), json.dumps(params))).fetchone()[0]
     with conn.cursor() as cur:
         cur.execute("DROP TABLE IF EXISTS pg_temp.sect_stage")                  # a second persist in the same transaction (the tests do this) finds the first one's stage
+        cur.execute("DROP TABLE IF EXISTS pg_temp.sect_vector_stage")
         cur.execute("CREATE TEMP TABLE sect_stage (ord int, body text) ON COMMIT DROP")
-        with cur.copy("COPY sect_node (build_id, ord, doc_id, section_idx, section_title, community, x, y, genre_frac, text, emb) FROM STDIN") as cp:
+        cur.execute("CREATE TEMP TABLE sect_vector_stage (ord int PRIMARY KEY, emb vector(%d) NOT NULL) ON COMMIT DROP" % DIM)
+        with cur.copy("COPY sect_node (build_id, ord, doc_id, section_idx, section_title, community, x, y, genre_frac, text) FROM STDIN") as cp:
             for o, r in enumerate(recs):
-                cp.write_row((build, o, r["doc_id"], r["section_idx"], r["section_title"], int(lab[o]), float(XY[o, 0]), float(XY[o, 1]), float(frac[o]), r["text"], vec(X[o])))
+                cp.write_row((build, o, r["doc_id"], r["section_idx"], r["section_title"], int(lab[o]), float(XY[o, 0]), float(XY[o, 1]), float(frac[o]), r["text"]))
+        with cur.copy("COPY sect_vector_stage (ord, emb) FROM STDIN") as cp:
+            for o in range(N):
+                cp.write_row((o, vec(X[o])))
+        cur.execute("INSERT INTO sect_embedding (record_id,emb) SELECT n.record_id,s.emb FROM sect_node n "
+                    "JOIN sect_vector_stage s ON s.ord=n.ord WHERE n.build_id=%s", (build,))
         with cur.copy("COPY sect_stage (ord, body) FROM STDIN") as cp:
             for o, r in enumerate(recs):
                 cp.write_row((o, sc.index_text(r)))
@@ -148,8 +230,7 @@ def live_build(conn, tag: str) -> tuple[int, dict] | None:
 
 
 def set_genre_vectors(conn, build: int, XB: np.ndarray, V: np.ndarray) -> int:
-    """D7. Require: XB (N, DIM) the section vectors with the within-paper genre axes V (DIM, k) projected out and re-normalised (section_genre.remove_axes), row = ord.
-    Guarantee: sect_node.emb_b holds XB for the build and sect_build.params["genre_axes"] holds V, in one transaction; returns rows updated."""
+    """D7. Store projected section vectors apart from section metadata and persist their projection axes."""
     with conn.transaction():
         ensure_schema(conn)
         conn.execute("DROP TABLE IF EXISTS pg_temp.sect_stage_b")
@@ -158,7 +239,8 @@ def set_genre_vectors(conn, build: int, XB: np.ndarray, V: np.ndarray) -> int:
             with cur.copy("COPY sect_stage_b (ord, emb) FROM STDIN") as cp:
                 for o in range(len(XB)):
                     cp.write_row((o, vec(XB[o])))
-            cur.execute("UPDATE sect_node n SET emb_b = s.emb FROM sect_stage_b s WHERE n.build_id = %s AND n.ord = s.ord", (build,))
+            cur.execute("UPDATE sect_embedding v SET emb_b=s.emb FROM sect_node n JOIN sect_stage_b s ON s.ord=n.ord "
+                        "WHERE n.build_id=%s AND v.record_id=n.record_id", (build,))
             n = cur.rowcount
         conn.execute("UPDATE sect_build SET params = params || %s::jsonb WHERE build_id = %s", (json.dumps({"genre_axes": V.tolist()}), build))
     return n
@@ -168,7 +250,8 @@ def seeds_dense(conn, build: int, q: np.ndarray, n: int, col: str = "emb") -> li
     """D4, D7. Require: q centred and L2-normalised like the stored vectors of `col` ('emb', or 'emb_b' with the genre axes removed from q as well). Guarantee: ords of the n
     nearest sections by cosine, best first."""
     assert col in ("emb", "emb_b"), col
-    return [r[0] for r in conn.execute("SELECT ord FROM sect_node WHERE build_id = %s ORDER BY " + col + " <=> %s::vector LIMIT %s", (build, vec(q), n)).fetchall()]
+    return [r[0] for r in conn.execute("SELECT n.ord FROM sect_node n JOIN sect_embedding v ON v.record_id=n.record_id "
+        "WHERE n.build_id=%s ORDER BY v." + col + " <=> %s::vector, v.record_id LIMIT %s", (build, vec(q), n)).fetchall()]
 
 
 def word_df(conn, build: int, question: str) -> list[tuple[str, int]]:
@@ -219,8 +302,12 @@ def communities_by_summary(conn, build: int, q: np.ndarray, n: int, exclude_genr
 
 
 def persist_mentions(conn, build: int, surfaces: list[tuple[str, int]], rows: list[tuple[int, int, int]]) -> tuple[int, int]:
-    """D9. Require: surfaces[e] = (surface, words) of entity e; rows = (section ord, entity e, count). Guarantee: the build's sect_mention holds exactly `rows` and sect_entity the entities that occur,
-    each with df = the number of sections that mention it, in one transaction (an earlier set for the build is replaced); returns (mention rows, entities that occur)."""
+    """D9. Require: surfaces[e] = (surface, words) of entity e; rows = (section ord, entity e, count).
+
+    Guarantee: the build's sect_mention holds exactly `rows` and sect_entity holds the entities that occur, each with df equal to the number of sections that mention it; an earlier set for the build is replaced atomically.
+    Maintain: the per-entity DF aggregate is materialized once because planner statistics cannot describe rows copied earlier in this transaction.
+    Assert: the stored entity count matches the distinct entity IDs supplied.
+    """
     with conn.transaction():
         ensure_schema(conn)
         conn.execute("DELETE FROM sect_mention WHERE build_id = %s", (build,))
@@ -234,8 +321,17 @@ def persist_mentions(conn, build: int, surfaces: list[tuple[str, int]], rows: li
             with cur.copy("COPY sect_entity (build_id, ent_id, surface, n, df) FROM STDIN") as cp:
                 for e in occurs:
                     cp.write_row((build, e, surfaces[e][0], surfaces[e][1], 0))
-        conn.execute("UPDATE sect_entity e SET df = d.df FROM (SELECT ent_id, count(*) AS df FROM sect_mention WHERE build_id = %s GROUP BY ent_id) d "
-                     "WHERE e.build_id = %s AND e.ent_id = d.ent_id", (build, build))
+        # COPY rows are invisible to planner statistics until commit; avoid a
+        # nested loop that would rescan the materialized aggregate per entity.
+        conn.execute("SET LOCAL enable_nestloop = off")
+        conn.execute(
+            "WITH d AS MATERIALIZED ("
+            "SELECT ent_id, count(*) AS df FROM sect_mention WHERE build_id = %s GROUP BY ent_id"
+            ") UPDATE sect_entity e SET df = d.df FROM d "
+            "WHERE e.build_id = %s AND e.ent_id = d.ent_id",
+            (build, build),
+        )
+        assert conn.execute("SELECT count(*) FROM sect_entity WHERE build_id = %s AND df > 0", (build,)).fetchone()[0] == len(occurs)
     return len(rows), len(occurs)
 
 
@@ -417,21 +513,68 @@ def centrepoints(conn, build: int, cids: list[int], col: str = "emb_b") -> dict[
     not the one nearest any question. A community with no vectors in `col` is absent."""
     assert col in ("emb", "emb_b"), col
     rows = conn.execute(
-        "WITH cen AS (SELECT community AS cid, avg(" + col + ") AS c FROM sect_node WHERE build_id = %s AND community = ANY(%s) GROUP BY community) "
-        "SELECT DISTINCT ON (n.community) n.community, n.ord FROM sect_node n JOIN cen ON cen.cid = n.community WHERE n.build_id = %s AND n." + col + " IS NOT NULL "
-        "ORDER BY n.community, n." + col + " <=> cen.c, n.ord", (build, cids, build)).fetchall()
+        "WITH cen AS (SELECT n.community AS cid, avg(v." + col + ") AS c FROM sect_node n JOIN sect_embedding v "
+        "ON v.record_id=n.record_id WHERE n.build_id = %s AND n.community = ANY(%s) "
+        "AND v." + col + " IS NOT NULL GROUP BY n.community) "
+        "SELECT DISTINCT ON (n.community) n.community, n.ord FROM sect_node n JOIN sect_embedding v "
+        "ON v.record_id=n.record_id JOIN cen ON cen.cid=n.community WHERE n.build_id = %s "
+        "AND v." + col + " IS NOT NULL ORDER BY n.community, v." + col + " <=> cen.c, v.record_id",
+        (build, cids, build)).fetchall()
     return dict(rows)
 
 
 def similarity(conn, build: int, ords: list[int], q: np.ndarray, col: str = "emb_b") -> dict[int, float]:
     """D8. Guarantee: {ord: cosine similarity to q} in the space of `col` (q projected the same way as the stored vectors)."""
     assert col in ("emb", "emb_b"), col
-    return {o: s for o, s in conn.execute("SELECT ord, 1 - (" + col + " <=> %s::vector) FROM sect_node WHERE build_id = %s AND ord = ANY(%s)", (vec(q), build, ords)).fetchall()}
+    return {o: s for o, s in conn.execute("SELECT n.ord, 1 - (v." + col + " <=> %s::vector) FROM sect_node n "
+        "JOIN sect_embedding v ON v.record_id=n.record_id WHERE n.build_id=%s AND n.ord=ANY(%s)",
+        (vec(q), build, ords)).fetchall()}
 
 
 def community_of(conn, build: int, ords: list[int]) -> dict[int, int]:
     """Guarantee: {ord: community}."""
     return dict(conn.execute("SELECT ord, community FROM sect_node WHERE build_id = %s AND ord = ANY(%s)", (build, ords)).fetchall())
+
+
+def normalize_dunning_terms(value) -> list[dict]:
+    """D14. Require: JSON-compatible Dunning records. Guarantee: ordered `{term, g2}` records; legacy strings carry G²=0 until refreshed."""
+    out = []
+    for item in value or []:
+        if isinstance(item, dict):
+            term, score = item.get("term"), item.get("g2", 0.0)
+        elif isinstance(item, (list, tuple)) and len(item) == 2:
+            term, score = item
+        elif isinstance(item, str):
+            term, score = item, 0.0
+        else:
+            continue
+        if not isinstance(term, str) or not term.strip():
+            continue
+        score = float(score)
+        if not math.isfinite(score) or score < 0:
+            raise ValueError("Dunning G² must be finite and nonnegative")
+        out.append({"term": term.strip().casefold(), "g2": score})
+    return out
+
+
+def community_dunning_terms(conn, build: int) -> dict[int, list[dict]]:
+    """D14. Guarantee: each stored community's normalized `{term, g2}` records for the requested build."""
+    return {cid: normalize_dunning_terms(terms) for cid, terms in conn.execute(
+        "SELECT cid, terms FROM sect_community WHERE build_id = %s", (build,)).fetchall()}
+
+
+def refresh_community_dunning_terms(conn, build: int, source: dict) -> int:
+    """D15. Require: renderer artifact `{cid: [[term, g2], ...]}` for the same live build. Guarantee: only community term JSON is updated; return updated row count."""
+    normalized = {int(cid): normalize_dunning_terms(rows) for cid, rows in source.items()}
+    rows = conn.execute("SELECT cid FROM sect_community WHERE build_id = %s", (build,)).fetchall()
+    expected = {row[0] for row in rows}
+    if set(normalized) != expected:
+        raise ValueError("term artifact community ids do not match the selected build")
+    with conn.transaction():
+        for cid, terms in normalized.items():
+            conn.execute("UPDATE sect_community SET terms = %s WHERE build_id = %s AND cid = %s",
+                         (json.dumps(terms), build, cid))
+    return len(normalized)
 
 
 def summaries(conn, build: int, cids: list[int]) -> dict[int, dict]:
@@ -473,11 +616,23 @@ def main() -> None:
     ap.add_argument("--genre-vectors", action="store_true", help="only add emb_b and the genre axes to the tag's live build (D7)")
     ap.add_argument("--entities", action="store_true", help="only match the live chunk build's frozen entity inventory onto the section bodies into sect_mention (D9)")
     ap.add_argument("--reuse-mentions", action="store_true", help="with --entities: read the matches saved by the last run instead of matching again (the matching takes about 6 minutes)")
+    ap.add_argument("--refresh-terms", action="store_true", help="refresh only the live build's community Dunning term/G2 records from section_render's saved artifact")
     args = ap.parse_args()
     tag = args.tag
     t0 = time.time()
     log = lambda m: print("[%s] %s" % (time.strftime("%H:%M:%S"), m), flush=True)
     os.chdir(ROOT)
+    if args.refresh_terms:
+        import sparsevec_store as ss
+        conn = ss.connect()
+        live = live_build(conn, tag)
+        assert live is not None, "no live section build for tag %r" % tag
+        path = ".tmp/sections_%s_dunning_terms.json" % tag
+        with open(path, encoding="utf-8") as stream:
+            source = json.load(stream)
+        count = refresh_community_dunning_terms(conn, live[0], source)
+        log("refreshed Dunning term/G2 records for %d communities in build %d" % (count, live[0]))
+        return
     recs = sc.load()
     if args.entities:
         import arxiv_graph_service as ags
@@ -546,7 +701,7 @@ def main() -> None:
     assert G.shape == (N, N)
     size = np.bincount(lab)
     summ = {d["community"]: d for d in json.load(open(".tmp/sections_%s_summaries.json" % tag, encoding="utf-8"))}
-    terms = {int(c): [t for t, _ in v] for c, v in json.load(open(".tmp/sections_%s_dunning_terms.json" % tag, encoding="utf-8")).items()}
+    terms = {int(c): normalize_dunning_terms(v) for c, v in json.load(open(".tmp/sections_%s_dunning_terms.json" % tag, encoding="utf-8")).items()}
     from model2vec import StaticModel
     model = StaticModel.from_pretrained(os.path.expanduser("~/models/m2v-jina-v5-nano-256"))
     texts = ["%s. %s" % (summ[c]["title"], summ[c]["summary"]) if c in summ and summ[c].get("status") == "draft" else "" for c in range(len(size))]

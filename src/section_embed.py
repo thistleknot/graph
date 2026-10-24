@@ -1,16 +1,16 @@
-"""section_embed.py -- a model2vec model applied to many texts, pooled the way model2vec pools but vectorised.
+"""Pool model2vec token embeddings with full-text coverage.
 
-Spec: operator 2026-10-05 ("a model2vec version of that jina model applied to sections"; approved plan step A2). Task: playbook.md T150.
-No other governing spec.
+| Stage | Mechanism | Tag | Ref |
+|---|---|---|---|
+| TOKENIZE | Batch tokenize with padding and truncation disabled. | [mandatory] | R1 |
+| POOL | Weighted mean token rows in bounded token blocks. | [mandatory] | R2 |
+| NORMALIZE | L2-normalize nonzero outputs when requested by the model. | [contract] | R3 |
 
-A static model embeds a text as the mean of its tokens' vectors (each times the token's weight), then L2-normalises. model2vec does that in a
-Python loop per text, and its `encode` (a) truncates at 512 tokens unless told not to, (b) fails on a batch when the tokenizer pads with an id
-past the rows it kept (jina's pad id 128004 against 128,001 rows; 2026-10-05), and (c) in multiprocessing mode copied the table into every
-worker until Windows ran out of paging file. `pool` has none of the three: no truncation, ids without a row contribute nothing, one process,
-and the sum over tokens is one `np.add.reduceat` per batch.
+R1 The model tokenizer supports no-padding, no-truncation, and batch tokenization.
+R2 Token IDs without embedding rows contribute zero; long text is not truncated.
+R3 Empty token streams return zero vectors; the tokenizer call uses no version-specific keyword arguments.
 
-Guarantee of pool: out[i] equals StaticModel.encode([texts[i]], max_length=None) on every text whose ids all have rows, to float32 rounding
-(cosine 1.0); a text with no tokens is the zero vector.
+Preconditions: model embedding and tokenizer assets are loaded. Failure modes: incompatible model API and allocation errors propagate.
 """
 from __future__ import annotations
 
@@ -23,14 +23,37 @@ BLOCK = 262_144                  # tokens gathered at a time: one 16.7M-characte
 
 
 def pool(model, texts: list[str], step: int = 500) -> np.ndarray:
-    """Require: `model` a model2vec StaticModel (embedding, weights, normalize, tokenize). Guarantee: (len(texts), dim) float32."""
+    """Return weighted mean embeddings for all input texts.
+
+    Require:
+        `model` exposes embedding, weights, normalize, tokenizer, and tokenize attributes; `step` is positive.
+    Guarantee:
+        Returns one float32 vector per text without truncation or multiprocessing.
+    Maintain:
+        Accumulates at most BLOCK token rows at a time and keeps input order.
+    Assert:
+        Output shape is `(len(texts), model.embedding.shape[1])`.
+
+    Args:
+        model: Loaded model2vec static model.
+        texts: Text strings to encode.
+        step: Number of texts tokenized together.
+
+    Returns:
+        Float32 matrix of normalized pooled vectors.
+
+    Raises:
+        ValueError: If step is not positive.
+    """
+    if step <= 0:
+        raise ValueError("step must be positive")
     emb, w = model.embedding, model.weights
     rows, dim = emb.shape
     model.tokenizer.no_padding()                # jina's tokenizer pads every text of a batch to the longest one with id 128004 (past the kept
     model.tokenizer.no_truncation()             # rows): 2,000 sections of 5.0M characters came out as 28.9M tokens. No pads, no cut.
     out = np.zeros((len(texts), dim), np.float32)
     for s in range(0, len(texts), step):
-        ids = model.tokenize(texts[s:s + step], max_length=None)            # None: model2vec's encode would cut at 512 tokens
+        ids = model.tokenize(texts[s:s + step])                             # tokenizer.no_truncation above preserves the full text on current and prior APIs
         lens = np.fromiter((len(x) for x in ids), np.int64, len(ids))
         total = int(lens.sum())
         if total == 0:
@@ -52,6 +75,7 @@ def pool(model, texts: list[str], step: int = 500) -> np.ndarray:
         out[s:s + len(ids)][nz] = (acc[nz] / lens[nz][:, None]).astype(np.float32)
     if model.normalize:
         out /= np.linalg.norm(out, axis=1, keepdims=True) + 1e-32
+    assert out.shape == (len(texts), dim)
     return out
 
 

@@ -1,44 +1,28 @@
-"""ingest_arxiv_sparsevec.py -- the arxiv section chunks as a pgvector sparsevec BM25 index, measured.
+"""Build the current graph sections into a separate section-keyed BM25 sparsevec index.
 
-NO GOVERNING SPEC. Basis: operator instruction 2026-10-02 ("ingest my arxiv papers ... post
-processed markdown ... use the chunking strategy outlined in my skills", with section names
-tracked "so I can exclude them during retrieval"). Skill: sparsevec-lexsem-graph (R6, R8, R12,
-R13), bpe-bm25 (rec@50, parity first). Chunks: domain_corpora.chunk_arxiv via
-.tmp/run_arxiv_chunks.py -> .tmp/arxiv_section_chunks.pkl.
+| Stage | Mechanism | Tag | Ref |
+|---|---|---|---|
+| SOURCE | Read all rows from the active `sect_node` build and chunk each section independently. | [mandatory] | R1 |
+| SAMPLE | Persist a deterministic 80k materialized sample in the BM25 database. | [mandatory] | R2 |
+| TOKENIZE | Train BPE from the sample and spell every population term. | [mandatory] | R3 |
+| SCORE | Estimate sample DF at population scale; build BM25 weighted BPE sparse vectors. | [mandatory] | R4 |
+| STORE | Persist tokenizer, IDF, metadata, sample provenance, and narrow sparse vectors to PostgreSQL. | [mandatory] | R5 |
+| PUBLISH | Validate all generation rows, then atomically make it live. | [mandatory] | R6 |
+| MEASURE | Verify exact-query parity and bounded recall diagnostics when requested. | [opt] | R7 |
 
-    STAGE     MECHANISM
-    TOKENS    stoplist.tokenize, one tokenizer for index and queries (R2)
-    BM25      salient_grams.bm25_matrix over RAW WORDS, all terms (A1)
-    SPLIT     doc side = saturated tf (idf divided back out); idf lives in lex_vocab (R6, A2)
-    TRIM      keep each row's 1,000 heaviest by idf*sat (pgvector HNSW limit, V2)
-    STORE     lex_vocab, lex_chunk_arxiv_sect (sparsevec), lex_chunk_meta (text + key + flags),
-              lex_cos_arxiv_sect (the symmetric doc-doc view, V7), lex_build (the frozen statistics)
-    INDEX     HNSW sparsevec_ip_ops (queries) and sparsevec_cosine_ops (doc-doc), m=16 ef_construction=64
-    MEASURE   200 title + 200 body-sentence queries, relevant = the document's chunks:
-              numpy exact == psql exact (parity first), then recall@50 at ef 50/100/400
+R1 Each chunk preserves its live graph `(doc_id, section_idx)` key; sections never merge.
+R2 The sample materialized view is deterministic for a source corpus and seed; smaller corpora use all rows.
+R3 BPE-only eligibility excludes sample df=1 and overlong non-dictionary words beyond median + 2*1.4826*MAD letter length; all terms remain encoded for BM25.
+R4 Sample df is rounded after scaling by population/sample size and clamped to [1, N]; unseen sample terms use df=1.
+R5 The graph DB supplies source sections; `ARXIV_BM25_DSN` owns BM25 artifacts. The tokenizer and source graph build are frozen in `lex_build`.
+R6 A failed/incomplete build SHALL remain non-live; a completed build has exactly one sparse vector per metadata row, including empty encodings.
+R7 Defaults are sample=80k, BPE=10000, k1=1.5, b=0.75, exact sparsevec scan, and top 144 candidates before adjacency reranking.
 
-A1  Raw words, NOT BPE. Measured on the earlier 169,382-row arxiv+neop population (commits
-    ae272f6, 9cea42b): BPE cost 8-17% rec@50 against raw at 40% more disk; HNSW 16/64 at
-    ef=50 cost nothing at rec@50. Those rows came from the OLD chunking, so for the new
-    chunks this is a hypothesis the measurement below re-tests.
-A2  <q, d> = sum idf(t)*qtf(t) * sat(t, d) equals the idf-baked score the earlier
-    diagnostics used, to float precision; asserted by parity before any HNSW number.
-A3  is_reference chunks are STORED and flagged, never dropped (operator 2026-10-02).
-A4  is_junk chunks (domain_corpora C10) are stored and flagged too, but enter the statistics as
-    empty documents: no term, no vector row, no say in df. They are still counted in N and in
-    avgdl (259 of 58,870 chunks, 0.44%), an approximation accepted here and not measured.
-    The statistics (vocabulary, idf, avgdl, k1, b, the whale columns) are frozen in `lex_build`
-    so src/arxiv_graph_service.py can add later documents with doc_row() and get the row a
-    full build would have given them.
-A5  The stored cosine view is fitted on every non-junk chunk, references included; the community
-    map's in-memory lexical view (src/arxiv_community_map.py) is fitted on retrievable chunks
-    only. Both are cosine over saturated tf*idf rows; their idf differs slightly.
+CLOSED: the prior `.tmp/arxiv_section_chunks.pkl` and existing `arxiv_chunks` database rows are rejected as live sources because their keys do not cover the active graph build. `tsvector` is not a fallback.
 
-A6  `--label NAME --bpe MERGES` builds the same chunks into a SIDE label with a BPE vocabulary (skills/bpe-bm25: the BPE is trained on the
-    surviving term strings only, sized by a merge budget; its alphabet is widened to every character of every word, and a [UNK] anywhere in
-    the corpus fails the build). It never runs over arxiv_sect. Query words are spelled with the same pieces. Task T141.
+Preconditions: graph and BM25 PostgreSQL endpoints are reachable; an active graph section build exists. Failure modes: missing source/build, incomplete sample, unspellable term, or database failure aborts the build.
 
-Run:  python -u src\\ingest_arxiv_sparsevec.py [--no-battery] [--label NAME --bpe MERGES]
+Run: `python -u src\\ingest_arxiv_sparsevec.py --from-live-graph --label arxiv_sect_bpe --bpe 10000 --no-battery`; default mode reads the legacy diagnostic cache.
 """
 from __future__ import annotations
 
@@ -47,8 +31,11 @@ import io
 import math
 import os
 import pickle
+import re
 import sys
 import time
+
+from wordfreq import zipf_frequency
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -59,12 +46,11 @@ import scipy.sparse as ss_sparse
 import sparsevec_store as ss
 from diag_dense_arms import pick_sentence
 from domain_corpora import with_junk_flag
-from salient_grams import bm25_matrix
 from stoplist import tokenize
 
 CACHE = ".tmp/arxiv_section_chunks.pkl"
 LABEL = "arxiv_sect"
-K, EFS, N_Q, SEED, M, EFC = 50, (50, 100, 400), 200, 0, 16, 64
+K, N_Q, SEED = 50, 200, 0
 K1, B = 1.5, 0.75                   # salient_grams.bm25_matrix's defaults, passed explicitly so a build records them
 DENSE_DIM = 384                     # all-MiniLM-L6-v2
 
@@ -147,26 +133,207 @@ def gold(recs: list[dict]):
     return titles, body
 
 
-def bpe_docs(token_docs: list[list[str]], merges: int):
-    """A6. Guarantee: (docs as BPE pieces, to_pieces). Follows skills/bpe-bm25: the BPE is trained on the SURVIVING TERM STRINGS only (document
-    frequency at least 2, in at most half of the documents: the skill's eligibility and whale steps; its band and length-outlier steps are
-    left out, the band being a size dial that did not move recall), sized by a MERGE BUDGET; every distinct word, survivor or not, is then
-    spelled by those pieces ('##' marks a continuation), so no word is out of vocabulary. `to_pieces(words)` spells query words the same way."""
+def bpe_docs(token_docs: list[list[str]], merges: int, return_tokenizer: bool = False,
+             training_token_docs: list[list[str]] | None = None):
+    """Train BPE on eligible terms, then encode every document and query term.
+
+    Require:
+        `token_docs` contains the complete word streams used for BM25.
+    Guarantee:
+        Returns the same document streams spelled as BPE pieces and a query spelling function, optionally followed by the tokenizer.
+        Training excludes df=1 terms and overlong non-dictionary terms; encoding and BM25 retain every source term.
+    Maintain:
+        The BPE training gate never removes a term from document/query streams or their later BM25 counts.
+    Assert:
+        Every corpus word is spellable without `[UNK]`.
+    """
     import hnsw_communities as hc
-    df = collections.Counter(w for d in token_docs for w in set(d))
-    n = sum(1 for d in token_docs if d)
-    survivors = sorted(w for w, c in df.items() if 2 <= c <= 0.5 * n)
+    training_token_docs = token_docs if training_token_docs is None else training_token_docs
+    df = collections.Counter(w for d in training_token_docs for w in set(d))
+    n = sum(1 for d in training_token_docs if d)
+    lengths = [len(re.sub(r"[^a-z]", "", w.lower())) for w in df]
+    letter_lengths = [length for length in lengths if length > 0]
+    median = float(np.median(letter_lengths)) if letter_lengths else 0.0
+    mad = float(np.median(np.abs(np.asarray(letter_lengths) - median))) if letter_lengths else 0.0
+    max_length = median + 2 * 1.4826 * mad
+
+    def trains_merges(word: str, count: int) -> bool:
+        if count < 2 or count > 0.5 * n:
+            return False
+        letters = len(re.sub(r"[^a-z]", "", word.lower()))
+        return letters <= max_length or zipf_frequency(word, "en") > 0
+
+    # Compute eligibility only for merge training. The complete word list below still
+    # gets encoded, so tokenizer cleanup cannot silently become a BM25 term filter.
+    survivors = sorted(w for w, c in df.items() if trains_merges(w, c))
     norm = hc._NORM.normalize_str
     have = {ch for w in survivors for ch in norm(w)}
-    missing = sorted({ch for w in df for ch in norm(w) if not ch.isspace()} - have)            # characters only a hapax or a whale holds
-    tok = hc.train_bpe(survivors + (["".join(missing)] if missing else []), vocab=merges)         # the alphabet must cover every word, or it spells [UNK]
-    words = sorted(df)
+    missing = sorted({ch for w in df for ch in norm(w) if not ch.isspace()} - have)
+    tok = hc.train_bpe(survivors + missing, vocab=merges)  # isolated characters extend the alphabet without creating outlier merges
+    words = sorted({word for doc in token_docs for word in doc})
     spelled = {w: e.tokens for w, e in zip(words, tok.encode_batch(words))}
     assert not any("[UNK]" in t for t in spelled.values()), "a word was spelled with [UNK]: the alphabet does not cover the corpus"
 
     def to_pieces(ws: list[str]) -> list[str]:
         return [p for w in ws for p in (spelled[w] if w in spelled else tok.encode(w).tokens)]
-    return [to_pieces(d) for d in token_docs], to_pieces
+    result = ([to_pieces(d) for d in token_docs], to_pieces)
+    return (*result, tok) if return_tokenizer else result
+
+
+def sampled_bm25_matrix(token_docs: list[list[str]], sample_indices: list[int],
+                        k1: float = K1, b: float = B):
+    """Build population BM25 vectors using scaled document frequencies from the persisted sample.
+
+    Require:
+        `sample_indices` are unique valid rows selected by the durable sample view.
+    Guarantee:
+        Returns `(BM, TF, terms, df, sample_df, avgdl)`; unseen terms use df=1 and sample df is scaled to population size.
+    Maintain:
+        Sampling changes only document-frequency estimates, not the source token streams or their term frequencies.
+    Assert:
+        Every estimated document frequency is in [1, number of source documents].
+
+    Args:
+        token_docs: Population-wide token streams, including empty junk rows.
+        sample_indices: Durable sample materialized-view ordinals.
+        k1: BM25 term-frequency saturation constant.
+        b: BM25 document-length normalization constant.
+
+    Returns:
+        BM25 and term-frequency CSR matrices, vocabulary, scaled DF, sampled DF, and average length.
+
+    Raises:
+        ValueError: If the population or sample is empty or sample indexes are invalid.
+    """
+    if not token_docs or not sample_indices:
+        raise ValueError("BM25 source and sample must each contain at least one row")
+    if len(set(sample_indices)) != len(sample_indices) or min(sample_indices) < 0 or max(sample_indices) >= len(token_docs):
+        raise ValueError("sample indices must be unique source row indexes")
+    vocab: dict[str, int] = {}
+    row_ids, col_ids, values = [], [], []
+    for row, tokens in enumerate(token_docs):
+        counts = collections.Counter(tokens)
+        for term, count in counts.items():
+            col = vocab.setdefault(term, len(vocab))
+            row_ids.append(row)
+            col_ids.append(col)
+            values.append(count)
+    if not vocab:
+        raise ValueError("empty vocabulary after tokenization")
+    terms = np.asarray(sorted(vocab, key=vocab.get))
+    tf = ss_sparse.csr_matrix((values, (row_ids, col_ids)), shape=(len(token_docs), len(terms)))
+    sample_df = np.asarray((tf[sample_indices] > 0).sum(0)).ravel().astype(np.int64)
+    population_n = len(token_docs)
+    sample_n = len(sample_indices)
+    estimated_df = np.rint(sample_df * population_n / sample_n).astype(np.int64)
+    estimated_df = np.clip(estimated_df, 1, population_n)
+    idf = np.log(1.0 + (population_n - estimated_df + 0.5) / (estimated_df + 0.5))
+    doc_lengths = np.asarray([len(tokens) for tokens in token_docs], dtype=np.float64)
+    avgdl = float(doc_lengths.mean()) or 1.0
+    coo = tf.tocoo()
+    weights = (idf[coo.col] * coo.data * (k1 + 1.0) /
+               (coo.data + k1 * (1.0 - b + b * doc_lengths[coo.row] / avgdl)))
+    bm = ss_sparse.csr_matrix((weights, (coo.row, coo.col)), shape=tf.shape)
+    assert np.all((estimated_df >= 1) & (estimated_df <= population_n))
+    return bm, tf, terms, estimated_df, sample_df, avgdl
+
+
+def live_graph_chunks(graph_conn, graph_tag: str = "xpa", max_sections: int | None = None) -> tuple[list[dict], dict, int]:
+    """Read and chunk every section from the active graph build without crossing section boundaries.
+
+    Require:
+        The graph database contains a live section build for `graph_tag`.
+    Guarantee:
+        Returns stable-key BM25 chunk records, the chunk-fit parameters, and source build ID. `max_sections` bounds synthetic/live probes.
+    Maintain:
+        Every emitted chunk keeps the exact graph `(doc_id, section_idx)` key; each source section is chunked independently.
+    Assert:
+        No business key is duplicated.
+
+    Args:
+        graph_conn: Connection to the active graph database.
+        graph_tag: Live graph build tag.
+        max_sections: Optional positive section limit for a bounded probe.
+
+    Returns:
+        Chunk metadata records, chunk-fit parameters, and source build ID.
+
+    Raises:
+        RuntimeError: If no active graph build or section rows exist.
+        ValueError: If `max_sections` is not positive.
+    """
+    import section_store as store
+    from domain_corpora import chunk_arxiv_doc, fit_arxiv, with_junk_flag
+
+    live = store.live_build(graph_conn, graph_tag)
+    if live is None:
+        raise RuntimeError("no live section graph build for %r" % graph_tag)
+    build_id, _ = live
+    query = "SELECT doc_id, section_idx, section_title, text FROM sect_node WHERE build_id = %s ORDER BY ord"
+    if max_sections is not None:
+        if max_sections < 1:
+            raise ValueError("max_sections must be positive")
+        query += " LIMIT %s"
+        sections = graph_conn.execute(query, (build_id, max_sections)).fetchall()
+    else:
+        sections = graph_conn.execute(query, (build_id,)).fetchall()
+    if not sections:
+        raise RuntimeError("active section graph build %s contains no sections" % build_id)
+    fit = fit_arxiv([row[3] for row in sections])
+    splitter = None
+    from domain_corpora import make_splitter
+    splitter = make_splitter(fit)
+    records = []
+    for doc_id, section_idx, section_title, text in sections:
+        source_text = text
+        if section_title and not re.match(r"^\s*#{1,6}\s+", text):
+            source_text = "## " + section_title + "\n\n" + text
+        chunks, _ = chunk_arxiv_doc(doc_id, source_text, fit, splitter)
+        for chunk_idx, (chunk_text, _, _, _, is_reference) in enumerate(chunks):
+            records.append({"doc_id": doc_id, "version": 1, "section_idx": section_idx,
+                            "chunk_idx": chunk_idx, "section_title": section_title or "",
+                            "is_reference": is_reference, "is_junk": False, "text": chunk_text})
+    records = with_junk_flag(records)
+    keys = [(row["doc_id"], row["section_idx"], row["chunk_idx"]) for row in records]
+    assert len(keys) == len(set(keys)), "duplicate section chunk key from active graph source"
+    return records, fit, build_id
+
+
+def refresh_sample_view(conn, label: str, sample_size: int, seed: str, build_id: int) -> tuple[str, list[int]]:
+    """Persist a deterministic materialized sample and return its name and source ords.
+
+    Args:
+        conn: BM25 database connection with current chunk metadata loaded.
+        label: Safe lexicon/index label.
+        sample_size: Maximum number of metadata rows in the sample.
+        seed: Stable salt for deterministic sample ordering.
+
+    Returns:
+        Materialized view name and its chunk ordinals in stable order.
+
+    Raises:
+        ValueError: If the BM25 metadata population is empty.
+    """
+    view = "lex_sample_" + "".join(ch if ch.isalnum() else "_" for ch in label.lower())
+    seed_sql = seed.replace("'", "''")
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM lex_chunk_meta WHERE label = %s AND build_id = %s", (label, int(build_id)))
+        population = int(cur.fetchone()[0])
+        if population == 0:
+            raise ValueError("cannot sample an empty BM25 metadata population")
+        cur.execute("DROP MATERIALIZED VIEW IF EXISTS " + view)
+        cur.execute(
+            "CREATE MATERIALIZED VIEW " + view + " AS "
+            "SELECT build_id, ord, doc_id, section_idx, chunk_idx, text FROM ("
+            "SELECT build_id, ord, doc_id, section_idx, chunk_idx, text, "
+            "row_number() OVER (PARTITION BY build_id ORDER BY md5(doc_id || ':' || section_idx::text || ':' || chunk_idx::text || ':' || '" + seed_sql + "'), "
+            "doc_id, section_idx, chunk_idx) AS sample_rank FROM lex_chunk_meta WHERE label = '" + label.replace("'", "''") + "') ranked "
+            "WHERE sample_rank <= " + str(min(int(sample_size), population))
+        )
+        cur.execute("CREATE UNIQUE INDEX " + view + "_build_ord ON " + view + " (build_id, ord)")
+        cur.execute("SELECT ord FROM " + view + " WHERE build_id = %s ORDER BY ord", (int(build_id),))
+        ords = [int(row[0]) for row in cur.fetchall()]
+    return view, ords
 
 
 def query_terms(text: str, col: dict, idf: np.ndarray, tok=tokenize):
@@ -182,62 +349,94 @@ def main() -> None:
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace", line_buffering=True)
     if "--label" in sys.argv:                                      # a side label never touches the live one (A6)
         LABEL = sys.argv[sys.argv.index("--label") + 1]
-    bpe = int(sys.argv[sys.argv.index("--bpe") + 1]) if "--bpe" in sys.argv else None
+    import config
+    from domain_corpora import with_junk_flag
+
+    live_mode = "--from-live-graph" in sys.argv
+    bpe = int(sys.argv[sys.argv.index("--bpe") + 1]) if "--bpe" in sys.argv else (10000 if live_mode else None)
     assert bpe is None or LABEL != "arxiv_sect", "a BPE build goes to a side label, never over the live arxiv_sect"
-    cached = pickle.load(open(CACHE, "rb"))
-    recs = with_junk_flag(cached["records"])
+    graph_conn = None
+    graph_build_id = None
+    fit = None
+    if live_mode:
+        graph_conn = ss.connect(config.DSN)
+        recs, fit, graph_build_id = live_graph_chunks(graph_conn)
+    else:
+        cached = pickle.load(open(CACHE, "rb"))
+        recs = with_junk_flag(cached["records"])
+        fit = cached.get("fit")
     log("chunks %d (reference-flagged %d, junk-flagged %d)"
         % (len(recs), sum(r["is_reference"] for r in recs), sum(r["is_junk"] for r in recs)))
 
     t0 = time.time()
     token_docs = [[] if r["is_junk"] else tokenize(r["text"]) for r in recs]       # A4: a junk chunk is an empty document
     tok_fn = tokenize
+    tokenizer_json = None
+    bm25_conn = ss.connect(config.ARXIV_BM25_DSN)
+    ss.ensure_generation_schema(bm25_conn, LABEL)
+    build = ss.open_generation(bm25_conn, LABEL, len(recs), {
+        "source_graph_build": graph_build_id,
+        "tokenizer": {"kind": "pending", "merges": bpe},
+    })
+    log("generation %d opened as non-live" % build)
+    log("meta written: %d rows" % ss.write_generation_meta(bm25_conn, LABEL, build, recs))
+    sample_view, sample_ords = refresh_sample_view(
+        bm25_conn, LABEL, config.ARXIV_BM25_SAMPLE_SIZE, config.ARXIV_BM25_SAMPLE_SEED, build)
+    sample_indices = sample_ords  # metadata ordinals are the deterministic source row offsets
+    sample_token_docs = [token_docs[i] for i in sample_indices]
+    log("sample persisted: %s rows=%d population=%d seed=%s" %
+        (sample_view, len(sample_indices), len(recs), config.ARXIV_BM25_SAMPLE_SEED))
     if bpe:
-        token_docs, to_pieces = bpe_docs(token_docs, bpe)
-        tok_fn = lambda text: to_pieces(tokenize(text))            # a query is words first, then pieces (to_pieces takes a LIST of words)
-        log("BPE vocabulary: merge budget %d, %d chunk-token streams spelled in pieces" % (bpe, len(token_docs)))
-    BM, TF, terms, df = bm25_matrix(token_docs, K1, B)
+        token_docs, to_pieces, bpe_tokenizer = bpe_docs(
+            token_docs, bpe, return_tokenizer=True, training_token_docs=sample_token_docs)
+        tokenizer_json = bpe_tokenizer.to_str()
+        sample_token_docs = [token_docs[i] for i in sample_indices]
+        tok_fn = lambda text: to_pieces(tokenize(text))
+        log("BPE vocabulary: merge budget %d, sample-trained, all %d chunks encoded" % (bpe, len(token_docs)))
+    BM, TF, terms, df, sample_df, avgdl = sampled_bm25_matrix(
+        token_docs, sample_indices, K1, B)
     BM = BM.tocsr()
     N, dim = BM.shape
-    avgdl = float(np.mean([len(t) for t in token_docs]))
-    sat_t, cos_t, idf, whales = full_views(BM, df, N)
+    sat_t, _, idf, _ = full_views(BM, df, N)
     n_cut = int((np.diff(BM.indptr) > ss.SPARSEVEC_MAX_NNZ).sum())
-    log("bm25 %.0fs  rows=%d dim=%d nnz=%d  rows over %d nnz trimmed: %d  whale terms dropped from the cosine view: %d"
-        % (time.time() - t0, N, dim, BM.nnz, ss.SPARSEVEC_MAX_NNZ, n_cut, len(whales)))
+    log("bm25 %.0fs  rows=%d dim=%d nnz=%d  rows over %d nnz trimmed: %d"
+        % (time.time() - t0, N, dim, BM.nnz, ss.SPARSEVEC_MAX_NNZ, n_cut))
 
-    conn = ss.connect()
-    ss.reset_label_tables(conn, LABEL)                          # the vocabulary changed, and with it the sparse dimension
-    ss.ensure_schema(conn, LABEL, dim)
-    ss.ensure_chunk_meta(conn)
-    ss.ensure_view_schema(conn, LABEL, dim, DENSE_DIM)
-    ss.ensure_build_schema(conn)
+    conn = bm25_conn
+    params = {
+        "bm25": {"k1": K1, "b": B, "avgdl": avgdl, "n_docs": N, "dim": dim,
+                 "df_sample_size": len(sample_indices), "sample_population": N,
+                 "sample_scale": N / len(sample_indices), "sample_view": sample_view,
+                 "sample_seed": config.ARXIV_BM25_SAMPLE_SEED,
+                 "sample_build_id": build},
+        "fit": fit, "source_graph_build": graph_build_id, "dense_dim": DENSE_DIM,
+        "tokenizer": ({"kind": "bpe", "merges": bpe, "json": tokenizer_json} if bpe else {"kind": "words"})}
+    ss.update_build_params(conn, build, params)
     t0 = time.time()
-    ss.write_vocab(conn, LABEL, [str(t) for t in terms], idf=idf)
-    log("vocab written  %.0fs" % (time.time() - t0))
-    log("meta written: %d rows" % ss.write_chunk_meta(conn, LABEL, recs))
-    build = ss.new_build(conn, LABEL, len(recs), {
-        "bm25": {"k1": K1, "b": B, "avgdl": avgdl, "n_docs": N, "dim": dim, "whale_cols": whales.tolist()},
-        "fit": cached.get("fit"), "dense_dim": DENSE_DIM, "tokenizer": {"kind": "bpe", "merges": bpe} if bpe else {"kind": "words"}})
-    log("build %d opened (statistics frozen here until the next full build)" % build)
+    ss.write_generation_vocab(conn, build, [str(t) for t in terms], idf)
+    log("build-scoped vocab written  %.0fs" % (time.time() - t0))
 
-    def rows(M_):
-        def gen():
-            for i in range(N):
-                s, e = M_.indptr[i], M_.indptr[i + 1]
-                yield i, recs[i]["doc_id"], "arxiv", dict(zip(M_.indices[s:e].tolist(), M_.data[s:e].tolist()))
-        return gen()
     t0 = time.time()
-    w = ss.write_chunks(conn, LABEL, dim, rows(sat_t))
-    log("vectors written %d rows (skipped %d empty)  %.0fs" % (w["written"], N - w["written"], time.time() - t0))
-    log("hnsw build %.0fs (m=%d, ef_construction=%d)  %s" % (ss.create_hnsw(conn, LABEL, M, EFC), M, EFC, ss.counts(conn, LABEL)))
-    t0 = time.time()
-    wc = ss.write_chunks(conn, LABEL, dim, rows(cos_t), kind="cos")
-    log("cosine view written %d rows  %.0fs; hnsw build %.0fs" % (wc["written"], time.time() - t0,
-                                                                  ss.create_hnsw(conn, LABEL, M, EFC, kind="cos")))
+    w = ss.write_generation_vectors(conn, LABEL, build, dim, (
+        dict(zip(sat_t.indices[sat_t.indptr[i]:sat_t.indptr[i + 1]].tolist(),
+                 sat_t.data[sat_t.indptr[i]:sat_t.indptr[i + 1]].tolist()))
+        for i in range(N)
+    ))
+    log("exact vectors written %d rows (empty vectors retained, truncated=%d)  %.0fs"
+        % (w["written"], w["truncated"], time.time() - t0))
+    if graph_conn is not None:
+        import section_store as store
+        current_graph = store.live_build(graph_conn, "xpa")
+        if current_graph is None or current_graph[0] != graph_build_id:
+            raise RuntimeError("source section build changed during BM25 generation; leaving it unpublished")
+    ss.publish_generation(conn, LABEL, build, len(recs), dim)
+    log("generation %d validated and published" % build)
 
     if "--no-battery" in sys.argv:
         log("--no-battery: recall measurements skipped")
         conn.close()
+        if graph_conn:
+            graph_conn.close()
         return
     col = {str(t): j for j, t in enumerate(terms)}
     sat_c = sat_t.tocsc()
@@ -261,19 +460,15 @@ def main() -> None:
             np_scores.append(s[o])
         print(hdr % ("numpy exact", "%.3f" % recall(np_top), "%.0f" % ((time.time() - t0) / len(qs) * 1000)))
         t0 = time.time()
-        pg = [ss.query(conn, LABEL, dim, c, K, exact=True, weights=w_) for c, w_, _ in qs]
+        pg = [ss.query_generation(conn, LABEL, build, dim, c, K, weights=w_) for c, w_, _ in qs]
         ms = (time.time() - t0) / len(qs) * 1000
         print(hdr % ("psql exact scan", "%.3f" % recall([[o for o, _ in r] for r in pg]), "%.0f" % ms))
         same = np.mean([np.allclose(np.sort(a), np.sort([s for _, s in r]), rtol=1e-3, atol=1e-4) for a, r in zip(np_scores, pg)])
         print("  parity: psql exact top-%d SCORE set == numpy on %.1f%% of queries%s"
               % (K, 100 * same, "" if same >= 0.99 else "   <-- PARITY DEFECT, read no HNSW number below"))
-        for ef in EFS:
-            t0 = time.time()
-            hn = [ss.query(conn, LABEL, dim, c, K, ef_search=ef, weights=w_) for c, w_, _ in qs]
-            ms = (time.time() - t0) / len(qs) * 1000
-            assert all(len(r) == min(K, ef) for r in hn), "HNSW returned fewer rows than min(k, ef)"
-            print(hdr % ("psql hnsw ef=%d" % ef, "%.3f" % recall([[o for o, _ in r] for r in hn]), "%.0f" % ms))
     conn.close()
+    if graph_conn:
+        graph_conn.close()
 
 
 if __name__ == "__main__":

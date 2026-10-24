@@ -1,9 +1,12 @@
-"""config.py — one source for this project's environment facts.
+"""Environment configuration shared by graph and BM25 services.
 
-Every consuming module keeps its own module-level name (DSN = config.DSN) so
-existing monkeypatch patch points survive; only the right-hand side moves here.
+| Stage | Mechanism | Tag | Ref |
+|---|---|---|---|
+| CONFIGURE | Resolve separate graph and BM25 database DSNs. | [mandatory] | R1 |
 
-Spec: .spec/specs/graph-explorer/design.md sec 6.21(b) · Task: playbook.md T32
+R1 `CHUNKGRAPH_DSN` owns graph storage; `ARXIV_BM25_DSN` owns BM25 storage and has an independent deployment default.
+
+Preconditions: database endpoints are reachable by the caller. Failure modes: unavailable DSNs fail at connect time.
 """
 import os
 
@@ -15,6 +18,12 @@ NEO4J_BOLT_PORT = int(os.environ.get("NEO4J_BOLT_PORT", "7687"))
 # ---- postgres
 DSN = os.environ.get("CHUNKGRAPH_DSN",
                      f"postgresql://graph:graph@localhost:{PG_PORT}/graph")
+ARXIV_BM25_DSN = os.environ.get(
+    "ARXIV_BM25_DSN",
+    "postgresql://langchain:langchain@localhost:5432/langchain",
+)
+ARXIV_BM25_SAMPLE_SIZE = int(os.environ.get("ARXIV_BM25_SAMPLE_SIZE", "80000"))
+ARXIV_BM25_SAMPLE_SEED = os.environ.get("ARXIV_BM25_SAMPLE_SEED", "arxiv-bm25-sample-2026-10")
 
 # ---- neo4j (local container runs NEO4J_AUTH=none)
 NEO4J_HTTP    = os.environ.get("NEO4J_HTTP", f"http://localhost:{NEO4J_HTTP_PORT}")

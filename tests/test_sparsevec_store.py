@@ -10,6 +10,7 @@ Run:  pytest tests/test_sparsevec_store.py -v
 from __future__ import annotations
 
 import sys
+import json
 from pathlib import Path
 
 import numpy as np
@@ -19,6 +20,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import sparsevec_store as ss
+from ingest_arxiv_sparsevec import refresh_sample_view
 
 TEST_DB = "graph_sparsevec_test"
 LABEL, SDIM, DDIM = "zz_store", 12, 4
@@ -186,6 +188,93 @@ def test_a_new_build_supersedes_the_live_one_without_deleting_it(conn):
     assert ss.live_build(conn, LABEL + "_b") == (b2, 140, {"resolution": 5.0})
     assert conn.execute("SELECT live FROM lex_build WHERE build_id = %s", (b1,)).fetchone()[0] is False
     assert ss.live_build(conn, LABEL + "_other") is None
+
+
+def test_exact_generation_storage_keeps_empty_rows_and_publishes_atomically(conn):
+    """Three records cover repeated ordinals, multiple chunks in one section, and an empty vector."""
+    lab = LABEL + "_gen"
+    ss.ensure_generation_schema(conn, lab)
+    first = ss.open_generation(conn, lab, 3, {"source_graph_build": 12})
+    recs = [_rec("arxiv/a", 0, 0, "alpha"), _rec("arxiv/a", 0, 1, "beta"),
+            _rec("arxiv/b", 1, 0, "empty", junk=True)]
+    ss.write_generation_meta(conn, lab, first, recs)
+    ss.write_generation_vocab(conn, first, ["alpha", "beta"], np.array([2.0, 1.0]))
+    wrote = ss.write_generation_vectors(conn, lab, first, 2, [{0: 1.0}, {1: 2.0}, {}])
+    assert wrote["written"] == 3
+    table = ss._table(lab, "sparse")
+    assert conn.execute(f"SELECT count(*) FROM {table} v JOIN lex_chunk_meta m ON m.record_id=v.record_id WHERE m.label=%s AND m.build_id=%s", (lab, first)).fetchone()[0] == 3
+    sparse_columns = {r[0] for r in conn.execute("SELECT attname FROM pg_attribute WHERE attrelid=%s::regclass AND attnum>0 AND NOT attisdropped", (table,)).fetchall()}
+    assert sparse_columns == {"record_id", "vec"}
+    ss.publish_generation(conn, lab, first, 3, 2)
+    assert ss.query_generation(conn, lab, first, 2, [0], 3) == [(0, 1.0), (1, 0.0), (2, 0.0)]
+
+    failed = ss.open_generation(conn, lab, 3, {"source_graph_build": 13})
+    ss.write_generation_meta(conn, lab, failed, recs)
+    ss.write_generation_vocab(conn, failed, ["alpha", "beta"], np.array([2.0, 1.0]))
+    ss.write_generation_vectors(conn, lab, failed, 2, [{0: 1.0}, {1: 2.0}])
+    with pytest.raises(RuntimeError, match="incomplete BM25 generation"):
+        ss.publish_generation(conn, lab, failed, 3, 2)
+    assert ss.live_build(conn, lab)[0] == first
+
+    second = ss.open_generation(conn, lab, 3, {"source_graph_build": 14})
+    ss.write_generation_meta(conn, lab, second, recs)
+    ss.write_generation_vocab(conn, second, ["alpha", "beta"], np.array([2.0, 1.0]))
+    ss.write_generation_vectors(conn, lab, second, 2, [{0: 1.0}, {1: 2.0}, {}])
+    ids_by_build = {build_id: {r[0] for r in conn.execute("SELECT record_id FROM lex_chunk_meta WHERE label=%s AND build_id=%s", (lab, build_id)).fetchall()}
+                    for build_id in (first, second)}
+    assert ids_by_build[first].isdisjoint(ids_by_build[second])
+    ss.publish_generation(conn, lab, second, 3, 2)
+    assert ss.live_build(conn, lab)[0] == second
+    assert conn.execute("SELECT live FROM lex_build WHERE build_id=%s", (first,)).fetchone()[0] is False
+    assert ss.query_generation(conn, lab, second, 2, [1], 2) == [(1, 2.0), (0, 0.0)]
+    conn.execute("DELETE FROM lex_build WHERE label=%s", (lab,))
+    conn.execute("DELETE FROM lex_chunk_meta WHERE label=%s", (lab,))
+
+
+def test_legacy_sparse_vectors_migrate_through_metadata_record_ids(conn):
+    lab = LABEL + "_migration"
+    table = ss._table(lab, "sparse")
+    conn.execute(f"DROP TABLE IF EXISTS public.{table}_build_scoped CASCADE")
+    conn.execute(f"DROP TABLE IF EXISTS public.{table} CASCADE")
+    with conn.transaction(force_rollback=True):
+        ss.ensure_build_schema(conn)
+        ss.ensure_chunk_meta(conn)
+        params = {"bm25": {"dim": 2}}
+        first = conn.execute("INSERT INTO lex_build(label,live,ready,n_chunks,params) VALUES (%s,false,true,2,%s) RETURNING build_id", (lab, json.dumps(params))).fetchone()[0]
+        second = conn.execute("INSERT INTO lex_build(label,live,ready,n_chunks,params) VALUES (%s,true,true,1,%s) RETURNING build_id", (lab, json.dumps(params))).fetchone()[0]
+        records = [_rec("arxiv/shared", 0, 0, "first zero"), _rec("arxiv/shared", 0, 1, "first one")]
+        ss.write_generation_meta(conn, lab, first, records)
+        ss.write_generation_meta(conn, lab, second, [_rec("arxiv/new", 0, 0, "second zero")])
+        conn.execute(f"CREATE TABLE {table}(build_id bigint NOT NULL,record_id integer NOT NULL,vec sparsevec NOT NULL,PRIMARY KEY(build_id,record_id))")
+        conn.execute(f"INSERT INTO {table}(build_id,record_id,vec) VALUES (%s,0,'{{1:1}}/2'::sparsevec),(%s,1,'{{}}/2'::sparsevec),(%s,0,'{{2:2}}/2'::sparsevec)", (first, first, second))
+
+        ss.ensure_generation_schema(conn, lab)
+
+        cols = {r[0] for r in conn.execute("SELECT attname FROM pg_attribute WHERE attrelid=%s::regclass AND attnum>0 AND NOT attisdropped", (table,)).fetchall()}
+        assert cols == {"record_id", "vec"}
+        assert conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0] == 3
+        assert conn.execute(f"SELECT count(*) FROM {table}_build_scoped").fetchone()[0] == 3
+        assert ss.query_generation(conn, lab, second, 2, [1], 1) == [(0, 2.0)]
+
+
+def test_materialized_samples_are_deterministic_and_scoped_to_generation(conn):
+    lab = LABEL + "_sample"
+    ss.ensure_generation_schema(conn, lab)
+    first = ss.open_generation(conn, lab, 3, {"source_graph_build": 12})
+    ss.write_generation_meta(conn, lab, first, [_rec("arxiv/a", 0, i, f"chunk {i}") for i in range(3)])
+    view, first_ord = refresh_sample_view(conn, lab, 2, "fixed-seed", first)
+    _, repeated_ord = refresh_sample_view(conn, lab, 2, "fixed-seed", first)
+    assert len(first_ord) == 2 and first_ord == repeated_ord
+
+    second = ss.open_generation(conn, lab, 2, {"source_graph_build": 13})
+    ss.write_generation_meta(conn, lab, second, [_rec("arxiv/b", 0, i, f"other {i}") for i in range(2)])
+    view, second_ord = refresh_sample_view(conn, lab, 2, "fixed-seed", second)
+    assert len(second_ord) == 2
+    assert conn.execute(f"SELECT count(*) FROM {view} WHERE build_id=%s", (first,)).fetchone()[0] == 2
+    assert conn.execute(f"SELECT count(*) FROM {view} WHERE build_id=%s", (second,)).fetchone()[0] == 2
+    conn.execute(f"DROP MATERIALIZED VIEW IF EXISTS {view}")
+    conn.execute("DELETE FROM lex_build WHERE label=%s", (lab,))
+    conn.execute("DELETE FROM lex_chunk_meta WHERE label=%s", (lab,))
 
 
 def test_stages_add_their_params_to_one_build_and_clear_derived_keeps_the_summaries(conn):

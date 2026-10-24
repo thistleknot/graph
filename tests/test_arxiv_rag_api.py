@@ -1,11 +1,23 @@
-"""Pins arxiv_rag_api.py: hybrid search that returns WHOLE sections (Q1-Q3), the reference filter (Q4), visible
-degradation (Q5), and the HTTP surface OpenWebUI reads.
+"""| Stage | Mechanism | Tag | Ref |
+|---|---|---|---|
+| WARM | Verify API startup warms the build, dense encoder, and cross-encoder. | [mandatory] | T4 |
+| SEARCH | Pin hybrid whole-section retrieval and reference filtering. | [mandatory] | T1 |
+| AGENT | Verify selected-model forwarding and separate text-bearing evidence records. | [mandatory] | T2 |
+| HEALTH | Verify live build changes and health metadata. | [mandatory] | T3 |
+| BOUND | Verify model failures return explicit HTTP errors and close both connections. | [mandatory] | T5 |
 
 Real Postgres in a database this suite owns (`graph_sparsevec_test`); a fake query embedder; no GPU. The library is
 two papers, one with a 400-paragraph section that the chunker splits into several chunks, so "whole section" has to
 rebuild across continuation chunks.
 
+T1 Search returns complete sections, omits references by default, and reports sparse/dense degradation.
+T2 `/agent` forwards the selected model, returns the final answer separately, and places bounded passage text on evidence rows rather than metadata-only sections.
+T3 Health reports the active build; replacing it is picked up on the next request.
+T4 Startup verifies the live build and runs both local retrieval models before readiness.
+T5 Budget exhaustion returns 504; empty and unfinished model output returns 502.
+
 Run:  pytest tests/test_arxiv_rag_api.py -v
+Preconditions: test PostgreSQL is available. Failure modes: schema, query, agent, or warmup contract drift fails here.
 """
 from __future__ import annotations
 
@@ -61,40 +73,48 @@ def conn():
     except Exception as exc:                                            # pragma: no cover
         pytest.skip(f"no Postgres at {ss.DSN}: {exc}")
     build_library(c)
+    build_library(c, "arxiv_sect_bpe")
+    c.execute("CREATE TABLE IF NOT EXISTS sect_build (build_id bigserial PRIMARY KEY, tag text NOT NULL, live boolean NOT NULL DEFAULT true, params jsonb NOT NULL DEFAULT '{}')")
+    c.execute("INSERT INTO sect_build (tag, params) VALUES ('xpa', '{}'::jsonb)")
     yield c
     c.execute("DELETE FROM lex_build WHERE label = %s", (LABEL,))
+    c.execute("DELETE FROM lex_build WHERE label = %s", ("arxiv_sect_bpe",))
     c.execute("DELETE FROM lex_chunk_meta WHERE label = %s", (LABEL,))
+    c.execute("DELETE FROM lex_chunk_meta WHERE label = %s", ("arxiv_sect_bpe",))
     ss.reset_label_tables(c, LABEL)
+    ss.reset_label_tables(c, "arxiv_sect_bpe")
+    c.execute("DELETE FROM sect_build WHERE tag = 'xpa'")
     c.close()
 
 
-def build_library(c) -> None:
+def build_library(c, label=LABEL) -> None:
     recs, _, _ = chunk_arxiv(["arxiv/2601_0001", "arxiv/2601_0002"], [P1, P2], fit=FIT)
     with_junk_flag(recs)
     tokens = [[] if r["is_junk"] else tokenize(r["text"]) for r in recs]
     BM, TF, terms, df = bm25_matrix(tokens, K1, B)
     N, dim = BM.shape
     sat_t, cos_t, idf, whales = full_views(BM.tocsr(), df, N)
-    c.execute("DELETE FROM lex_build WHERE label = %s", (LABEL,))
-    ss.reset_label_tables(c, LABEL)
-    ss.ensure_schema(c, LABEL, dim)
+    c.execute("DELETE FROM lex_build WHERE label = %s", (label,))
+    ss.reset_label_tables(c, label)
+    ss.ensure_schema(c, label, dim)
     ss.ensure_chunk_meta(c)
-    ss.ensure_view_schema(c, LABEL, dim, 4)
+    ss.ensure_view_schema(c, label, dim, 4)
     ss.ensure_build_schema(c)
-    ss.write_vocab(c, LABEL, [str(t) for t in terms], idf=idf)
-    ss.write_chunk_meta(c, LABEL, recs)
+    ss.write_vocab(c, label, [str(t) for t in terms], idf=idf)
+    ss.write_chunk_meta(c, label, recs)
 
     def rows(M):
         return [(i, recs[i]["doc_id"], "arxiv", dict(zip(M.indices[M.indptr[i]:M.indptr[i + 1]].tolist(),
                                                            M.data[M.indptr[i]:M.indptr[i + 1]].tolist()))) for i in range(N)]
-    ss.write_chunks(c, LABEL, dim, rows(sat_t))
-    ss.write_chunks(c, LABEL, dim, rows(cos_t), kind="cos")
+    ss.write_chunks(c, label, dim, rows(sat_t))
+    ss.write_chunks(c, label, dim, rows(cos_t), kind="cos")
     keep = [i for i, r in enumerate(recs) if not r["is_reference"] and not r["is_junk"]]
     E = fake_embed_docs([recs[i]["text"] for i in keep])
-    ss.write_dense(c, LABEL, keep, E)
-    build = ss.new_build(c, LABEL, N, {
+    ss.write_dense(c, label, keep, E)
+    build = ss.new_build(c, label, N, {
         "bm25": {"k1": K1, "b": B, "avgdl": float(np.mean([len(t) for t in tokens])), "n_docs": N, "dim": dim, "whale_cols": whales.tolist()},
         "fit": FIT, "dense_dim": 4, "dense": {"model": "fake", "dim": 4, "mean": [0.0, 0.0, 0.0, 0.0]}, "communities": {"n": 2}})
+    c.execute("UPDATE lex_chunk_meta SET build_id = %s WHERE label = %s", (build, label))
     ss.write_communities(c, build, [(0, 1, [1.0, 0, 0, 0]), (1, 1, [0, 1.0, 0, 0])])
     ss.write_assignments(c, build, [(i, int(np.argmax(e)), "consensus", 0.0, 0.0) for i, e in zip(keep, E)])
     ss.write_summaries(c, build, [{"community": 0, "status": "draft", "title": "Graph communities", "summary": "s", "chunk_keys": []},
@@ -251,12 +271,61 @@ def test_get_section_returns_the_same_text_search_does_and_none_for_an_unknown_k
 @pytest.fixture(scope="module")
 def client(conn):
     from fastapi.testclient import TestClient
-    app = api.create_app(label=LABEL, dsn=ss.DSN.rsplit("/", 1)[0] + "/" + TEST_DB, embed_query=fake_query)
+    import section_store as store
+    store.ensure_schema(conn)
+    graph_build = conn.execute("SELECT build_id FROM sect_build WHERE tag = 'xpa' AND live").fetchone()[0]
+    conn.execute(
+        "UPDATE lex_build SET params = params || jsonb_build_object('source_graph_build', %s) "
+        "WHERE label = 'arxiv_sect_bpe' AND live",
+        (graph_build,),
+    )
+    conn.execute(
+        "INSERT INTO sect_community (build_id,cid,size,title,summary,status) VALUES "
+        "(%s,0,2,'Graph communities','s','draft'),(%s,1,2,'Sparse retrieval','s','draft') "
+        "ON CONFLICT (build_id,cid) DO UPDATE SET title=excluded.title,summary=excluded.summary,status=excluded.status",
+        (graph_build, graph_build),
+    )
+    app = api.create_app(label="arxiv_sect_bpe", dsn=ss.DSN.rsplit("/", 1)[0] + "/" + TEST_DB,
+                         warm_start=False, bm25_dsn=ss.DSN.rsplit("/", 1)[0] + "/" + TEST_DB)
     with TestClient(app) as c:
         yield c
 
 
-def test_the_search_endpoint_returns_whole_sections_in_the_documented_shape(client):
+def test_startup_warms_database_dense_encoder_and_cross_encoder(conn, monkeypatch):
+    from fastapi.testclient import TestClient
+    import section_graphrag as graph
+
+    calls = []
+
+    def warm_cross(question, texts):
+        calls.append(("cross", question, texts))
+        return [0.0] * len(texts)
+
+    class WarmGraph:
+        build = 123
+
+        def __init__(self, conn, tag, chunk_label=None, bm25_conn=None):
+            assert tag == "xpa" and chunk_label == LABEL and bm25_conn is not None
+
+        def embed(self, text):
+            calls.append(("graph", text))
+            return fake_query(text)
+
+    monkeypatch.setattr(graph, "SectionGraph", WarmGraph)
+    monkeypatch.setattr(graph, "cross_scores", warm_cross)
+    app = api.create_app(label=LABEL, dsn=ss.DSN.rsplit("/", 1)[0] + "/" + TEST_DB,
+                         bm25_dsn=ss.DSN.rsplit("/", 1)[0] + "/" + TEST_DB)
+    with TestClient(app) as c:
+        assert c.get("/health").status_code == 200
+    assert calls == [
+        ("graph", "Open WebUI startup warmup"),
+        ("cross", "Open WebUI startup warmup", ["Warmup evidence section."]),
+    ]
+
+
+def test_the_search_endpoint_returns_whole_sections_in_the_documented_shape(client, conn, monkeypatch):
+    monkeypatch.setattr(api, "search_section_graph", lambda db, bm25, query, k, mode, refs, max_chars, chunk_label:
+                        api.search(db, LABEL, frozen(db, LABEL), query, k, mode, refs, max_chars, fake_query))
     r = client.get("/search", params={"query": "platypus zebrafish quokka", "k": 2, "mode": "sparse", "max_chars": 100000})
     assert r.status_code == 200
     body = r.json()
@@ -278,12 +347,16 @@ def test_the_endpoints_refuse_bad_parameters_and_unknown_sections(client):
     assert client.get("/section", params={"doc_id": "arxiv/2601_0001", "section_idx": -1}).status_code == 422
 
 
-def test_the_section_health_and_community_endpoints(client):
+def test_the_section_health_and_community_endpoints(client, monkeypatch):
+    monkeypatch.setattr(api, "search_section_graph", lambda db, bm25, query, k, mode, refs, max_chars, chunk_label:
+                        api.search(db, LABEL, frozen(db, LABEL), query, k, mode, refs, max_chars, fake_query))
+    monkeypatch.setattr(api, "get_section_from_graph", lambda db, bm25, doc_id, section_idx, max_chars, chunk_label:
+                        api.get_section(db, LABEL, doc_id, section_idx, max_chars))
     top = client.get("/search", params={"query": "platypus zebrafish quokka", "mode": "sparse", "k": 1}).json()["results"][0]
     sec = client.get("/section", params={"doc_id": top["doc_id"], "section_idx": top["section_idx"]}).json()
     assert sec["text"] == top["text"]
     health = client.get("/health").json()
-    assert health["label"] == LABEL and health["papers"] == 2 and health["chunks"] >= 5
+    assert health["label"] == "arxiv_sect_bpe" and health["papers"] == 2 and health["chunks"] >= 5
     rows = client.get("/communities").json()
     assert {r["title"] for r in rows} == {"Graph communities", "Sparse retrieval"} and rows == sorted(rows, key=lambda r: -r["size"])
 
@@ -291,26 +364,139 @@ def test_the_section_health_and_community_endpoints(client):
 def test_openwebui_can_read_the_surface_from_openapi(client):
     spec = client.get("/openapi.json").json()
     ops = {p: {m: d["operationId"] for m, d in item.items()} for p, item in spec["paths"].items()}
-    assert ops == {"/search": {"get": "search_arxiv"}, "/section": {"get": "get_section"},
-                   "/communities": {"get": "list_communities"}, "/health": {"get": "health"}}
+    assert ops == {"/search": {"get": "search_arxiv"}, "/agent": {"post": "answer_with_section_graph"},
+                   "/section": {"get": "get_section"},
+                   "/communities": {"get": "list_communities"}, "/community-terms": {"get": "list_community_terms"},
+                   "/health": {"get": "health"}}
     assert "WHOLE SECTION" in spec["info"]["description"]
     params = {p["name"]: p for p in spec["paths"]["/search"]["get"]["parameters"]}
     assert params["query"]["required"] is True and params["mode"]["schema"]["enum"] == ["hybrid", "sparse", "dense"]
 
 
+def test_agent_endpoint_returns_json_safe_graph_report_and_selected_model(client, monkeypatch):
+    import section_graphrag as graph
+    import section_store as store
+    import summarize_clusters
+
+    calls = {}
+
+    class FakeConnection:
+        def close(self):
+            calls["closed"] = calls.get("closed", 0) + 1
+
+    class FakeGraph:
+        def __init__(self, conn, tag, bm25_conn=None):
+            self.conn, self.build = conn, 91
+            calls["tag"] = tag
+            calls["bm25_conn"] = bm25_conn is not None
+
+    def fake_agent(sg, question, **kwargs):
+        calls["question"] = question
+        calls["model"] = kwargs["model"]
+        calls["agent_model"] = kwargs["agent_model"]
+        calls["deadline"] = kwargs["deadline"]
+        return {
+            "question": question,
+            "seeds": [42],
+            "subgraph": [{"ord": 42}, {"ord": 43}],
+            "partials": [[7, "draft"]],
+            "partials_rejected": [],
+            "global_answer": "global",
+            "final": "final",
+            "evidence": [{"key": "arxiv/2401_00001#4", "ord": 42, "role": "read by the agent"}],
+            "traversal": {"by_community": [{"cid": 7, "n": 1, "entities": []}]},
+            "section_scores": [{"ord": 42, "key": "arxiv/2401_00001#4", "community": 7, "score": np.float32(0.5)}],
+            "section_threshold": 0.0,
+            "question_rejected": "",
+            "agent": {"nodes": {"k": {"ord": 42}}, "trace": [], "stop": "answered", "read": {"k": "large"}},
+            "qd": np.array([0.1, 0.2]),
+        }
+
+    monkeypatch.setattr(api.ss, "connect", lambda *args, **kwargs: FakeConnection())
+    monkeypatch.setattr(graph, "SectionGraph", FakeGraph)
+    monkeypatch.setattr(graph, "agent_answer", fake_agent)
+    monkeypatch.setattr(summarize_clusters, "chat", lambda model, prompt, **kwargs: (
+        calls.update(rewrite_model=model, rewrite_prompt=prompt, rewrite_deadline=kwargs["deadline"]) or {"content": "standalone graph question"}
+    ))
+    monkeypatch.setattr(store, "sections", lambda conn, build, ords: {
+        42: {"doc_id": "arxiv/2401_00001", "section_idx": 4, "section_title": "Graph methods",
+             "community": 7, "text": "Evidence"},
+        43: {"doc_id": "arxiv/2401_00002", "section_idx": 5, "section_title": "Neighbor",
+             "community": 7, "text": "Not returned as evidence"},
+    })
+    monkeypatch.setattr(store, "paper_titles", lambda conn, doc_ids: {
+        "arxiv/2401_00001": "Paper title", "arxiv/2401_00002": "Neighbor paper"
+    })
+    monkeypatch.setattr(store, "summaries", lambda conn, build, cids: {
+        7: {"community": 7, "title": "Graph retrieval", "size": 1, "summary": "draft"}
+    })
+
+    response = client.post("/agent", json={
+        "question": "What about that?",
+        "model": "openrouter/google/test",
+        "history": [{"role": "user", "content": "Earlier graph question"}],
+    })
+    assert response.status_code == 200
+    body = response.json()
+    assert body["question"] == "standalone graph question"
+    assert body["original_question"] == "What about that?" and body["final"] == "final"
+    assert body["section_scores"][0]["score"] == 0.5
+    assert body["sections"]["42"]["paper_title"] == "Paper title"
+    assert body["evidence"][0]["text"] == "Evidence"
+    assert body["evidence"][0]["truncated"] is False
+    assert "text" not in body["sections"]["42"]
+    assert "text" not in body["sections"]["43"]
+    assert body["communities"]["7"]["title"] == "Graph retrieval"
+    assert "read" not in body["agent"]
+    assert calls["tag"] == "xpa" and calls["model"] == calls["agent_model"] == "google/test"
+    assert calls["question"] == body["question"] and calls["rewrite_model"] == "google/test"
+    assert "Earlier graph question" in calls["rewrite_prompt"] and calls["closed"] == 2
+    assert calls["bm25_conn"] is True
+    assert calls["deadline"] == calls["rewrite_deadline"]
+
+
+@pytest.mark.parametrize("failure,status,detail", [
+    (TimeoutError("budget exhausted"), 504, "180-second request budget"),
+    (ValueError("empty model reply"), 502, "empty model reply"),
+    (ValueError("finish_reason=length"), 502, "finish_reason=length"),
+])
+def test_agent_reports_model_failure_and_closes_both_connections(monkeypatch, failure, status, detail):
+    """A4. Guarantee: upstream failures stay explicit and close request resources."""
+    import section_graphrag as graph
+    from fastapi.testclient import TestClient
+    closed, deadlines = [], []
+
+    class Connection:
+        def close(self):
+            closed.append(True)
+
+    def fail(sg, question, **kwargs):
+        deadlines.append(kwargs["deadline"])
+        raise failure
+
+    monkeypatch.setattr(api.ss, "connect", lambda *a, **kw: Connection())
+    monkeypatch.setattr(graph, "SectionGraph", lambda *a, **kw: object())
+    monkeypatch.setattr(graph, "agent_answer", fail)
+    with TestClient(api.create_app(warm_start=False)) as client:
+        response = client.post("/agent", json={"question": "A bounded research question"})
+    assert response.status_code == status and detail in response.json()["detail"]
+    assert len(closed) == 2 and len(deadlines) == 1
+
+
 def test_a_service_with_no_live_build_says_so_with_a_503(conn):
     from fastapi.testclient import TestClient
-    app = api.create_app(label="zz_api_nobuild", dsn=ss.DSN.rsplit("/", 1)[0] + "/" + TEST_DB, embed_query=fake_query)
+    app = api.create_app(label="zz_api_nobuild", dsn=ss.DSN.rsplit("/", 1)[0] + "/" + TEST_DB,
+                         warm_start=False)
     with TestClient(app) as c:
         r = c.get("/search", params={"query": "x"})
-        assert r.status_code == 503 and "no live build" in r.json()["detail"]
+        assert r.status_code == 503 and "build is missing" in r.json()["detail"]
 
 
 def test_a_rebuild_is_picked_up_without_a_restart(conn, client):
     before = client.get("/health").json()["build"]
-    stats = conn.execute("SELECT n_chunks, params FROM lex_build WHERE label = %s AND live", (LABEL,)).fetchone()
+    stats = conn.execute("SELECT n_chunks, params FROM lex_build WHERE label = %s AND live", ("arxiv_sect_bpe",)).fetchone()
     import json
-    newer = ss.new_build(conn, LABEL, stats[0], json.loads(json.dumps(stats[1])) if not isinstance(stats[1], str) else json.loads(stats[1]))
+    newer = ss.new_build(conn, "arxiv_sect_bpe", stats[0], json.loads(json.dumps(stats[1])) if not isinstance(stats[1], str) else json.loads(stats[1]))
     try:
         ss.write_communities(conn, newer, [(0, 1, [1.0, 0, 0, 0])])
         assert client.get("/health").json()["build"] == newer != before

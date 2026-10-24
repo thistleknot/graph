@@ -1,0 +1,38 @@
+{
+  "feature": "section-term-reweighting",
+  "kind": "feature",
+  "phase": "implement",
+  "approvals": {
+    "requirements": "2026-10-22",
+    "design": "2026-10-22",
+    "tasks": "2026-10-22"
+  },
+  "scope": [
+    "README.md",
+    "F:\\Python\\README.md",
+    "interpretations.md",
+    "src/config.py",
+    "src/sparsevec_store.py",
+    "src/arxiv_bm25_worker.py",
+    "src/arxiv_graph_service.py",
+    "tests/test_arxiv_graph_service.py",
+    "src/arxiv_community_map.py",
+    "src/hnsw_communities.py",
+    "scripts/install_arxiv_bm25_service.ps1",
+    "src/ingest_arxiv_sparsevec.py",
+    "src/section_graphrag.py",
+    "src/summarize_clusters.py",
+    "src/section_sparse.py",
+    "src/section_store.py",
+    "src/arxiv_rag_api.py",
+    "src/owui_filter.py",
+    "tests/test_section_sparse.py",
+    "tests/test_ingest_arxiv_sparsevec.py",
+    "tests/test_arxiv_bm25_worker.py",
+    "tests/test_section_graphrag.py",
+    "tests/test_summarize_clusters.py",
+    "tests/test_arxiv_rag_api.py",
+    "tests/test_owui_filter.py"
+  ],
+  "created": "2026-10-21T00:00:00Z"
+}

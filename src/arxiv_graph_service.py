@@ -13,6 +13,7 @@ minutes (15 minutes after arxiv-llmtxt-ingest)". Tasks: playbook.md T123, T124. 
     VECTORS   sparse ip + cosine rows from ingest.doc_row under frozen statistics; dense MiniLM    S1, S3
               centered on the build's frozen mean
     PLACE     nearest unit centroid -> lex_assign(how = 'nearest-centroid', no layout position)    S4
+    COMMIT    finish embeddings first; replace metadata, vectors, placement and mentions atomically S11
     REBUILD   chunks added since the build reach REBUILD_FRACTION of its size -> full pipeline     S6
 
 S1  A build freezes its vocabulary, idf, avgdl, whale columns, chunking fit and embedding mean
@@ -51,6 +52,17 @@ S9  Entities are opt-in per build. `--freeze-entities` derives an inventory from
     with the same parameters. An inventory whose tokenizer version differs from the code's is never matched against.
     Task T131; spec: the approved plan derive-arxiv-entities-with-information-theory.md.
 
+S10 Before a cycle touches Postgres, ensure_docker starts Docker Desktop when the engine does not answer and
+    `docker compose up -d graphdb` when chunkgraph-pg is not healthy, waiting up to DOCKER_WAIT_S for each.
+    Still down -> the cycle is skipped and its papers stay pending for the next slot.
+S11 Embeddings and derived placement are computed before database mutation. Replacement deletion, chunk metadata,
+    sparse vectors, dense vectors, assignments and entity mentions commit as one transaction; a failure rolls back.
+    A stored paper missing a dense row or assignment is reloaded from its current markdown and replaced on retry.
+S12 `--root` selects the Markdown `papers/post_processed` directory for one-shot and watch modes; the default is
+    `domain_corpora.ARXIV_DIR`.
+S13 Each ingest cycle ensures the legacy `lex_build.ready` column exists before any live-build read; older graph
+    database schemas may predate the generation readiness flag.
+
 Run:  python -u src\\arxiv_graph_service.py --watch | --once | --rebuild | --freeze-entities
 """
 from __future__ import annotations
@@ -76,7 +88,7 @@ import numpy as np
 
 import entity_derive as ed
 import sparsevec_store as ss
-from domain_corpora import chunk_arxiv, load_arxiv_papers, with_junk_flag
+from domain_corpora import _read, arxiv_files, chunk_arxiv, load_arxiv_papers, with_junk_flag
 from ingest_arxiv_sparsevec import doc_row
 from stoplist import tokenize
 
@@ -92,6 +104,9 @@ VRAM_DEFER_FRAC = 0.5               # S5: the sibling's own rule
 INTERVAL_MIN, SIBLING_PERIOD_MIN, OFFSET_MIN, GRACE_MIN = 30, 15, 15, 2
 STEPS = ("chunk", "ingest", "map", "summarize", "render")
 IDLE_PRIORITY_CLASS = 0x00000040
+DOCKER_DESKTOP = r"C:\Program Files\Docker\Docker\Docker Desktop.exe"   # S10
+PG_CONTAINER = "chunkgraph-pg"      # S10: docker-compose.yml service graphdb
+DOCKER_WAIT_S = 180.0               # S10: engine start and container health, each
 
 
 def log(msg: str) -> None:
@@ -136,6 +151,45 @@ def vram_used_frac() -> float | None:
         return max(int(u) / int(t) for u, t in (ln.split(",") for ln in out)) if out else None
     except Exception:
         return None
+
+
+def ensure_docker(run=subprocess.run, start=subprocess.Popen, sleep=time.sleep,
+                  wait_s: float = DOCKER_WAIT_S) -> bool:
+    """S10. Guarantee: True once the Docker engine answers and PG_CONTAINER reports healthy. An engine that
+    does not answer gets Docker Desktop started, a container that is not up gets `docker compose up -d graphdb`
+    (ROOT/docker-compose.yml), and both are polled up to `wait_s`. False when either never comes up: the cycle
+    is skipped and the pending papers are retried next slot. Operator, 2026-10-20: Docker Desktop had to be
+    started by hand before the arxiv papers reached Postgres."""
+    def ok(*cmd) -> str | None:
+        try:
+            r = run(list(cmd), capture_output=True, text=True, timeout=90)   # `docker info` measured 22s, and >30s once, on a healthy engine
+        except Exception:
+            return None
+        return r.stdout.strip() if r.returncode == 0 else None
+
+    def poll(check) -> bool:
+        deadline = time.monotonic() + wait_s
+        while True:
+            if check():
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            sleep(5)
+
+    if ok("docker", "info", "--format", "{{.ServerVersion}}") is None:
+        log("docker engine down: starting Docker Desktop")
+        start([DOCKER_DESKTOP])
+        if not poll(lambda: ok("docker", "info", "--format", "{{.ServerVersion}}") is not None):
+            log("docker engine still down after %.0fs: skipping cycle" % wait_s)
+            return False
+    health = lambda: ok("docker", "inspect", "-f", "{{.State.Health.Status}}", PG_CONTAINER)
+    if health() != "healthy":
+        log("%s not healthy: docker compose up -d graphdb" % PG_CONTAINER)
+        ok("docker", "compose", "-f", str(ROOT / "docker-compose.yml"), "up", "-d", "graphdb")
+        if not poll(lambda: health() == "healthy"):
+            log("%s still not healthy after %.0fs: skipping cycle" % (PG_CONTAINER, wait_s))
+            return False
+    return True
 
 
 def acquire_lock(path: Path = LOCK) -> bool:
@@ -233,46 +287,138 @@ def freeze_entities(conn, label: str = LABEL, params: "ed.Params | None" = None,
 
 def ingest_new(conn, label: str, ids: list[str], docs: list[str], st: dict, embed_fn,
                versions: dict | None = None, replace: set | frozenset = frozenset()) -> dict:
-    """S1-S4, S8. Guarantee: the chunks of `docs` not already stored are in lex_chunk_meta (appended after the
-    last ord) carrying their version, their sparse and cosine rows in the label's tables, and each
-    retrievable one has a dense vector and a nearest-centroid placement. Every doc_id in `replace` has its
-    old chunks removed first. Returns counts."""
+    """Add new papers or atomically repair/replace papers in the frozen chunk graph.
+
+    Require:
+        `st` describes a complete live build, and each document ID matches its input text.
+    Guarantee:
+        A successful call commits metadata, sparse and dense vectors, assignments, and mentions together.
+    Maintain:
+        Replaced rows remain intact until embeddings are ready; a write failure rolls the replacement back.
+    Assert:
+        Every retrievable inserted chunk has a dense vector and community assignment.
+
+    Args:
+        conn: Open autocommit Postgres connection.
+        label: Target sparsevec label.
+        ids: Paper document IDs matching `docs`.
+        docs: Latest Markdown texts to chunk.
+        st: Frozen statistics and community data for the live build.
+        embed_fn: Dense encoder for retrievable chunks.
+        versions: Optional source version per document ID.
+        replace: Existing document IDs to replace within the transaction.
+
+    Returns:
+        Counts of added, duplicate, junk, reference, placed, and replaced chunks.
+
+    Called by:
+        `cycle` and deterministic tests.
+
+    Depends on:
+        `chunk_arxiv`, the frozen encoder contract, and `sparsevec_store` writes.
+
+    Failure modes:
+        Encoding errors precede writes; SQL and assertion errors roll back the transaction.
+    """
     import hnsw_communities as hc
     versions = versions or {}
     records, _, stats = chunk_arxiv(ids, docs, fit=st["fit"])
-    removed = ss.delete_papers(conn, label, sorted(replace), st["build"])             # BEFORE the duplicate check: a new
-    seen = ss.known_text_md5(conn, label, [r["text"] for r in records])               # version's chunks mostly equal the old
-    fresh = [r for r in with_junk_flag(records) if hashlib.md5(r["text"].encode("utf-8")).hexdigest() not in seen]   # ones'
+    seen = ss.known_text_md5(conn, label, [r["text"] for r in records], sorted(replace))
+    fresh = [r for r in with_junk_flag(records) if hashlib.md5(r["text"].encode("utf-8")).hexdigest() not in seen]
     for r in fresh:
         r["version"] = versions.get(r["doc_id"], 1)
     out = {"docs": len(ids), "chunks": len(fresh), "duplicates": len(records) - len(fresh) + stats["duplicates"],
            "junk": sum(r["is_junk"] for r in fresh), "references": sum(r["is_reference"] for r in fresh), "placed": 0,
-           "replaced_chunks": removed}
-    if not fresh:
+           "replaced_chunks": 0}
+    if not fresh and not replace:
         return out
-    first = ss.append_chunk_meta(conn, label, fresh, min_ord=st["n_chunks"])
-    ords = [first + i for i in range(len(fresh))]
     sat_rows, cos_rows = [], []
-    for o, r in zip(ords, fresh):
+    for i, r in enumerate(fresh):
         if r["is_junk"]:
             continue
         sat, cos = doc_row(tokenize(r["text"]), st["col"], st["idf"], st["avgdl"], st["whales"])
-        sat_rows.append((o, r["doc_id"], "arxiv", sat))
-        cos_rows.append((o, r["doc_id"], "arxiv", cos))
-    ss.write_chunks(conn, label, st["dim"], sat_rows, replace=False)
-    ss.write_chunks(conn, label, st["dim"], cos_rows, replace=False, kind="cos")
+        sat_rows.append((i, r["doc_id"], "arxiv", sat))
+        cos_rows.append((i, r["doc_id"], "arxiv", cos))
     keep = [i for i, r in enumerate(fresh) if not r["is_reference"] and not r["is_junk"]]
+    E = None
+    nearest = None
     if keep:
         E = hc.center(embed_fn([fresh[i]["text"] for i in keep]), st["mean"])
         assert E.shape[1] == st["dense_dim"], "embedding dimension %d, build has %d" % (E.shape[1], st["dense_dim"])
-        ss.write_dense(conn, label, [ords[i] for i in keep], E, replace=False)
         nearest = np.argmax(E @ st["centroids"].T, axis=1)
-        ss.write_assignments(conn, st["build"], [(ords[i], int(st["cids"][c]), "nearest-centroid", None, None)
-                                                 for i, c in zip(keep, nearest)])
-        out["placed"] = len(keep)
-        if st.get("entities"):                                           # S9: a build without an inventory reports nothing here
-            out["mentions"] = match_entities(conn, st["build"], st["entities"], [ords[i] for i in keep],
-                                             [fresh[i]["text"] for i in keep], [fresh[i]["doc_id"] for i in keep])
+    with conn.transaction():
+        removed = ss.delete_papers(conn, label, sorted(replace), st["build"])
+        first = ss.append_chunk_meta(conn, label, fresh, min_ord=st["n_chunks"])
+        ords = [first + i for i in range(len(fresh))]
+        sat_rows = [(ords[i], doc_id, source, vec) for i, doc_id, source, vec in sat_rows]
+        cos_rows = [(ords[i], doc_id, source, vec) for i, doc_id, source, vec in cos_rows]
+        ss.write_chunks(conn, label, st["dim"], sat_rows, replace=False)
+        ss.write_chunks(conn, label, st["dim"], cos_rows, replace=False, kind="cos")
+        if keep:
+            dense_ords = [ords[i] for i in keep]
+            ss.write_dense(conn, label, dense_ords, E, replace=False)
+            ss.write_assignments(conn, st["build"], [(ords[i], int(st["cids"][c]), "nearest-centroid", None, None)
+                                                     for i, c in zip(keep, nearest)])
+            out["placed"] = len(keep)
+            if st.get("entities"):
+                out["mentions"] = match_entities(conn, st["build"], st["entities"], dense_ords,
+                                                 [fresh[i]["text"] for i in keep], [fresh[i]["doc_id"] for i in keep])
+        assert out["placed"] == len(keep), "not every retrievable chunk was assigned"
+    out["replaced_chunks"] = removed
+    return out
+
+
+def incomplete_papers(conn, label: str, build_id: int) -> list[str]:
+    """Find stored papers that cannot participate in dense/community retrieval.
+
+    Args:
+        conn: Open Postgres connection.
+        label: Sparsevec label to inspect.
+        build_id: Live community build ID.
+
+    Returns:
+        Sorted document IDs with at least one retrievable chunk missing a dense row or assignment.
+
+    Failure modes:
+        Missing schema or database errors propagate.
+    """
+    dense = ss._table(label, "dense")
+    rows = conn.execute(f"""SELECT m.doc_id
+        FROM lex_chunk_meta m
+        LEFT JOIN {dense} d ON d.ord = m.ord
+        LEFT JOIN lex_assign a ON a.build_id = %s AND a.ord = m.ord
+        WHERE m.label = %s AND NOT m.is_junk AND NOT m.is_reference
+        GROUP BY m.doc_id
+        HAVING count(*) FILTER (WHERE d.ord IS NOT NULL) < count(*)
+            OR count(*) FILTER (WHERE a.ord IS NOT NULL) < count(*)
+        ORDER BY m.doc_id""", (build_id, label)).fetchall()
+    return [row[0] for row in rows]
+
+
+def load_incomplete_papers(root: str | None, ids: list[str], stored: dict[str, int]) -> list[dict]:
+    """Reload incomplete papers from the newest source file without downgrading stored versions.
+
+    Args:
+        root: Markdown corpus root, or None to use the repository default.
+        ids: Incomplete arXiv document IDs.
+        stored: Current document versions from the database.
+
+    Returns:
+        Latest source records at the stored version or higher, each marked for replacement.
+    """
+    wanted = set(ids)
+    files = {"arxiv/" + key: (version, path) for key, version, path in arxiv_files(root) if "arxiv/" + key in wanted}
+    out = []
+    for doc_id in sorted(wanted):
+        if doc_id not in files:
+            continue
+        version, path = files[doc_id]
+        if version < stored.get(doc_id, 0):
+            continue
+        text = _read(path)
+        if text.strip():
+            out.append({"doc_id": doc_id, "version": version, "path": path, "text": text,
+                        "upgrade": version > stored.get(doc_id, 0), "repair": True})
     return out
 
 
@@ -351,6 +497,7 @@ def cycle(label: str = LABEL, root: str | None = None, embed_fn=None, conn=None,
     Guarantee: returns what it did; nothing is changed for a corpus with no new document."""
     conn = conn or ss.connect()
     rebuild_fn = rebuild_fn or rebuild
+    ss.ensure_build_schema(conn)                               # S13: older graph DBs predate generation readiness
     ss.ensure_chunk_meta(conn)                                   # columns a build older than this code lacks (V8, V9)
     fixed = ss.normalise_versioned_doc_ids(conn, label)          # a version left inside a doc_id would ingest the paper twice
     if fixed:
@@ -361,14 +508,24 @@ def cycle(label: str = LABEL, root: str | None = None, embed_fn=None, conn=None,
         rebuild_fn(todo)
         return {"resumed": todo}
     st = frozen(conn, label)
-    papers = load_arxiv_papers(root=root, stored=ss.stored_versions(conn, label))          # new, or a higher version than held
+    stored = ss.stored_versions(conn, label)
+    repair_ids = incomplete_papers(conn, label, st["build"])
+    papers = load_arxiv_papers(root=root, stored=stored)
+    if repair_ids:
+        repairs = load_incomplete_papers(root, repair_ids, stored)
+        if len(repairs) < len(repair_ids):
+            log("%d incomplete stored papers have no current source markdown at an equal or higher version" %
+                (len(repair_ids) - len(repairs)))
+        by_id = {paper["doc_id"]: paper for paper in papers}
+        by_id.update({paper["doc_id"]: paper for paper in repairs})
+        papers = [by_id[key] for key in sorted(by_id)]
     out = {"new_docs": sum(not p["upgrade"] for p in papers), "upgraded_docs": sum(p["upgrade"] for p in papers)}
     if papers:
         if embed_fn is None:
             from arxiv_community_map import encode_minilm as embed_fn
         out.update(ingest_new(conn, label, [p["doc_id"] for p in papers], [p["text"] for p in papers], st, embed_fn,
                               versions={p["doc_id"]: p["version"] for p in papers},
-                              replace={p["doc_id"] for p in papers if p["upgrade"]}))
+                              replace={p["doc_id"] for p in papers if p["upgrade"] or p.get("repair")}))
     out["added_fraction"] = changed_fraction(conn, label, st["n_chunks"])
     out["rebuild"] = out["added_fraction"] >= REBUILD_FRACTION
     log("cycle: %s" % json.dumps(out))
@@ -382,8 +539,16 @@ def cycle(label: str = LABEL, root: str | None = None, embed_fn=None, conn=None,
     return out
 
 
-def watch(label: str = LABEL) -> None:
-    """S5, S7. Run forever; one bad cycle never ends the service."""
+def watch(label: str = LABEL, root: str | None = None) -> None:
+    """S5, S7, S12. Run forever on the sibling-relative schedule with an explicit corpus root when provided.
+
+    Args:
+        label: Sparsevec build label.
+        root: Markdown root passed into every cycle.
+
+    Failure modes:
+        A cycle failure is logged and retried at the next slot.
+    """
     try:
         ctypes.windll.kernel32.SetPriorityClass(ctypes.windll.kernel32.GetCurrentProcess(), IDLE_PRIORITY_CLASS)
     except Exception:
@@ -400,9 +565,11 @@ def watch(label: str = LABEL) -> None:
             log("VRAM %.0f%% used > %.0f%%: GPU contention, deferring to the next slot" % (100 * used, 100 * VRAM_DEFER_FRAC))
         elif not acquire_lock():
             log("another cycle holds %s: skipping" % LOCK.name)
+        elif not ensure_docker():
+            release_lock()
         else:
             try:
-                cycle(label)
+                cycle(label, root=root)
             except Exception as exc:
                 log("cycle crashed: %r" % exc)
             finally:
@@ -417,16 +584,18 @@ def main() -> None:
     g.add_argument("--rebuild", action="store_true", help="the full pipeline now")
     g.add_argument("--freeze-entities", action="store_true", help="derive and store an entity inventory for the live build (S9)")
     ap.add_argument("--label", default=LABEL)
+    ap.add_argument("--root", help="Markdown papers/post_processed directory (defaults to domain_corpora.ARXIV_DIR)")
     args = ap.parse_args()
     if args.watch:
-        watch(args.label)
+        watch(args.label, root=args.root)
         return
     assert acquire_lock(), "another cycle holds %s" % LOCK
     try:
+        assert ensure_docker(), "Postgres (%s) is not up" % PG_CONTAINER
         if args.freeze_entities:
             freeze_entities(ss.connect(), args.label)
         else:
-            rebuild() if args.rebuild else cycle(args.label)
+            rebuild() if args.rebuild else cycle(args.label, root=args.root)
     finally:
         release_lock()
 
