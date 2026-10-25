@@ -1,0 +1,19 @@
+﻿# Build Apache AGE against the exact PostgreSQL 18 pgvector base used at runtime.
+FROM pgvector/pgvector:0.8.1-pg18-trixie AS age-build
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates git bison build-essential flex postgresql-server-dev-18 \
+    && git clone --depth 1 --branch release/PG18/1.7.0 https://github.com/apache/age.git /usr/src/age \
+    && cd /usr/src/age \
+    && make \
+    && make install \
+    && rm -rf /var/lib/apt/lists/*
+
+FROM pgvector/pgvector:0.8.1-pg18-trixie
+
+COPY --from=age-build /usr/lib/postgresql/18/lib/age.so /usr/lib/postgresql/18/lib/age.so
+COPY --from=age-build /usr/share/postgresql/18/extension/age.control /usr/share/postgresql/18/extension/age.control
+COPY --from=age-build /usr/share/postgresql/18/extension/age--*.sql /usr/share/postgresql/18/extension/
+
+# AGE's file loader reads under /tmp/age; PostgreSQL COPY creates those files as postgres.
+RUN mkdir -p /tmp/age && chown postgres:postgres /tmp/age

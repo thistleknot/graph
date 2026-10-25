@@ -10,6 +10,7 @@
 | BOUND | Share the caller's deadline across every internal textual model call. | [contract] | G21 |
 | TRAVERSE | Let the ReAct loop request bounded additional searches and reads. | [optional] | G8-G14 |
 | STORE | Read graph state from `section_store.py` and lexical state from `sparsevec_store.py`. | [contract] | G17, G19 |
+| AGE EXPAND | Use build-matched AGE Cypher for section neighbors only when explicitly selected. | [optional] | G23 |
 
 G1  The dense and BPE BM25 feature spaces are frozen for the live builds. Stored sparse vectors carry saturated term frequency; query weights carry IDF times query frequency. Dense and sparse scores are fused by rank because their scales differ.
 G6  WHEN the build holds the genre axes (section_store D7) the dense arm seeds from the vectors with them removed and projects the question the same way: hybrid recall@50 on the known-item
@@ -70,6 +71,7 @@ G19 The graph connection owns section metadata, communities, and record_id-only 
 G20 Dense and sparse bridge record_id values are globally unique within their owning database. Build membership and business keys are resolved only through the metadata row; ord remains the section/chunk-local ID returned to retrieval callers.
 G21 WHEN a request supplies a monotonic deadline, all partial, reduction, action, and final model calls SHALL share it; empty or unfinished model replies SHALL fail before agent parsing. Internal reasoning is disabled by the textual task client.
 G22 WHEN sources supply comparison criteria, final synthesis SHALL preserve those axes as criteria, actual methods as alternatives, distinct change targets, and proposals versus demonstrated findings. The canonical-paper inventory requires additional approaches outside the principal table; unsupported table cells say not reported. Final synthesis allows 2048 completion tokens; action and summary calls retain their 1024-token default. The agent SHALL seek comparison sections and methods crossing category boundaries.
+G23 WHERE `graph_backend=age`, section-neighbor expansion SHALL use the matching AGE build graph; the default `sql` backend remains unchanged and AGE errors never fall back.
 
 CLOSED: Selected terms are not LLM-rewritten query text and do not hard-filter communities. Their lexical effect enters the sparse arm; their Dunning effect reweights fused candidates before top-k.
 Preconditions: selected terms come from the active build's Dunning inventory; unknown or legacy terms without G² contribute no community affinity.
@@ -91,6 +93,7 @@ sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "src"))
 
 import section_store as st
+import age_graph
 import section_sparse as sparse
 import sparsevec_store as sparsevec
 from ingest_arxiv_sparsevec import query_terms
@@ -546,10 +549,10 @@ class Explorer:
         room = HOP_NEIGHBOURS + len(masked)
         if (mode or self.mode) == "topup":
             chosen, hop, stats, _ = self.pick(words, set(), "mask")
-            chosen, depth, k = top_up(chosen, masked, lambda ords: st.neighbours(conn, build, ords, room), self.per_query)
+            chosen, depth, k = top_up(chosen, masked, lambda ords: self.sg.neighbours(ords, room), self.per_query)
             return chosen, hop | depth, {"held": len(chosen), "pool": stats["pool"], "masked": k}, arms
         seeds = [o for o in arms["ranked"] if o not in masked][:SEARCH_N]
-        pool, skipped = hop_pool(seeds, lambda ords: st.neighbours(conn, build, ords, room), self.hops, HOP_CAP, masked)
+        pool, skipped = hop_pool(seeds, lambda ords: self.sg.neighbours(ords, room), self.hops, HOP_CAP, masked)
         hop = {o: 0 for o in seeds} | {p["ord"]: p["hop"] for p in pool}
         sim = st.similarity(conn, build, list(hop), arms["qd"], arms["col"]) if hop else {}
         chosen = sorted(hop, key=lambda o: -sim[o])[:self.per_query]
@@ -610,10 +613,18 @@ class SectionGraph:
     """
 
     def __init__(self, conn, tag: str = "xpa", model_dir: str | None = None, exclude_genre: bool = False,
-                 chunk_label: str = "arxiv_sect_bpe", bm25_conn=None):
+                 chunk_label: str = "arxiv_sect_bpe", bm25_conn=None, graph_backend: str = "sql"):
+        if graph_backend not in {"sql", "age"}:
+            raise ValueError("graph_backend must be 'sql' or 'age'")
         live = st.live_build(conn, tag)
         assert live is not None, "no live sect_build for tag %r: run python -u src\\section_store.py --tag %s" % (tag, tag)
         self.conn, self.bm25_conn, (self.build, self.params), self.exclude_genre = conn, bm25_conn or conn, live, exclude_genre
+        self.graph_backend = graph_backend
+        if graph_backend == "age":
+            counts = conn.execute("SELECT n_nodes, n_edges FROM sect_build WHERE build_id = %s", (self.build,)).fetchone()
+            if counts is None:
+                raise RuntimeError(f"section build {self.build} disappeared during AGE initialization")
+            age_graph.require_graph(conn, self.build, int(counts[0]), int(counts[1]))
         chunk_live = sparsevec.live_build(self.bm25_conn, chunk_label)
         assert chunk_live is not None, "no live BPE chunk build for %r: rebuild it with --label %s --bpe 10000" % (chunk_label, chunk_label)
         self.chunk_build, self.chunk_count, self.chunk_params = chunk_live
@@ -653,6 +664,18 @@ class SectionGraph:
         self.V = np.asarray(self.params["genre_axes"], np.float64) if self.params.get("genre_axes") else None       # G6: the genre axes the dense arm projects out, when the build holds them
         self.small = {r[0] for r in conn.execute("SELECT cid FROM sect_community WHERE build_id = %s AND size < 2", (self.build,)).fetchall()}      # G3: a community of one section is never a candidate (408 of 823 on the xpa map)
         self._community_terms = None
+
+    def neighbours(self, seeds: list[int], per_seed: int) -> dict[int, list[dict]]:
+        """Return section neighbors through the configured graph store.
+
+        Require: `seeds` belong to this graph build and `per_seed` is a nonnegative cap.
+        Guarantee: SQL ordering and result shape for the selected backend.
+        Maintain: AGE selection never falls back to relational adjacency.
+        Assert: AGE graph identity was validated during initialization.
+        """
+        if self.graph_backend == "age":
+            return age_graph.neighbours(self.conn, self.build, seeds, per_seed)
+        return st.neighbours(self.conn, self.build, seeds, per_seed)
 
     def embed(self, text: str) -> np.ndarray:
         import section_embed as se
@@ -747,7 +770,7 @@ class SectionGraph:
         r = self.ranked(question, selected_terms)
         q, qd, arms = r["q"], r["qd"], r["arms"]
         seeds = r["ranked"][:k]
-        sub = expand(seeds, st.neighbours(self.conn, self.build, seeds, per_seed))
+        sub = expand(seeds, self.neighbours(seeds, per_seed))
         lab_of = st.community_of(self.conn, self.build, seeds + [s["ord"] for s in sub])
         candidates = [c for c, _, _ in st.community_catalogue(self.conn, self.build)]
         if self.exclude_genre:

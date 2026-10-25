@@ -7,7 +7,7 @@ inclusion: always
 ## Language & runtime
 
 - Python 3.10, Windows primary workstation.
-- Postgres 18 in Docker: `pgvector/pgvector:0.8.1-pg18-trixie`.
+- Postgres 18 in Docker: `chunkgraph/pgvector-age:pg18-age1.7.0-vector0.8.1` (pgvector 0.8.1 + Apache AGE 1.7.0).
 
 ## Dependencies
 

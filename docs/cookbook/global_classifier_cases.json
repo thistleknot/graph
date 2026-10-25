@@ -1,0 +1,266 @@
+{
+  "source_build_id": 1163,
+  "scope": "source-backed reviewed response-contract and semantic sanity battery; not a corpus-wide accuracy estimate",
+  "cases": [
+    {
+      "id": "positive-1",
+      "predicate": "contrastive learning",
+      "expected": "yes",
+      "text": "## 4.1 PRE-TRAINING\n\nWe use the C and X86-64 assembly functions collected from AnghaBench and The-Stack for pretraining. We pre-train Nova starting from DeepSeek-Coder (Guo et al., 2024), and the hierarchical attention is applied on half of the attention heads to balance between its effectiveness and the existing knowledge in the standard attention layers (Justified in Appendix A.3). Nova is pre-trained with language modeling for one epoch, followed by contrastive learning objectives for another epoch.",
+      "truncated": true,
+      "source": [
+        {
+          "doc_id": "arxiv/2311_13721",
+          "section_idx": 21,
+          "sha256": "405ddaae53e6df2918cff40a2809bfef391ea2e3a055d8e96b909c582b0e1876"
+        }
+      ],
+      "provenance": "Direct substantive discussion in the cited source section; positive evidence survives omitted paper sections."
+    },
+    {
+      "id": "positive-2",
+      "predicate": "differential privacy",
+      "expected": "yes",
+      "text": "## Abstract\n\nThis article describes the disclosure avoidance algorithm that the U.S. Census Bureau used to protect the 2020 Census Supplemental Demographic and Housing Characteristics File (SDHC). The tabulations contain statistics of counts of U.S. persons living in certain types of households, including averages. The article describes the PHSafe algorithm, which is based on adding noise drawn from a discrete Gaussian distribution to the statistics of interest. We prove that the algorithm satisfies a well-studied variant of differential privacy, called zeroconcentrated differential privacy. We then describe how the algorithm was implemented on Tumult Analytics and briefly outline the parameterization and tuning of the algorithm.",
+      "truncated": true,
+      "source": [
+        {
+          "doc_id": "arxiv/2505_1254",
+          "section_idx": 1,
+          "sha256": "a94f8ae4e5f6462cc6a543cf6731a0e8ca4e6b4833267f0bef8f5306ffa8a0a2"
+        }
+      ],
+      "provenance": "Direct substantive discussion in the cited source section; positive evidence survives omitted paper sections."
+    },
+    {
+      "id": "positive-3",
+      "predicate": "diffusion models",
+      "expected": "yes",
+      "text": "## Abstract\n\nText-to-image diffusion models can create stunning images from natural language descriptions that rival the work of professional artists and photographers. However, these models are large, with complex network architectures and tens of denoising iterations, making them computationally expensive and slow to run. As a result, high-end GPUs and cloud-based inference are required to run diffusion models at scale. This is costly and has privacy implications, especially when user data is sent to a third party. To overcome these challenges, we present a generic approach that, for the first time, unlocks running text-to-image diffusion models on mobile devices in less than 2 seconds . We achieve so by introducing efficient network architecture and improving step distillation. Specifically, we propose an efficient UNet by identifying the redundancy of the original model and reducing the computation of the image decoder via data distillation. Further, we enhance the step distillation by exploring training strategies and introducing regularization from classifier-free guidance. Our extensive experiments on MS-COCO show that our model with 8 denoising steps achieves better FID and CLIP scores than Stable Diffusion v 1 5 . with 50 steps. Our work democratizes content creation by bringing powerful text-to-image diffusion models to the hands of users.",
+      "truncated": true,
+      "source": [
+        {
+          "doc_id": "arxiv/2306_00980",
+          "section_idx": 1,
+          "sha256": "fdb25550ad49fa2e80eb2b3f28397c42a3a820ff36fcddaec4b42ecdf59aa517"
+        }
+      ],
+      "provenance": "Direct substantive discussion in the cited source section; positive evidence survives omitted paper sections."
+    },
+    {
+      "id": "positive-4",
+      "predicate": "graph neural networks",
+      "expected": "yes",
+      "text": "## 4 Graph Neural Networks\n\nGraph neural networks have several desirable properties. They jointly use node attributes and edge information for training, trained models can be applied to unseen graphs, and the number of parameters of a GNN is independent and sublinear in the number of nodes. Moreover, they apply naturally to both undirected and directed graphs.\n\nThis section focuses on GNNs that have so-called message-passing layers (described below). The vast majority of GNNs in the literature have message-passing layers.",
+      "truncated": true,
+      "source": [
+        {
+          "doc_id": "arxiv/2412_19419",
+          "section_idx": 14,
+          "sha256": "82b4d96908ae1ca1fa8ab13cf51bc9656ff33146ff5fd4128b10d6cb5b991839"
+        }
+      ],
+      "provenance": "Direct substantive discussion in the cited source section; positive evidence survives omitted paper sections."
+    },
+    {
+      "id": "negative-1",
+      "predicate": "contrastive learning",
+      "expected": "no",
+      "text": "[arxiv/2601_0201 section 0]\n## A NOTE ON CHARACTERIZATION OF H 1 SOBOLEV SPACES BY SQUARE FUNCTIONS\n\nSHUICHI SATO\n\nAbstract. We establish characterization of H 1 Sobolev spaces by certain square functions, improving previous results.\n\n[arxiv/2601_0201 section 1]\n## 1. Introduction\n\nWe use the same notations as in [1]. Let Φ ∈ M α , α &gt; 0, and\n\n$$\nU_{\\alpha}(f)(x) =\\left(\\int_{0}^{\\infty}\\int_{B_{0}}|f(x-tz)-\\Phi_{t}*f(x-tz)|^{2}\\,dz\\,t^{-2\\alpha}\\frac{dt}{t}\\right)^{1/2} =\\left(\\int_{0}^{\\infty}\\int_{B(x,t)}|f(z)-\\Phi_{t}*f(z)|^{2}\\,dz\\,t^{-2\\alpha-n}\\frac{dt}{t}\\right)^{1/2},\n$$\n\nwhere B ( x, t ) = { w ∈ R n : | x -w | &lt; t } , B 0 = B (0 , 1). We shall prove the following result, which improves [1, Theorem 1.1].\n\nTheorem 1. Suppose that n/ 2 &lt; α &lt; n , n ≥ 2 , and Φ ∈ M α . Let f ∈ H 1 ( R n ) . Then the following two statements are equivalent:\n\n- (1) f ∈ W α H 1 ( R n ) ,\n- (2) U α ( f ) ∈ L 1 ( R n ) .\n\n$$\n\\Phi\\in\\mathscr{M}^{\\alpha}\n$$\n\nA version of Theorem 1 is shown in [1] by assuming an additional condition on the size of the Fourier transform of Φ (see [1, Theorem 1.1]). Theorem 1 improves [1, Theorem 1.1] by removing the assumption on the Fourier transform of Φ.\n\nLet Φ ∈ M 1 . Define Φ ( j ) as Φ (1) ( x ) = Φ( x ) and\n\n$$\n\\Phi^{(j)}(x)=\\overbrace{\\Phi*\\dots*\\Phi}^{j}(x),\\quad j\\geq 2.\n$$\n\nLet k be a positive integer. Put\n\n$$\nK^{(k)}(x)=-\\sum_{j=1}^{k}(-1)^{j}\\binom{k}{j}\\Phi^{(j)}(x)\n$$\n\nand\n\n$$\n\\widetilde{E}_{\\alpha}^{(k)}(f)(x)=\\left(\\int_{0}^{\\infty}\\int_{B(x,t)}|f(z)-K^{(k)}_{t}*f(z)|^{2}\\,dz\\,t^{-2\\alpha-n}\\frac{dt}{t}\\right)^{1/2}.\n$$\n\n2020 Mathematics Subject Classification. Primary 42B25; Secondary 46E35.\n\nKey Words and Phrases. Sobolev spaces, Hardy spaces, square functions.\n\nThen, since K ( k ) ∈ M α for α ∈ (0 , 2 k ) (see [2, § 4]), by Theorem 1 we have the following.\n\nTheorem 2. Suppose that n/ 2 &lt; α &lt; n and α &lt; min(2 k, n ) . Let f ∈ H 1 ( R n ) . Then, f ∈ W α H 1 ( R n ) if and only if ˜ E ( k ) α ( f ) ∈ L 1 ( R n ); also\n\n$$\n\\|f\\|_{W^{\\alpha}_{H^{1}}}\\simeq\\|f\\|_{H^{1}}+\\|\\widetilde{E}_{\\alpha}^{(k)}(f)\\|_{1}.\n$$\n\nWhen Φ = | B (0 , 1) | -1 χ B (0 , 1) , ˜ E ( k ) α is related to the operation of repeating the averaging over the ball; we observe that if k = 2,\n\n$$\n\\widetilde{E}_{\\alpha}^{(2)}(f)(x)\\\\ =\\left(\\int_{0}^{\\infty}\\int\\limits_{B(x,t)}\\left|f(z)-2\\mathchoice{{\\vbox{\\hbox{$\\textstyle-$}}\\kern-4.86108pt}}{{\\vbox{\\hbox{$\\scriptstyle-$}}\\kern-3.43057pt}}{{\\vbox{\\hbox{$\\scriptscriptstyle-$}}\\kern-2.908pt}}{{\\vbox{\\hbox{$\\scriptscriptstyle-$}}\\kern-2.76045pt}}\\!\\int_{B(z,t)}f(y)\\,dy+\\mathchoice{{\\vbox{\\hbox{$\\textstyle-$}}\\kern-4.86108pt}}{{\\vbox{\\hbox{$\\scriptstyle-$}}\\kern-3.43057pt}}{{\\vbox{\\hbox{$\\scriptscriptstyle-$}}\\kern-2.908pt}}{{\\vbox{\\hbox{$\\scriptscriptstyle-$}}\\kern-2.76045pt}}\\!\\int_{B(z,t)}(f)_{B(y,t)}\\,dy\\right|^{2}\\frac{dz\\,dt}{t^{1+2\\alpha+n}}\\right)^{1/2},\n$$\n\nwhere ( f ) B ( y,t ) = -∫ B ( y,t ) f .\n\nLet\n\n$$\nI_{1,1}^{\\prime\\prime}(x,y,t)=\\int\\limits_{z\\in B_{0},2|y|/t<|x/t-z|<6}\\left|(L_{\\alpha}*\\Phi)_{t}(x-y-tz)-(L_{\\alpha}*\\Phi)_{t}(x-tz)\\right|^{2}\\,dz\n$$\n\nbe as in [1, § 2], where L α ( x ) = τ ( α ) | x | α -n with\n\n$$\n\\tau(\\alpha)=\\frac{\\Gamma\\left(n/2-\\alpha/2\\right)}{\\pi^{n/2}2^{\\alpha}\\Gamma\\left(\\alpha/2\\right)}.\n$$\n\nIn handling I ′′ 1 , 1 , the paper [1] uses assumed size conditions of the Fourier transform of Φ. In this note we apply different methods and under the conditions of Theorem 1 we prove\n\n$$\nI_{1,1}^{\\prime\\prime}(x,y,t)\\leq Ct^{-2n}\\left(\\frac{|y|}{t}\\right)^{2},\\quad t>|x|/7>2|y|/7.\n$$\n\nUsing this modification in the proof of [1, Lemma 2.1], we can prove [1, Lemma 2.1] under the conditions that n/ 2 &lt; α &lt; n and Φ ∈ M α . Arguing as in the proof of [1, Theorem 1.1] and using this improvement on [1, Lemma 2.1], we can prove Theorem 1.\n\nThus, to prove Theorem 1 it remains to prove (2.1). We first note that\n\n$$\n(L_{\\alpha}*\\Phi)_{t}(x-y-tz)-(L_{\\alpha}*\\Phi)_{t}(x-tz) =t^{-n}\\int_{\\mathbb{R}^{n}}\\left(L_{\\alpha}(t^{-1}x-t^{-1}y-z-w)-L_{\\alpha}(t^{-1}x-z-w)\\right)\\Phi(w)\\,dw=:J.\n$$\n\nFix x, y, z, t and put W s = t -1 x -z -st -1 y for s ∈ R . Define the line l ( x, y, z, t ) = { W s : s ∈ R } . Then, the integral in J may be over the region D := supp(Φ) \\ l ( x, y, z, t ). We note that if w ∈ D , L α ( W s -w ) is continuously differentiable in s ∈ [0 , 1], so that we have\n\n$$\nJ=t^{-n}\\int_{\\mathbb{R}^{n}}\\int_{0}^{1}\\langle(\\nabla L_{\\alpha})(t^{-1}x-st^{-1}y-z-w),-t^{-1}y\\rangle\\,ds\\,\\Phi(w)\\,dw,\n$$\n\n[arxiv/2601_0201 section 2]\n## 2. Proof of Theorem 1\n\nwhere ∇ L α denotes the gradient vector. It follows that\n\n$$\n|J|\\leq t^{-n}|t^{-1}y|\\|\\Phi\\|_{\\infty}\\int_{|w|\\leq C}|\\nabla L_{\\alpha}|(w)\\,dw.\n$$\n\nSince |∇ L α | ( w ) ≤ C | w | -n + α -1 , n/ 2 &lt; α and n/ 2 ≥ 1, the last integral is finite. Thus we have (2.1).",
+      "truncated": false,
+      "source": [
+        {
+          "doc_id": "arxiv/2601_0201",
+          "section_idx": 0,
+          "sha256": "39feae277b832f416af1808078ddc9d974dc6114c354a0853155a89c271fec7a"
+        },
+        {
+          "doc_id": "arxiv/2601_0201",
+          "section_idx": 1,
+          "sha256": "b419d61e19bf949638a2ad0a3868dd71f9605edc9ceebd2a54fdf1aced382a0e"
+        },
+        {
+          "doc_id": "arxiv/2601_0201",
+          "section_idx": 2,
+          "sha256": "67201903bd5e6b1c9dcaa5e351ad10df8681762b6423c527d19d569fbaf9953f"
+        }
+      ],
+      "provenance": "Complete stored paper sections concern unrelated subject matter; no substantive discussion of the stated concept."
+    },
+    {
+      "id": "uncertain-1",
+      "predicate": "contrastive learning",
+      "expected": "unsure",
+      "text": "[arxiv/2601_0201 section 0]\n## A NOTE ON CHARACTERIZATION OF H 1 SOBOLEV SPACES BY SQUARE FUNCTIONS\n\nSHUICHI SATO\n\nAbstract. We establish characterization of H ",
+      "truncated": true,
+      "source": [
+        {
+          "doc_id": "arxiv/2601_0201",
+          "section_idx": 0,
+          "sha256": "39feae277b832f416af1808078ddc9d974dc6114c354a0853155a89c271fec7a"
+        }
+      ],
+      "provenance": "Paper opening truncated before absence can be supported; no direct positive evidence."
+    },
+    {
+      "id": "negative-2",
+      "predicate": "differential privacy",
+      "expected": "no",
+      "text": "[arxiv/2304_11060 section 0]\n## SkillGPT: a RESTful API service for skill extraction and standardization using a Large Language Model\n\nNan Li, Bo Kang, and Tijl De Bie\n\nIDLAB - Department of Electronics and Information Systems (ELIS), Ghent University, Ghent 9000, Belgium {firstname.lastname}@ugent.be\n\nAbstract. We present SkillGPT, a tool for skill extraction and standardization (SES) from free-style job descriptions and user profiles with an open-source Large Language Model (LLM) as backbone. Most previous methods for similar tasks either need supervision or rely on heavy data-preprocessing and feature engineering. Directly prompting the latest conversational LLM for standard skills, however, is slow, costly and inaccurate. In contrast, SkillGPT utilizes a LLM to perform its tasks in steps via summarization and vector similarity search, to balance speed with precision. The backbone LLM of SkillGPT is based on Llama, free for academic use and thus useful for exploratory research and prototype development. Hence, our cost-free SkillGPT gives users the convenience of conversational SES, efficiently and reliably.\n\nKeywords: Skill extraction · Skill standardization · Information retrieval · Large language model.\n\n[arxiv/2304_11060 section 1]\n## 1 Introduction\n\nAutomatic skill extraction aims to detect skills and qualities from unstructured job descriptions and user profiles without human involvement. Skill standardization further maps the free-styled skill annotations onto a standard taxonomy, such as the 'European Skills, Competences, Qualifications and Occupations' (ESCO) standard [5]. Skill extraction and standardization (SES) benefit various downstream tasks, such as job recommendation and career path planning. The state of art SES methods are mostly supervised [12,13,7,1], relying on the costly and cumbersome process of human annotation. Weakly supervised techniques proposed such as by Zhang et al. [15] require heavy data preprocessing and feature engineering. BERT-based Large Language Models (LLMs) [3,9] were utilized recently [2,16,6], but merely as a refinement of the former static word embeddings.\n\nRecent LLMs have created the possibility of solving SES without human annotation, heavy data-preprocessing or feature engineering. The latest generation (e.g. chatGPT) further shows the power and convenience of conversational interfaces, making code-less interactions possible for domain experts. However,\n\nLLMs have some limitations that make them hard to apply directly for SES. Directly prompting a job posting for ESCO codes might well be answered with non-existent codes due to the hallucination problem [4,8]. To improve the accuracy, ESCO documents should be fed into the LLM as context. Yet, handling lengthy prompts of hundreds of pages is not straightforward. Even if the ESCO documents were somehow prompted (e.g. by chunk), model predictions would be inefficient , making it infeasible for online usage. Using powerful but costly and close-sourced models from OpenAI such as ChatGPT would hinder exploration and evaluation of possible solutions.\n\nThese considerations motivated us to design an SES tool to utilize the power of LLMs without sacrificing accuracy, speed and cost-efficiency . We call our solution SkillGPT : an API service for skill extraction and standardization from freestyle text, that uses fast vector similarity search against precomputed ESCO embeddings, retrieves with high precision the matching codes given any prompted job description or user profile, and costs little (at least for academia) by using the latest open-sourced LLM Vicuna-13B [11] 1 (Sec. 2). SkillGPT has more merits: it is multi-faceted as it can extract multiple ESCO concept types, and it offers multi-lingual support for English, French and Dutch (Sec. 3). Our code is publicly available at https://github.com/aida-ugent/SkillGPT.\n\n[arxiv/2304_11060 section 2]\n## 2 API Design\n\nFig. 1 is a high-level overview of SkillGPT's components, with annotations of the specific models and tools 2 used in our demo.\n\nThere are two major phases of SkillGPT's lifecycle. First is the system initialization for embedding and storing the ESCO taxonomy, where the ESCO entries are downloaded and converted into structured documents, then their vectorized representations are computed by the backbone LLM 4 via a document embedding service 2 , and finally stored in the vector database 5 .\n\nSecond is the main functionality of skill extraction and standardization. Extracting free-style textual skills from a job description or user resume is achieved by carefully prompting the LLM for summarization 1 . The embedding (via 2 ) of the distilled text is used as a query to retrieve the top-k similar ESCO terms via vector similarity search 3 . All these are coordinated by an API gateway 6 .\n\nTo perform an one-stop SES or to interact with any individual service, we provide two options: direct interaction with a RESTful API 8 , or via graphical user interface 7 (e.g. Gradio App).\n\n1 Vicuna is based on Llama [14], reported to perform comparably to GPT-3, and finetuned using data from shareGPT for better alignment with human preferences. Our experiments showed that Vicuna-13B (the number of parameters is 13 billion) has sufficient capacity for SES. More importantly, as it is open-source we can to deploy our model on a local machine with minimal cost. Nonetheless, developers can replace Vicuna with any LLM they want, including paid ones.\n\n2 We choose the tools through careful considerations and experiments. Detailed justification of our design choices as well as ablation study will be presented in an extended manuscript.\n\nFig. 1. Main components of SkillGPT. The specific tools and models are our careful choices for the current version, but our framework is flexible to accomodate other options. Note that this component diagram merely shows the design components, not the data flow.\n\n<description>A diagram of the different types of the api api api api api api api api api api api api api api api api api api api api api api api api api api api api api api api api api api api api api api api api api api api api api api api api api api api api api api api api api api api api api api api api api api api api api api</description>\n\nFig. 2. SkillGPT usage: multi-faceted and multi-lingual. The screenshots with blue background are from different sessions.\n\n<description>The settings in the settings section of the wordpress plug</description>\n\n[arxiv/2304_11060 section 3]\n## 3 Use cases\n\nThe current version SkillGPT supports 2 document types (job description/user resume), 3 ESCO concept types (Skill/Occupation/Occupation group) and 3 languages (En/Fr/Nl), yielding 18 possible use cases. Due to space limitation, we only show the following condensed exemplary use cases, and kindly refer to our demo videos (http://bokang.io/videos/SkillGPT.mp4) for more. First , a user pastes a free-styled document in French (Fig. 2 a ), English(Fig. 2 e ), or Dutch into the top textbox, followed by choosing the type of the document between job description and user profile (Fig. 2 b ). Then the user clicks Summarize (Fig. 2 c ) to let the backbone LLM distill the skills contained in the document. The output skill list will be in the same language of the original input (Fig. 2 d and g ). Next , the user can choose which ESCO concept type (Fig. 2 ) to standardize f the free-style skill descriptions, and the corresponding most plausible ESCO terminologies will be returned (Fig. 2 ). i One limitation is that the extracted codes for the same content in different languages, although they mostly overlap, may differ somewhat (Fig. 2 ). Our test trials also showed that SkillGPT seems to j perform better in English documents than Dutch or French. The LLM probably models the English language better than other languages due to the non-uniform volume distribution of the training corpus. There is also some randomness in the generation procedure of skill summaries.\n\n[arxiv/2304_11060 section 4]\n## 4 Conclusion\n\nWe presented SkillGPT, a flexible and easy-to-use tool for skill extraction and standardization from free-styled job descriptions and user resumes. SkillGPT is efficient , economical and delivers often truthful and plausible results, thus meeting our design goals. However, SkillGPT in its current state has some limitations . First, treating the summarized text as a single document might cause certain subtle skills to be lost, since the synthesized embedding might be dominated by the most salient qualities. Second, many options for optimizing the performance of LLMs, such as fine-tuning and prompt engineering, have not properly been examined, due to time limitations and, more importantly, that how to harness LLMs is a booming field where new hacks and tricks are proposed everyday. In future , we plan to address the aforementioned limitations, perform both qualitative and quantitative evaluations on SES and various downstream tasks in e-recruitment recommendation [10], and optimize for smaller languages as well as support the full range of 25 European Union languages.\n\nAcknowledgements The research leading to these results has received funding from the European Research Council under the European Union's Seventh Framework Programme (FP7/2007-2013) (ERC Grant Agreement no. 615517), and under the European Union's Horizon 2020 research and innovation programme (ERC Grant Agreement no. 963924), from the Special Research Fund (BOF) of Ghent University (BOF20/IBF/117), from the Flemish Government\n\nunder the 'Onderzoeksprogramma Artificiële Intelligentie (AI) Vlaanderen' programme, and from the FWO (project no. G0F9816N, 3G042220).",
+      "truncated": false,
+      "source": [
+        {
+          "doc_id": "arxiv/2304_11060",
+          "section_idx": 0,
+          "sha256": "4ea5e36abe9d4ff452c8f54e657672e7914c479c7c10e9260a22ba7e90edfb34"
+        },
+        {
+          "doc_id": "arxiv/2304_11060",
+          "section_idx": 1,
+          "sha256": "e9f4d68aa6102bfd6b8058b02491f9a3d12130aabf0ec25206eae81eefcaf7e9"
+        },
+        {
+          "doc_id": "arxiv/2304_11060",
+          "section_idx": 2,
+          "sha256": "d5b88cb7ebee601017c9db0ead2b4220b8b193f90f17437a80a326e3899461f8"
+        },
+        {
+          "doc_id": "arxiv/2304_11060",
+          "section_idx": 3,
+          "sha256": "af8a1437b25156283ac3010e854a6de797fd00beff09b9975516a252de289841"
+        },
+        {
+          "doc_id": "arxiv/2304_11060",
+          "section_idx": 4,
+          "sha256": "b1f35714e8a772553ee4f4e9db66b14122d955537458080a0299eb54c5e8e0e3"
+        }
+      ],
+      "provenance": "Complete stored paper sections concern unrelated subject matter; no substantive discussion of the stated concept."
+    },
+    {
+      "id": "uncertain-2",
+      "predicate": "differential privacy",
+      "expected": "unsure",
+      "text": "[arxiv/2304_11060 section 0]\n## SkillGPT: a RESTful API service for skill extraction and standardization using a Large Language Model\n\nNan Li, Bo Kang, and Tijl",
+      "truncated": true,
+      "source": [
+        {
+          "doc_id": "arxiv/2304_11060",
+          "section_idx": 0,
+          "sha256": "4ea5e36abe9d4ff452c8f54e657672e7914c479c7c10e9260a22ba7e90edfb34"
+        }
+      ],
+      "provenance": "Paper opening truncated before absence can be supported; no direct positive evidence."
+    },
+    {
+      "id": "negative-3",
+      "predicate": "diffusion models",
+      "expected": "no",
+      "text": "[arxiv/2404_19553 section 0]\n## Extending Llama-3's Context Ten-Fold Overnight\n\n1 2 , 1 2 , 1 ∗ 1 1 2 ,\n\nPeitian Zhang , Ninglu Shao , Zheng Liu , Shitao Xiao , Hongjin Qian , Qiwei Ye , 1 Zhicheng Dou 2\n\n1\n\nBeijing Academy of Artificial Intelligence 2 Gaoling School of Artificial Intelligence, Renmin University of China namespace.pt@gmail.com zhengliu1026@gmail.com\n\n[arxiv/2404_19553 section 1]\n## Abstract\n\nWe extend the context length of Llama-3-8B-Instruct from 8K to 80K via QLoRA fine-tuning 2 . The entire training cycle is super efficient, which takes 8 hours on one 8xA800 (80G) GPU machine. The resulted model exhibits superior performances across a broad range of evaluation tasks, such as NIHS, topic retrieval, and longcontext language understanding; meanwhile, it also well preserves the original capability over short contexts. The dramatic context extension is mainly attributed to merely 3.5K synthetic training samples generated by GPT-4 , which indicates the LLMs' inherent (yet largely underestimated) potential to extend its original context length. In fact, the context length could be extended far beyond 80K with more computation resources. Therefore, the team will publicly release the entire resources (including data, model, data generation pipeline, training code) so as to facilitate the future research from the community: https://github.com/ FlagOpen/FlagEmbedding .\n\n[arxiv/2404_19553 section 2]\n## 1 Introduction\n\nRecently, considerable attention has been directed towards long-context large language models, where different approaches are adopted to establish long-context capabilities for large language models [4, 14, 5, 8, 9, 16, 2]. However, most of them require significant compute and resources to accomplish.\n\nIn this technical report, we propose an efficient solution for entitling the long-context capabilities for LLMs, with which we extend the context length of Llama-3-8B-Instruct 3 from 8K to 80K. Specifically, we use GPT-4 [13] to synthesize 3.5K long-context training data, covering three long-context tasks:\n\n- 1. Single-Detail QA : the inquiry targets on one specific detail in a long context. To construct data for this task, we slice out a short segment (e.g., a chunk with less than 4096 tokens) from a long context (e.g., a book or a long paper) and prompt GPT-4 to generate multiple question-answer pairs based on this segment.\n- 2. Multi-Detail QA : the inquiry requires information aggregation and reasoning over multiple details in a long context. We define two types of long context. The homogeneous context contains a coherent text, such as a book or a long paper. We prompt GPT-4 to generate multiple question-answer pairs that require aggregating and analyzing information from different locations in the context. The heterogeneous context consists of multiple independent texts. Notably, we perform clustering over a large corpus then extract texts from\n\n∗ Corresponding author.\n\n2 The model is noted as Llama-3-8B-Instruct-80K-QLoRA given its max context length during fine-tuning. However, users could apply the model for even longer contexts via extrapolation.\n\n3 https://llama.meta.com/llama3/\n\nNeedle In A HayStack\n\nFigure 1: The accuracy score of Llama-3-8B-Instruct-80K-QLoRA on Needle-In-A-HayStack task. The blue vertical line indicates the training length, i.e. 80K.\n\n<description>A graph with the same number of the same numbers</description>\n\nthe same cluster to form each heterogeneous context. Therefore, the grouped texts share some semantic similarity. We then prompt GPT-4 to ask about the similarities/dissimilarities across these texts.\n\n- 3. Biography Summarization : we prompt GPT-4 to write a biography for each main character in a given book.\n\nFor all three tasks, the length of context is between 64K to 80K. Note that longer data can also be synthesized following the same methodology. When training, we organize the question-answer pairs for the same context in one multi-turn conversation then fine-tune the LLM to correctly answer the questions given the entire long context as input. Following previous work , we mix 5K instances 4 randomly chosen from RedPajama [6] to mitigate forgetting. We also mix LongAlpaca [5] in the training set, which contains 12K instruction tuning instances with 16K length at maximum. Therefore, the entire training dataset contains 20K instances.\n\nWe use QLoRA [7] to efficiently fine-tune the model. We apply LoRA on all Q,K,V,O projections and additionally train the embedding layer. We set LoRA rank to 32 and alpha to 16. The learning rate is 5e-5 with linear decay and no warmups. The batch size is 8. Gradient checkpointing is enabled. No parallel strategy is required thanks to the efficient implementation from Unsloth [1]. We train the model for 1 epoch, which takes 8 hours to complete on a 8xA800 (80G) machine. Importantly, we expand the RoPE base from 500K to 200M in training.\n\nOur contributions are highlighted as follows:\n\n- · We release Llama-3-8B-Instruct-80K-QLoRA, which extends the context length of Llama3-8B-Instruct from 8K to 80K. The entire resources including the model, training data, and code are all publicly available, which may advance the field of training long-context LLMs.\n- · Our training recipe is simple and efficient, while the resulted model demonstrates remarkable performance on downstream long-context tasks. Further research can be made to improve our approach.\n\n[arxiv/2404_19553 section 3]\n## 2 Experiments\n\nWe evaluate our model on popular long-context benchmarks, then compare it with the original Llama-3-8B-Instruct model and the long-context Llama-3-8B-Instruct-262K from the community 5 .\n\n4 https://www.together.ai/blog/llama-2-7b-32k\n\n5 https://huggingface.co/gradientai/Llama-3-8B-Instruct-262k\n\n<description>A plot with a line graph and a line graph</description>\n\nFigure 2: The accuracy of Topic Retrieval task.\n\n| Model                         |   Single-Doc |   Multi-Doc |   Summ. |   Few-Shot |   Synthetic |   Code |   Avg |\n|-------------------------------|--------------|-------------|---------|------------|-------------|--------|-------|\n| Llama-3-8B-Instruct           |        37.33 |       36.04 |   26.83 |      69.56 |       37.75 |  53.24 | 43.2  |\n| Llama-3-8B-Instruct-262K      |        37.29 |       31.2  |   26.18 |      67.25 |       44.25 |  62.71 | 43.73 |\n| Llama-3-8B-Instruct-80K-QLoRA |        43.57 |       43.07 |   28.93 |      69.15 |       48.5  |  51.95 | 47.19 |\n\nTable 1: Evaluation results on LongBench. For Llama-3-8B-Instruct, we use 8K context length.\n\n| Model                         |   LongBookQA Eng |   LongBookSum Eng |\n|-------------------------------|------------------|-------------------|\n| GPT-4                         |            22.22 |             14.73 |\n| Llama-3-8B-Instruct           |             7    |             16.4  |\n| Llama-3-8B-Instruct-262K      |            20.3  |             10.34 |\n| Llama-3-8B-Instruct-80K-QLoRA |            30.92 |             14.73 |\n\nTable 2: Evaluation results on InfBench. For Llama-3-8B-Instruct, we use 8K context length. The results of GPT-4 is copied from the paper [17].\n\n| Model                         |   STEM |   Social |   Humanities |   Others |   Avg |\n|-------------------------------|--------|----------|--------------|----------|-------|\n| Llama-2-7B-Chat               |  35.92 |    54.37 |        51.74 |    51.42 | 47.22 |\n| Mistral-7B-v0.2-Instruct      |  48.79 |    69.95 |        64.99 |    61.64 | 60.1  |\n| Llama-3-8B-Instruct           |  53.87 |    75.66 |        69.44 |    69.75 | 65.91 |\n| Llama-3-8B-Instruct-262K      |  52.1  |    73.26 |        67.15 |    69.8  | 64.34 |\n| Llama-3-8B-Instruct-80K-QLoRA |  53.1  |    73.24 |        67.32 |    68.79 | 64.44 |\n\nTable 3: Zero-shot performance on MMLU.\n\nFirstly, we leverage the Needle-In-A-Haystack task, which aims to recall an irrelevant piece of information (a.k.a. needle) inserted into a lengthy context (a.k.a. haystack). The accuracy is evaluated with GPT3.5. We use the same needle and haystack as in the official repository 6 . Our model achieves 100% accuracy over all its training context length. Besides, the model generalizes well to the unseen positions (80K ∼ 128K).\n\nSecondly, we report the Topic Retrieval [12] accuracy in Figure 2. This task synthesizes a long conversation with multiple independent discussions of a certain topic between the user and the assistant. Then the LLM is required to repeat the first topic as is in the conversation. We use the conversations made up of [5,10,15,20,25,30,40,50,60,70] topics for evaluation. It can be observed that Llama-3-8B-Instruct fails to remember the topic when the context is longer than 9K. However, the accuracy of our model remains 100% throughout all context lengths.\n\n6 https://github.com/gkamradt/LLMTest\\_NeedleInAHaystack\n\nThirdly, we evaluate our model on LongBench [3], which contains a variety of real-world long-context tasks. Most context on this benchmark is shorter than 32K. Thus, we use 32K context length by default and 8K for Llama-3-8B-Instruct. The results are shown in Table 1. Our model significantly and consistently outperforms all baselines except on the code completion task. Mixing more code data in training may mitigate this problem.\n\nForthly, we employ the English Long-Book QA and the Long-Book Summarization task from InfiniteBench [17] to assess the model's performance on really long context. The testing instances are usually longer than 100K. We truncate them to 80K. According to Table 2, Llama-3-8B-Instruct-80KQLoRA excels on answering the questions based on the long context. It also achieves competitive performance against GPT-4 in terms of summarization. Interestingly, Llama-3-8B-Instruct with 8K context outperforms GPT-4 with 128K context on summarization. This is likely to be a metricoriented issue (currently rouge-f1 is used) since the summary may have different paraphrases, which may not necessarily overlap with the ground truth.\n\nLastly, in Table 3, we compare the zero-shot performance of our model and the baselines on MMLU[10] benchmark. We also include Llama-2-7B-Chat [15] and Mistral-7B-Instruct-v0.2 [11] for comparison. It can be observed that both long-context models underperform the original Llama-38B-Instruct, indicating that context extension may compromise the model's short-context capability. This observation is in line with previous research [14]. However, our model's performance is still superior to other open-source models at the same scale.",
+      "truncated": false,
+      "source": [
+        {
+          "doc_id": "arxiv/2404_19553",
+          "section_idx": 0,
+          "sha256": "e5bf435ec37c573c1a1ef7ccac1e995d2cc11b0075cd2cb827855ef8c778f184"
+        },
+        {
+          "doc_id": "arxiv/2404_19553",
+          "section_idx": 1,
+          "sha256": "f4b4b762b86687b94048c304516807c7670ba2e5413d8fb58cd501293092ee2f"
+        },
+        {
+          "doc_id": "arxiv/2404_19553",
+          "section_idx": 2,
+          "sha256": "af8c224335d44446f976b3baafecfc77239e8322abf58905ccf0c43b1abb1a90"
+        },
+        {
+          "doc_id": "arxiv/2404_19553",
+          "section_idx": 3,
+          "sha256": "9b2975bac08096057c659372be64df062e998c694eb94177c8098f820a219b3b"
+        }
+      ],
+      "provenance": "Complete stored paper sections concern unrelated subject matter; no substantive discussion of the stated concept."
+    },
+    {
+      "id": "uncertain-3",
+      "predicate": "diffusion models",
+      "expected": "unsure",
+      "text": "[arxiv/2404_19553 section 0]\n## Extending Llama-3's Context Ten-Fold Overnight\n\n1 2 , 1 2 , 1 ∗ 1 1 2 ,\n\nPeitian Zhang , Ninglu Shao , Zheng Liu , Shitao Xiao ,",
+      "truncated": true,
+      "source": [
+        {
+          "doc_id": "arxiv/2404_19553",
+          "section_idx": 0,
+          "sha256": "e5bf435ec37c573c1a1ef7ccac1e995d2cc11b0075cd2cb827855ef8c778f184"
+        }
+      ],
+      "provenance": "Paper opening truncated before absence can be supported; no direct positive evidence."
+    },
+    {
+      "id": "negative-4",
+      "predicate": "graph neural networks",
+      "expected": "no",
+      "text": "[arxiv/2502_03948 section 0]\n## Enhancing Online Learning Efficiency Through Heterogeneous Resource Integration with a Multi-Agent RAG System\n\nDevansh Srivastav German Research Center for Artificial Intelligence (DFKI) Saarbrücken, Germany Saarland University Saarbrücken, Germany devansh.srivastav@dfki.de\n\nHasan Md Tusfiqur Alam German Research Center for Artificial Intelligence (DFKI) Saarbrücken, Germany hasan.alam@dfki.de\n\nAfsaneh Asaei Digital Product School of UnternehmerTUM (Center for Innovation and Business Creation at Technical University of Munich) Munich, Germany asaei@unternehmertum.de\n\nMahmoud Fazeli CROWDCONSULTANTS Berlin, Germany mahmoud.fazeli@crowdconsultants.com\n\nTanisha Sharma Microsoft Hyderabad, India tansharma@microsoft.com\n\nDaniel Sonntag German Research Center for Artificial Intelligence (DFKI) Saarbrücken, Germany University of Oldenburg Oldenburg, Germany daniel.sonntag@dfki.de\n\n[arxiv/2502_03948 section 1]\n## Abstract\n\nEfficient online learning requires seamless access to diverse resources such as videos, code repositories, documentation, and general web content. This poster paper introduces early-stage work on a Multi-Agent Retrieval-Augmented Generation (RAG) System designed to enhance learning efficiency by integrating these heterogeneous resources. Using specialized agents tailored for specific resource types (e.g., YouTube tutorials, GitHub repositories, documentation websites, and search engines), the system automates the retrieval and synthesis of relevant information. By streamlining the process of finding and combining knowledge, this approach reduces manual effort and enhances the learning experience. A preliminary user study confirmed the system's strong usability and moderate-high utility, demonstrating its potential to improve the efficiency of knowledge acquisition.\n\nand understanding concepts [1, 4]. However, navigating and synthesizing information across these disparate sources can be a timeintensive and inefficient process, creating barriers to efficient online learning [8]. The challenges associated with multi-source learning are especially evident in technical domains, where the need to quickly find accurate and relevant information is critical. For instance, a developer exploring a new framework might consult a YouTube tutorial for an overview, reference a GitHub repository for implementation details, examine the official documentation for deeper insights, and conduct general web searches for troubleshooting. Manually searching, cross-referencing, and consolidating information from these varied sources often leads to cognitive overload and suboptimal learning experiences.\n\n[arxiv/2502_03948 section 2]\n## CCS Concepts\n\n· Information systems → Search interfaces ; Question answering Information extraction Expert search Language models ; ; ; .\n\n[arxiv/2502_03948 section 3]\n## Keywords\n\nMulti-Agent Systems, Retrieval-Augmented Generation (RAG), Online Learning Efficiency, Resource Integration, Technology Acceptance Model (TAM), User-Centric Design, Semantic Search, Heterogeneous Data Sources, Knowledge Retrieval Optimization, Usability and Utility in Learning Systems\n\n[arxiv/2502_03948 section 4]\n## 1 Introduction\n\nIn an increasingly interconnected world, the ability to access, integrate, and utilize diverse online resources is essential for effective learning and knowledge acquisition [6, 9]. With the rapid growth of digital platforms, learners often rely on a combination of heterogeneous resources, such as video tutorials, code repositories, documentation websites, and search engines, to acquire new skills\n\nTo address these challenges, this poster paper proposes a MultiAgent RAG system that automates the retrieval and synthesis of information from diverse online resources. By leveraging specialized agents tailored for specific resource types-such as YouTube tutorials, GitHub repositories, documentation websites, and general web searches-the system streamlines the process of finding, integrating, and utilizing knowledge. This approach reduces the manual effort required for cross-referencing and consolidating information, enabling users to focus on learning and problem-solving rather than on navigating disparate sources. The system aims to enhance the learning experience by providing a unified, user-friendly interface for targeted, real-time inquiries, making it a valuable tool for learners and developers in technical domains.\n\n[arxiv/2502_03948 section 5]\n## 2 System Architecture and Implementation\n\nThe proposed system uses a Multi-Agent RAG system with GPT-4o [3] as the underlying LLM. The flow, as shown in Fig. 1, begins with a central Manager Agent that coordinates task delegation across four specialized agents, each tailored to handle a specific type of resource: YouTube Video, GitHub Repository, Documentation Website, and a Generic Search Engine. These agents operate\n\nFigure 1: Working Flow of the Multi-Agent RAG System\n\n<description>A diagram showing the different types of the different types of the system</description>\n\nindependently, leveraging resource-specific tools and APIs to retrieve relevant information. The Manager Agent synthesizes outputs from these agents, combining them into a cohesive response to address the user's query. This modular design ensures scalability and adaptability, allowing for seamless integration of additional agents or tools as needed to meet evolving requirements.\n\nData from sources like YouTube transcripts, GitHub repositories, and documentation websites is preprocessed to extract relevant text. Embeddings are generated using GPT-4o, to capture the semantic structure of the text. These embedding vectors, along with metadata such as source URLs and timestamps, are stored in ChromaDB, enabling precise semantic searches and contextually relevant results. For general web content, the system retrieves information\n\n(a) PU and PEU score distribution\n\n<description>A diagram showing the different types of the different types of the different types of the different types</description>\n\n(b) TAM score distribution for 15 participants.\n\n<description>A bar graph with the same number of different types of the data</description>\n\nFigure 2: Analysis of the user study using TAM\n\ndynamically based on the user's query. The user interface (UI) for the system is implemented using Streamlit [5], and it allows users to specify the URLs of the YouTube tutorial, GitHub repository, and documentation webpage as inputs. Additionally, the types of GitHub content to include such as code, issues, or pull requests, can be specified, allowing the system's focus to be tailored to specific needs. Users can then conversationally interact with the system, asking targeted questions about the provided resources as shown in Fig. 3. This functionality empowers users to focus their queries on preselected sources, reducing irrelevant results and improving the relevance and accuracy of responses. The real-time interaction capabilities of the UI ensure that users receive immediate feedback on their questions, enhancing the overall user experience. The simplicity and intuitiveness of the system make it accessible to users with varying levels of technical expertise, lowering the barrier to entry for non-technical audiences.\n\n[arxiv/2502_03948 section 6]\n## 3 Preliminary Evaluation\n\nTo evaluate the system's usability and utility, a user study was conducted involving 15 participants aged 21 to 29 (mean age = 24 years; SD = 2.26), all of whom were master's-level students pursuing computer science-related courses. These participants were selected due to their familiarity with the process of learning new programming languages or frameworks using various online resources such as YouTube tutorials, GitHub repositories, and documentation websites. This familiarity enabled them to assess whether the proposed system adds value to their learning process by streamlining the integration and retrieval of information from these resources. The study used the Technology Acceptance Model (TAM) [2] questionnaire to assess technology acceptance through two key constructs: Perceived Usefulness (PU) and Perceived Ease of Use (PEU). The box plot of PU, PEU, and TAM Scores in Fig. 2a reveals considerable variability in PU ratings compared to PEU. The average PU score, scaled to a 0-100 range [7], was 75, indicating moderate-high utility. The wider spread of PU scores indicates that while some participants perceive the system as highly useful, others find its utility less apparent highlighting that the system may not fully align with the user's needs or expectations. This variability suggests the potential for targeted improvements to better meet the requirements of all users. In contrast, the average PEU score was 91.11, with the box plot showing a tighter distribution of scores. This consistency suggests that participants broadly agree on the system's strong usability. The TAM score histogram in Fig. 2b revealed most users scored above 80 with the overall TAM scores, averaging 83.06. This reflects the combined influence of the PU and PEU constructs. While the high PEU scores contribute significantly to the favourable TAM scores, the variability in PU remains a critical factor for consideration.\n\n[arxiv/2502_03948 section 7]\n## 4 Conclusion and Future Work\n\nThe proposed Multi-Agent RAG system automates the retrieval and synthesis of relevant information, effectively integrating resources such as YouTube tutorials, GitHub repositories, documentation websites, and general web content. By streamlining the process of finding and combining knowledge, the system reduces manual effort and enhances the learning experience. Evaluation results\n\nFigure 3: User Interface of the proposed system.\n\n<description>The learning companion chats page</description>\n\nhighlight strong usability, with high perceived ease of use reflecting the system's accessible and user-friendly interface. While the system demonstrates considerable utility, variability in perceived usefulness indicates a need for better alignment with user expectations and task-specific needs.\n\ncode. In 2023 IEEE/ACM 16th International Conference on Cooperative and Human Aspects of Software Engineering (CHASE) . IEEE, 92-104.\n\n- [2] Fred D Davis et al. 1989. Technology acceptance model: TAM. Al-Suqri, MN, Al-Aufi, AS: Information Seeking Behavior and Technology Adoption 205 (1989), 219.\n\nFuture work will focus on making the retrieval system dynamic, enabling it to determine when specialized agents are necessary to improve response times and reduce computational overhead. It will also involve testing with participants less familiar with technical environments to evaluate the system's acceptance across varying expertise levels, expanding resource integration to include domainspecific platforms like Stack Overflow, broadening its applicability to both technical and non-technical domains, and personalization to tailor responses to individual preferences, enhancing usability and user satisfaction.",
+      "truncated": false,
+      "source": [
+        {
+          "doc_id": "arxiv/2502_03948",
+          "section_idx": 0,
+          "sha256": "f968be060585374254ccfb6b0cb441e92e4eedd1b485b3e4086cdb48977cedc5"
+        },
+        {
+          "doc_id": "arxiv/2502_03948",
+          "section_idx": 1,
+          "sha256": "e749545c2abe9e48cf7a9fb98f2139ad499550033a1bf8bdc9606e806ae466c7"
+        },
+        {
+          "doc_id": "arxiv/2502_03948",
+          "section_idx": 2,
+          "sha256": "f1bfc9c3fb31b313987cde7e13bb089e3aacb4a9c54340c324a235c0ab8b90b5"
+        },
+        {
+          "doc_id": "arxiv/2502_03948",
+          "section_idx": 3,
+          "sha256": "5f7e256be40321215b7ec341514a08b6bb90a8ea9cbd47e27844275d1b64cfaf"
+        },
+        {
+          "doc_id": "arxiv/2502_03948",
+          "section_idx": 4,
+          "sha256": "98666a987644c89d55ce2e29f46fa019d61d2ac16707dc2c92e977431dd7395a"
+        },
+        {
+          "doc_id": "arxiv/2502_03948",
+          "section_idx": 5,
+          "sha256": "4090ef2d93a7db19d407267d6a8118739964c62a8d574d091ee43f134a597fc3"
+        },
+        {
+          "doc_id": "arxiv/2502_03948",
+          "section_idx": 6,
+          "sha256": "b4f60ab50e8a91324c53864282b3e76271648f77e7949fb2e55847c7a9dc8810"
+        },
+        {
+          "doc_id": "arxiv/2502_03948",
+          "section_idx": 7,
+          "sha256": "319671071542882672798f09b0d4d8f85a3cbdf7a328072f15ecce2a413ff01d"
+        }
+      ],
+      "provenance": "Complete stored paper sections concern unrelated subject matter; no substantive discussion of the stated concept."
+    },
+    {
+      "id": "uncertain-4",
+      "predicate": "graph neural networks",
+      "expected": "unsure",
+      "text": "[arxiv/2502_03948 section 0]\n## Enhancing Online Learning Efficiency Through Heterogeneous Resource Integration with a Multi-Agent RAG System\n\nDevansh Srivastav",
+      "truncated": true,
+      "source": [
+        {
+          "doc_id": "arxiv/2502_03948",
+          "section_idx": 0,
+          "sha256": "f968be060585374254ccfb6b0cb441e92e4eedd1b485b3e4086cdb48977cedc5"
+        }
+      ],
+      "provenance": "Paper opening truncated before absence can be supported; no direct positive evidence."
+    }
+  ]
+}

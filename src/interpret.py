@@ -1,4 +1,21 @@
-"""
+"""| Stage | Mechanism | Tag | Ref |
+|---|---|---|---|
+| FREEZE | Build the bounded evidence bundle from the completed graph walk. | [contract] | I1-I3 |
+| CLASSIFY | Use JSON-mode model calls to identify evidence and answer from supported chunks. | [mandatory] | I5-I6 |
+| VERIFY | Check citations and verdict IDs against the frozen bundle. | [mandatory] | I1, I9 |
+| RENDER | Return a draft answer with backend, truncation, and citation diagnostics. | [mandatory] | I3-I5 |
+
+EARS guards
+I22 A caller-supplied OpenRouter model may override the configured default for bounded batch classification; provider identity reports the selected model.
+
+CLOSED
+- JSON-mode transport reuses stdlib urllib; a second HTTP transport is not introduced.
+- Reasoning remains disabled and existing retry behavior is unchanged by model override.
+
+Preconditions: caller supplies bounded prompt text and OpenRouter credentials for remote calls.
+Failure modes: credential, network, timeout, malformed JSON, or truncation failures remain explicit.
+
+interpret.py -- a model classifies a frozen walk's chunks as evidence, then
 interpret.py -- a model classifies a frozen walk's chunks as evidence, then
 answers from the entailed ones. SERVE side only.
 
@@ -19,6 +36,7 @@ I4  WHERE no backend answers, answer() SHALL return ok=False with the error
     and SHALL NOT raise; the walk is unchanged (R5 posture).
 I5  OpenRouter (OPENROUTER_API_KEY, model qwen/qwen3.5-9b) SHALL be the default
     backend; local Ollama the fallback. BOTH requests disable reasoning.
+    A caller-supplied model MAY override the OpenRouter default for bounded batch jobs.
     Interactive bound: two attempts, 90 s each, and NO local fallback when
     the prompt exceeds OLLAMA_MAX_CHARS -- three 240 s attempts plus a 240 s
     local run on a prompt that cannot fit num_ctx was measured as minutes of
@@ -494,13 +512,33 @@ def check(parsed: dict, shown: list[int]) -> dict:
 
 def _via_openrouter(system: str, user: str, timeout: float,
                     retries: int = ATTEMPTS, images: list[bytes] | None = None,
-                    max_tokens: int | None = None) -> tuple[str, str]:
-    """Same shape as rl_V2/src/build_pools_r3.py::_openrouter_chat, which runs
+                    max_tokens: int | None = None, model: str | None = None) -> tuple[str, str]:
+    """Send one JSON-mode completion using the shared OpenRouter transport.
+
+    Same shape as rl_V2/src/build_pools_r3.py::_openrouter_chat, which runs
     against this endpoint without incident: stdlib urllib, reasoning disabled,
     three attempts with exponential backoff on ANY failure except 400/401/403,
     and empty content treated as a failure worth retrying. httpx with a
     connect-only retry was measured to die on a TLS handshake timeout that the
-    endpoint did not reproduce a minute later."""
+    endpoint did not reproduce a minute later.
+
+    Args:
+        system: System instruction.
+        user: User prompt text.
+        timeout: Per-attempt timeout in seconds.
+        retries: Maximum request attempts.
+        images: Optional PNG payloads.
+        max_tokens: Optional completion cap.
+        model: Optional OpenRouter model override.
+    Returns:
+        Response content and provider/model identity.
+    Raises:
+        RuntimeError: If credentials are absent or every attempt fails.
+    Require: OpenRouter credentials are configured.
+    Guarantee: Provider identity names the selected model.
+    Maintain: Reasoning and existing retry behavior remain unchanged.
+    Assert: Empty content does not count as success.
+    """
     import json as _json
     import random
     import time
@@ -516,7 +554,8 @@ def _via_openrouter(system: str, user: str, timeout: float,
             {"type": "image_url", "image_url": {"url":
                 "data:image/png;base64," + base64.b64encode(im).decode()}}
             for im in images]
-    payload = {"model": OPENROUTER_MODEL, "temperature": 0.1,
+    selected_model = model or OPENROUTER_MODEL
+    payload = {"model": selected_model, "temperature": 0.1,
                "max_tokens": max_tokens or MAX_TOKENS,
                "reasoning": {"enabled": False},                        # I5
                "provider": {"sort": "throughput"},        # measured 62 s vs ~20 s across providers
@@ -540,7 +579,7 @@ def _via_openrouter(system: str, user: str, timeout: float,
                 raise RuntimeError(f"truncated at max_tokens={max_tokens or MAX_TOKENS} "
                                    f"(finish_reason=length, {len(content)} chars)")
             if content.strip():
-                return content, f"openrouter:{OPENROUTER_MODEL}"
+                return content, f"openrouter:{selected_model}"
             last = RuntimeError("openrouter returned empty content")
         except urllib.error.HTTPError as e:
             if e.code in (400, 401, 403):

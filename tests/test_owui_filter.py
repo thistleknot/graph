@@ -29,6 +29,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 import owui_filter
+import owui_filter_age
 
 
 def agent_report():
@@ -69,8 +70,9 @@ def agent_report():
 
 
 class FakeResponse:
-    def __init__(self, payload):
+    def __init__(self, payload, status_code=200):
         self.payload = payload
+        self.status_code = status_code
 
     def raise_for_status(self):
         return None
@@ -131,6 +133,60 @@ def test_filter_inlet_uses_latest_user_turn_and_preserves_the_selected_model():
     ]
     assert any("Return exactly: Retrieval complete." in m.get("content", "") for m in body["messages"])
     assert request_metadata["_arxiv_retrieval_report"]["evidence"][0]["text"] == "Evidence text"
+
+
+def test_age_filter_requests_and_requires_the_age_backend():
+    FakeClient.calls = []
+    FakeClient.payload = agent_report() | {"graph_backend": "age"}
+    pipeline = owui_filter_age.Filter()
+    body = {"model": "selected-model", "messages": [{"role": "user", "content": "Latest question"}]}
+
+    with patch.object(owui_filter_age.httpx, "AsyncClient", FakeClient):
+        asyncio.run(pipeline.inlet(body, __metadata__={}))
+
+    assert FakeClient.calls[0][1]["json"]["graph_backend"] == "age"
+    assert FakeClient.calls[0][1]["json"]["answer_kind"] == "auto"
+
+    FakeClient.calls = []
+    FakeClient.payload = agent_report() | {"graph_backend": "sql"}
+    with patch.object(owui_filter_age.httpx, "AsyncClient", FakeClient):
+        with pytest.raises(RuntimeError, match="AGE backend confirmation"):
+            asyncio.run(pipeline.inlet({"messages": [{"role": "user", "content": "Another question"}]}, __metadata__={}))
+
+
+def test_age_filter_polls_global_tally_without_claiming_age_traversal():
+    class AggregateClient(FakeClient):
+        async def post(self, url, **kwargs):
+            self.calls.append((url, kwargs))
+            if url.endswith("/agent"):
+                return FakeResponse({"aggregate_job": {"job_id": "job-1"}}, status_code=202)
+            return FakeResponse({"status": "completed"})
+
+        async def get(self, url, **kwargs):
+            self.calls.append((url, kwargs))
+            return FakeResponse({
+                "status": "completed",
+                "calls_completed": 3,
+                "manifest": {"source_build_id": 8},
+                "result": {
+                    "estimate": 4.5,
+                    "interval": [2.0, 7.0],
+                    "converged": True,
+                    "calls": 3,
+                    "audit": [{"N": 10}],
+                },
+            })
+
+    AggregateClient.calls = []
+    body = {"model": "selected-model", "messages": [{"role": "user", "content": "How many papers discuss graph attention?"}]}
+    metadata = {}
+    with patch.object(owui_filter_age.httpx, "AsyncClient", AggregateClient):
+        asyncio.run(owui_filter_age.Filter().inlet(body, __metadata__=metadata))
+    report = metadata["_arxiv_retrieval_report"]
+    assert report["answer_kind"] == "semantic_aggregate"
+    assert "4.5 of 10" in report["final"]
+    assert "sampling uncertainty" in report["final"]
+    assert "graph_backend" not in report
 
 
 @pytest.mark.parametrize("identity,expected", [("url", 1), ("doc", 1), ("distinct", 2)])

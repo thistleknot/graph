@@ -1,0 +1,21 @@
+# Tasks
+
+- [x] B2/T1 pure core: canonical paper grouping, t3 token sets, per-community DF, weighted log-odds signature, exact tally.
+- [x] B2/T1 persistence: PostgreSQL tables, transactional build publication, source/tokenizer complete-marker validation.
+- [x] B2/T1 synthetic gate: three varied communities, ten-term DF identity, digit tokens, top-k omission, missing term, version mismatch.
+- [x] B2/T1 eval gate: build-1163 deterministic 1,000-paper slice; all ten lexical gold counts match.
+- [x] B2/T1 production index: QA build 1 for source build 1163; 2,242 canonical papers, 207 communities, 1,558,405 term-DF rows, 346,166 distinct terms, and 20,700 top-100 signatures; exact reads, complete marker, and 1,000-paper eval audit passed in 672.62 seconds.
+- [x] T4: bounded synthetic 200-repeat CI coverage gate; cover p=0 and p=1 variance.
+- [x] ROUTE: compare 100- and 500-term signatures on the same eval DF; record top-k hit, positive-community recall, and tie frequency.
+- [x] T2/T3 pure gate: fixed JSON label parser, deterministic SRS without replacement, section-preserving text cap.
+- [x] T2/T3 live pilot: 12 LLM requests in one eval community; record yes/no/unsure rates and alias-gold agreement.
+- [x] Eval checkpoint: persist verified exact counts in SQLite by source/tokenizer/artifact key; verify cache hit validates source IDs, hashes, and strata without re-tokenizing, and changed keys miss.
+- [x] Semantic tally loop: all-strata pilot, uniform-without-replacement batches, bounded budget, relative half-width stopping, label checkpointing, and auditable result. Synthetic tests cover three strata, budget exhaustion, cache reuse, census, unsure-on-truncation, and Neyman bounds.
+- [x] Durable job repository: immutable manifest, logical-call reservations/responses, uncertain-call handling, restart status recovery, bounded worker pool, and immutable resume budget.
+- [x] API job endpoints and explicit auto count dispatch: submit, inspect, resume, population/draw-order pinning, and stable classifier-call keys.
+- [x] AGE Function job polling: render completed estimate and bounds without claiming AGE traversal; legacy SQL Function remains unchanged.
+- [x] RESUME integration: restart a running API job and verify committed responses complete the job without provider replay; the repository uncertainty test verifies ambiguous calls stay blocked.
+- [ ] SERVE gaps: exact lexical dispatch, numeric-safe MMR summaries, five-question summary battery, and real provider-backed AGE Function job.
+- [x] Neyman reallocation: matched 10-question, 100-seed, all-152-strata eval reduced mean absolute error by 25.8% at equal observed coverage and calls; promote on by default.
+- [x] Remaining route flags: matched ten semantic questions across the same 152 candidate communities; lexical recall 23.85%, summary embedding 9.90%, four exemplars 11.93%, lexical+embedding RRF 19.94% at equal top-10 width. Keep embedding, exemplars, and RRF off; evidence is closed-world alias routing only.
+- [ ] SUMMARY: five-question run; verify numeric claims use exact or estimated tally paths and report coverage.

@@ -3,10 +3,13 @@
 | Stage | Mechanism | Tag | Ref |
 |---|---|---|---|
 | LOAD | Read section records, saved map state, summaries, and Dunning terms. | [mandatory] | R1 |
-| BUILD | Persist metadata, globally unique IDs, vectors, edges and communities transactionally. | [mandatory] | R2-R4 |
+| BUILD | Persist metadata, globally unique IDs, vectors, edges, communities, and AGE graph transactionally. | [mandatory] | R2-R4, R11-R13 |
+| AGE GRAPH | Mirror each new section build as AGE vertices and similarity relationships before publication. | [mandatory] | R11-R13 |
 | ENTITY | Persist frozen-entity mentions and document frequencies atomically for the live section build. | [optional] | R10 |
 | REFRESH | Replace only live community term/G² JSON from the saved artifact. | [opt] | R5 |
-| QUERY | Resolve vector hits through metadata; rank with exact pgvector operators. | [contract] | R6-R9 |
+| QUERY | Resolve vector hits through metadata; rank with exact pgvector operators. | [contract] | R6-R9, R14 |
+| AGE QUERY | Use Cypher for neighbors only when the caller selects AGE. | [optional] | R13-R14 |
+| AGE BACKFILL | Rebuild one existing AGE graph from its saved relational section/edge rows. | [optional] | R13 |
 
 R1 `--refresh-terms` requires the saved artifact for the same community IDs as the live tagged build.
 R2 Every section metadata row owns a globally unique record_id; `(build_id, ord)` remains its logical key.
@@ -18,9 +21,13 @@ R7 The active lane uses no HNSW/IVFFlat indexes or ANN session settings.
 R8 Every vector maps to exactly one metadata row and returned hits belong to the requested build.
 R9 Metadata indexes are retained only when active query predicates use them.
 R10 `--entities` replaces mentions and entity rows in one transaction; its DF aggregate is materialized and nested-loop joins are disabled locally because the newly copied rows are absent from planner statistics.
+R11 Each section build has an AGE graph `arxiv_section_<build_id>` with Section vertices and SIMILAR_TO relationships; its snapshot commits before the relational build becomes live.
+R12 AGE graph properties contain traversal values; JSONB remains for payloads and Dunning records. AGE Cypher inputs are parameterized.
+R13 AGE graph marker counts must match the owning relational build; missing or incomplete graphs stop AGE retrieval without fallback. `--build-age-graph` backfills an existing build without changing its live pointer.
+R14 SQL traversal remains the default; selecting AGE is explicit.
 
-Closed: HNSW/IVFFlat and vector-table metadata fields; exact scans use a record_id-only vector bridge.
-Preconditions: writable PostgreSQL with pgvector. Failure modes: ID collision/orphan, schema mismatch, invalid dimension, and database errors abort the operation.
+Closed: HNSW/IVFFlat and vector-table metadata fields; exact scans use a record_id-only vector bridge. AGE does not replace pgvector ranking or payload JSONB.
+Preconditions: writable PostgreSQL with pgvector and Apache AGE. Failure modes: ID collision/orphan, schema mismatch, invalid dimension, AGE graph mismatch, Cypher failure, and database errors abort the operation.
 
 Spec: operator 2026-10-07 ("look at louvain_pg.py and psql_graph.md; we should be leveraging these capabilities since we have pgvector hosted locally in docker"; "yes do the
 obvious based on my inputs"), the persist step of playbook.md T165 (operator go 2026-10-07), approved plan C:\\Users\\user\\.claude\\plans\\jolly-soaring-moler.md. Task: playbook.md T172.
@@ -62,6 +69,8 @@ import sys
 import time
 
 import numpy as np
+
+import age_graph
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -182,6 +191,40 @@ def persist(conn, tag: str, recs: list[dict], X: np.ndarray, lab: np.ndarray, XY
 
 
 def _persist(conn, tag, recs, X, lab, XY, frac, fused, comm, S, params) -> int:
+    """Write one section build and its AGE graph before changing the live pointer.
+
+    Require: aligned section/vector/community inputs and fused graph arrays.
+    Guarantee: relational rows and AGE adjacency publish in one transaction.
+    Maintain: the previous live build remains available if any AGE batch fails.
+    Assert: all source and AGE batch counts match before the live flag changes.
+
+    Args:
+        conn: Writable connection inside the caller-owned persistence transaction.
+        tag: Section corpus label.
+        recs: Ordered section records.
+        X: Section vectors aligned to `recs`.
+        lab: Community IDs aligned to `recs`.
+        XY: Map coordinates aligned to `recs`.
+        frac: Genre fractions aligned to `recs`.
+        fused: Section graph edges and score arrays.
+        comm: Community metadata keyed by community ID.
+        S: Community summary vectors.
+        params: Build configuration saved with the section snapshot.
+
+    Returns:
+        The newly allocated section build ID.
+
+    Raises:
+        AssertionError: If aligned inputs or vector dimensions differ.
+        psycopg.Error: If source or AGE persistence fails.
+        RuntimeError: If AGE does not create the declared graph counts.
+
+    Called by:
+        `persist`.
+
+    Depends on:
+        `ensure_schema`, `age_graph.build_graph`, and the section storage tables.
+    """
     import section_corpus as sc
     ensure_schema(conn)
     N = len(recs)
@@ -191,7 +234,7 @@ def _persist(conn, tag, recs, X, lab, XY, frac, fused, comm, S, params) -> int:
     build = conn.execute("INSERT INTO sect_build (tag, live, n_nodes, n_edges, n_communities, params) VALUES (%s, false, %s, %s, %s, %s) RETURNING build_id",
                          (tag, N, len(fused["i"]), len(comm), json.dumps(params))).fetchone()[0]
     with conn.cursor() as cur:
-        cur.execute("DROP TABLE IF EXISTS pg_temp.sect_stage")                  # a second persist in the same transaction (the tests do this) finds the first one's stage
+        cur.execute("DROP TABLE IF EXISTS pg_temp.sect_stage")
         cur.execute("DROP TABLE IF EXISTS pg_temp.sect_vector_stage")
         cur.execute("CREATE TEMP TABLE sect_stage (ord int, body text) ON COMMIT DROP")
         cur.execute("CREATE TEMP TABLE sect_vector_stage (ord int PRIMARY KEY, emb vector(%d) NOT NULL) ON COMMIT DROP" % DIM)
@@ -210,17 +253,16 @@ def _persist(conn, tag, recs, X, lab, XY, frac, fused, comm, S, params) -> int:
         s_d, s_s, z_d, z_s = fused["s"]["dense"], fused["s"]["sparse"], fused["z"]["dense"], fused["z"]["sparse"]
         with cur.copy("COPY sect_edge (build_id, a, b, weight, dense_sim, dense_z, sparse_sim, sparse_z, sig, backbone) FROM STDIN") as cp:
             for k in range(len(fused["i"])):
-                cp.write_row((build, int(fused["i"][k]), int(fused["j"][k]), float(fused["w"][k]), float(s_d[k]), float(z_d[k]), float(s_s[k]), float(z_s[k]),
-                              int(fused["prov"][k]), int(fused["back"][k])))
+                cp.write_row((build, int(fused["i"][k]), int(fused["j"][k]), float(fused["w"][k]), float(s_d[k]), float(z_d[k]), float(s_s[k]), float(z_s[k]), int(fused["prov"][k]), int(fused["back"][k])))
         with cur.copy("COPY sect_community (build_id, cid, size, genre_score, genre_flag, title, summary, status, terms, emb) FROM STDIN") as cp:
             for c, d in sorted(comm.items()):
                 has = bool(np.any(S[c]))
                 cp.write_row((build, c, d["size"], d.get("genre_score"), bool(d.get("genre_flag")), d.get("title"), d.get("summary"), d.get("status"),
                               json.dumps(d.get("terms") or []), vec(S[c]) if has else None))
+    age_graph.build_graph(conn, build, N, len(fused["i"]))
     conn.execute("UPDATE sect_build SET live = false WHERE tag = %s", (tag,))
     conn.execute("UPDATE sect_build SET live = true WHERE build_id = %s", (build,))
     return build
-
 
 # ------------------------------------------------------------------- queries ----
 def live_build(conn, tag: str) -> tuple[int, dict] | None:
@@ -616,12 +658,27 @@ def main() -> None:
     ap.add_argument("--genre-vectors", action="store_true", help="only add emb_b and the genre axes to the tag's live build (D7)")
     ap.add_argument("--entities", action="store_true", help="only match the live chunk build's frozen entity inventory onto the section bodies into sect_mention (D9)")
     ap.add_argument("--reuse-mentions", action="store_true", help="with --entities: read the matches saved by the last run instead of matching again (the matching takes about 6 minutes)")
+    ap.add_argument("--build-age-graph", action="store_true", help="backfill the selected existing relational build into Apache AGE")
     ap.add_argument("--refresh-terms", action="store_true", help="refresh only the live build's community Dunning term/G2 records from section_render's saved artifact")
     args = ap.parse_args()
     tag = args.tag
     t0 = time.time()
     log = lambda m: print("[%s] %s" % (time.strftime("%H:%M:%S"), m), flush=True)
     os.chdir(ROOT)
+    if args.build_age_graph:
+        conn = ss.connect()
+        try:
+            live = live_build(conn, tag)
+            if live is None:
+                raise RuntimeError("no live section build for tag %r" % tag)
+            age_graph.rebuild_from_relational(conn, live[0])
+            age_graph.require_graph(conn, live[0], *conn.execute(
+                "SELECT n_nodes, n_edges FROM sect_build WHERE build_id=%s", (live[0],)
+            ).fetchone())
+            log("AGE graph %s is ready for live build %d" % (age_graph.graph_name(live[0]), live[0]))
+        finally:
+            conn.close()
+        return
     if args.refresh_terms:
         import sparsevec_store as ss
         conn = ss.connect()

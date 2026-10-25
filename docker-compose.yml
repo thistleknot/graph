@@ -1,8 +1,10 @@
-# Image taken from what's already on this machine (Docker Desktop log shows
-# pgvector/pgvector:0.8.1-pg18-trixie in heavy use).
+# Custom image adds Apache AGE 1.7.0 to the existing pgvector 0.8.1 / PostgreSQL 18 base.
 services:
   graphdb:
-    image: pgvector/pgvector:0.8.1-pg18-trixie
+    image: chunkgraph/pgvector-age:pg18-age1.7.0-vector0.8.1
+    build:
+      context: .
+      dockerfile: Dockerfile.pg-age
     container_name: chunkgraph-pg
     environment:
       POSTGRES_USER: graph

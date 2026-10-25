@@ -3,6 +3,7 @@
 | WARM | Verify API startup warms the build, dense encoder, and cross-encoder. | [mandatory] | T4 |
 | SEARCH | Pin hybrid whole-section retrieval and reference filtering. | [mandatory] | T1 |
 | AGENT | Verify selected-model forwarding and separate text-bearing evidence records. | [mandatory] | T2 |
+| AGGREGATE | Verify restart recovery reuses committed provider responses through the API. | [mandatory] | T6 |
 | HEALTH | Verify live build changes and health metadata. | [mandatory] | T3 |
 | BOUND | Verify model failures return explicit HTTP errors and close both connections. | [mandatory] | T5 |
 
@@ -15,6 +16,7 @@ T2 `/agent` forwards the selected model, returns the final answer separately, an
 T3 Health reports the active build; replacing it is picked up on the next request.
 T4 Startup verifies the live build and runs both local retrieval models before readiness.
 T5 Budget exhaustion returns 504; empty and unfinished model output returns 502.
+T6 A restarted API recovers an incomplete job, resumes it within its original budget, and does not repeat committed calls.
 
 Run:  pytest tests/test_arxiv_rag_api.py -v
 Preconditions: test PostgreSQL is available. Failure modes: schema, query, agent, or warmup contract drift fails here.
@@ -52,6 +54,13 @@ P1 = ("## Introduction\n\n" + _paras("intro", 8) + "\n\n## Long results\n\n"
       + _paras("filler", 400, {250: "alpha graph platypus zebrafish quokka spotted here"})
       + "\n\n## References\n\n[1] A. Author. A survey of platypus zebrafish quokka habitats. 2020.")
 P2 = "## Sparse retrieval\n\n" + "\n\n".join("beta sparse vector index query ranking detail %d" % i for i in range(8))
+
+
+def test_agent_request_keeps_sql_default_and_accepts_age_backend():
+    assert api.AgentRequest(question="graph query").graph_backend == "sql"
+    assert api.AgentRequest(question="graph query", graph_backend="age").graph_backend == "age"
+    with pytest.raises(ValueError):
+        api.AgentRequest(question="graph query", graph_backend="missing")
 
 
 def fake_query(text: str) -> np.ndarray:
@@ -373,7 +382,8 @@ def test_openwebui_can_read_the_surface_from_openapi(client):
     assert params["query"]["required"] is True and params["mode"]["schema"]["enum"] == ["hybrid", "sparse", "dense"]
 
 
-def test_agent_endpoint_returns_json_safe_graph_report_and_selected_model(client, monkeypatch):
+@pytest.mark.parametrize("backend", ["sql", "age"])
+def test_agent_endpoint_returns_json_safe_graph_report_and_selected_model(client, monkeypatch, backend):
     import section_graphrag as graph
     import section_store as store
     import summarize_clusters
@@ -385,10 +395,11 @@ def test_agent_endpoint_returns_json_safe_graph_report_and_selected_model(client
             calls["closed"] = calls.get("closed", 0) + 1
 
     class FakeGraph:
-        def __init__(self, conn, tag, bm25_conn=None):
+        def __init__(self, conn, tag, bm25_conn=None, graph_backend="sql"):
             self.conn, self.build = conn, 91
             calls["tag"] = tag
             calls["bm25_conn"] = bm25_conn is not None
+            calls["graph_backend"] = graph_backend
 
     def fake_agent(sg, question, **kwargs):
         calls["question"] = question
@@ -435,6 +446,7 @@ def test_agent_endpoint_returns_json_safe_graph_report_and_selected_model(client
         "question": "What about that?",
         "model": "openrouter/google/test",
         "history": [{"role": "user", "content": "Earlier graph question"}],
+        "graph_backend": backend,
     })
     assert response.status_code == 200
     body = response.json()
@@ -447,12 +459,35 @@ def test_agent_endpoint_returns_json_safe_graph_report_and_selected_model(client
     assert "text" not in body["sections"]["42"]
     assert "text" not in body["sections"]["43"]
     assert body["communities"]["7"]["title"] == "Graph retrieval"
+    assert body["graph_backend"] == backend and calls["graph_backend"] == backend
     assert "read" not in body["agent"]
     assert calls["tag"] == "xpa" and calls["model"] == calls["agent_model"] == "google/test"
     assert calls["question"] == body["question"] and calls["rewrite_model"] == "google/test"
     assert "Earlier graph question" in calls["rewrite_prompt"] and calls["closed"] == 2
     assert calls["bm25_conn"] is True
     assert calls["deadline"] == calls["rewrite_deadline"]
+
+
+def test_agent_age_missing_graph_fails_without_sql_fallback(client, monkeypatch):
+    import section_graphrag as graph
+
+    closed = []
+
+    class Connection:
+        def close(self):
+            closed.append(True)
+
+    def unavailable(conn, tag, bm25_conn=None, graph_backend="sql"):
+        assert graph_backend == "age"
+        raise RuntimeError("AGE graph arxiv_section_91 is missing")
+
+    monkeypatch.setattr(api.ss, "connect", lambda *args, **kwargs: Connection())
+    monkeypatch.setattr(graph, "SectionGraph", unavailable)
+    response = client.post("/agent", json={"question": "graph query", "graph_backend": "age"})
+
+    assert response.status_code == 503
+    assert "AGE graph arxiv_section_91 is missing" in response.json()["detail"]
+    assert len(closed) == 2
 
 
 @pytest.mark.parametrize("failure,status,detail", [
@@ -503,3 +538,129 @@ def test_a_rebuild_is_picked_up_without_a_restart(conn, client):
     finally:
         conn.execute("DELETE FROM lex_build WHERE build_id = %s", (newer,))
         conn.execute("UPDATE lex_build SET live = true WHERE build_id = %s", (before,))
+
+
+def test_global_aggregate_job_submits_pins_and_completes_without_provider_access(monkeypatch, tmp_path):
+    """A5: API pins the live population and returns durable result state."""
+    import global_aggregate as ga
+    import time
+    from fastapi.testclient import TestClient
+    from aggregate_jobs import AggregateJobs
+
+    class Connection:
+        def close(self):
+            pass
+
+    population = {"paper-a": 1, "paper-b": 1, "paper-c": 2, "paper-d": 2}
+    monkeypatch.setattr(api.ss, "connect", lambda *_args, **_kwargs: Connection())
+    monkeypatch.setattr(api, "AggregateJobs", lambda *_args, **_kwargs: AggregateJobs(tmp_path / "job.sqlite"))
+    monkeypatch.setattr(api.store, "live_build", lambda *_args: (456, {}))
+    monkeypatch.setattr(api, "aggregate_population", lambda *_args: population)
+    monkeypatch.setattr(ga, "load_paper_texts", lambda _conn, _build, ids, _cap: {
+        paper_id: {"text": paper_id, "truncated": False} for paper_id in ids
+    })
+    monkeypatch.setattr(ga, "classify_predicate", lambda *_args, **_kwargs: {"label": "yes"})
+    with TestClient(api.create_app(warm_start=False)) as client:
+        response = client.post("/agent", json={
+            "question": "How many papers contain an abstract?",
+            "answer_kind": "auto",
+        })
+        assert response.status_code == 202, response.text
+        receipt = response.json()["aggregate_job"]
+        assert response.headers["location"] == f"/aggregate/{receipt['job_id']}"
+        assert receipt["manifest"]["source_build_id"] == 456
+        assert receipt["manifest"]["seed"] == 0
+        assert receipt["manifest"]["draw_order"]
+        deadline = time.monotonic() + 5
+        snapshot = client.get(f"/aggregate/{receipt['job_id']}").json()
+        while snapshot["status"] in {"queued", "running"} and time.monotonic() < deadline:
+            time.sleep(0.02)
+            snapshot = client.get(f"/aggregate/{receipt['job_id']}").json()
+        assert snapshot["status"] == "completed", snapshot
+        assert snapshot["result"]["calls"] <= 4
+        assert snapshot["result"]["interval"]
+
+
+def test_auto_aggregate_intent_requires_explicit_global_count_wording():
+    """Q16: count phrasing dispatches to tally while ordinary research stays retrieval."""
+    assert api.infer_aggregate_predicate("How many papers discuss graph attention?") == "graph attention"
+    assert api.infer_aggregate_predicate("What percentage of papers use retrieval augmented generation?") == \
+        "retrieval augmented generation"
+    assert api.infer_aggregate_predicate("How do papers discuss graph attention?") is None
+
+
+def test_api_restart_resume_reuses_completed_provider_calls(monkeypatch, tmp_path):
+    """T6: API startup exposes an interrupted job and resume completes without provider repetition."""
+    import hashlib
+    import json
+    import random
+    import sqlite3
+    import time
+    import global_aggregate as ga
+    from aggregate_jobs import AggregateJobs
+    from fastapi.testclient import TestClient
+
+    class Connection:
+        def close(self):
+            pass
+
+    population = {"paper-a": 1, "paper-b": 1, "paper-c": 2, "paper-d": 2}
+    source_id = 456
+    seed = 21
+    draw_order = {}
+    for community_id in sorted(set(population.values())):
+        ids = sorted(pid for pid, cid in population.items() if cid == community_id)
+        random.Random(f"{seed}:{community_id}").shuffle(ids)
+        draw_order[str(community_id)] = ids
+    population_digest = hashlib.sha256("\n".join(
+        f"{pid}\t{population[pid]}" for pid in sorted(population)).encode()).hexdigest()
+    classifier_version = ga.interpret.OPENROUTER_MODEL + ":" + ga.PREDICATE_PROMPT_VERSION
+    manifest = {
+        "source_build_id": source_id,
+        "population_sha256": population_digest,
+        "population_size": len(population),
+        "community_count": 2,
+        "seed": seed,
+        "draw_order": draw_order,
+        "budget": 4,
+        "pilot_budget": 4,
+        "target_halfwidth": 0.02,
+        "classifier_version": classifier_version,
+        "prompt_version": ga.PREDICATE_PROMPT_VERSION,
+    }
+    database_path = tmp_path / "jobs.sqlite"
+    jobs = AggregateJobs(database_path)
+    job_id = jobs.create({"predicate": "discuss graph attention", "model": None}, manifest)
+    for paper_id in sorted(population):
+        paper = {"text": paper_id, "truncated": False}
+        call_key = f"{paper_id}:{ga._semantic_label_digest(paper)}"
+        assert jobs.call(job_id, call_key, lambda: {"label": "yes"}) == {"label": "yes"}
+    with sqlite3.connect(database_path) as db:
+        db.execute("UPDATE aggregate_job SET status='running' WHERE job_id=?", (job_id,))
+    jobs.close()
+
+    monkeypatch.setattr(api.ss, "connect", lambda *_args, **_kwargs: Connection())
+    monkeypatch.setattr(api.store, "live_build", lambda *_args: (source_id, {}))
+    monkeypatch.setattr(api, "aggregate_population", lambda *_args: population)
+    monkeypatch.setattr(ga, "load_paper_texts", lambda _conn, _build, ids, _cap: {
+        paper_id: {"text": paper_id, "truncated": False} for paper_id in ids
+    })
+    provider_calls = []
+    monkeypatch.setattr(ga, "classify_predicate", lambda *_args, **_kwargs:
+                        provider_calls.append("unexpected") or {"label": "no"})
+    with TestClient(api.create_app(warm_start=False, aggregate_jobs_path=database_path)) as client:
+        recovered = client.get(f"/aggregate/{job_id}").json()
+        assert recovered["status"] == "incomplete"
+        assert recovered["calls_completed"] == 4
+        assert client.post(f"/aggregate/{job_id}/resume").status_code == 202
+        deadline = time.monotonic() + 5
+        recovered = client.get(f"/aggregate/{job_id}").json()
+        while recovered["status"] == "running" and time.monotonic() < deadline:
+            time.sleep(0.02)
+            recovered = client.get(f"/aggregate/{job_id}").json()
+        assert recovered["status"] == "completed", json.dumps(recovered)
+        assert recovered["calls_completed"] == 4
+        assert recovered["result"]["calls"] == 4
+        assert recovered["result"]["provider_attempts_this_run"] == 0
+        assert recovered["result"]["durable_responses_reused"] == 4
+    assert provider_calls == []

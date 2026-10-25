@@ -1,5 +1,5 @@
 -- ChunkGraph -> Postgres. Hybrid model: typed columns for traversal keys,
--- jsonb for open-ended payload. Target: pgvector/pgvector:0.8.1-pg18-trixie
+-- jsonb for open-ended payload. Target: chunkgraph/pgvector-age:pg18-age1.7.0-vector0.8.1
 CREATE EXTENSION IF NOT EXISTS vector;
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
 

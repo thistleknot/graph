@@ -1,7 +1,16 @@
-"""Pins src/section_store.py guards D1-D5 against the local pgvector container, inside a transaction that is ROLLED BACK: nothing the tests write survives, and the
-sect_* DDL they run is rolled back with it when the tables do not exist yet. Six synthetic sections in three communities; no model, no network.
+"""| Stage | Mechanism | Tag | Ref |
+|---|---|---|---|
+| FIXTURE | Create small relational section graphs inside a forced rollback transaction. | [mandatory] | R1 |
+| COMPARE | Compare SQL neighbors with AGE Cypher neighbors on varied graph shapes. | [mandatory] | R2 |
+| BULK | Load 81,473 vertices and 10,000 relationships from relational COPY output and check counts/null scores. | [mandatory] | R3 |
+| CLEANUP | Roll back each fixture and AGE graph after assertions. | [contract] | R1 |
 
-Run:  pytest tests/test_section_store.py -v
+R1 Tests use an isolated disposable database and force rollback; no live rows persist.
+R2 The parity fixtures cover tied weights, high degree, multiple seeds, exclusions, disconnected nodes, null scores, and caps.
+R3 The scaled loader fixture compares source and graph counts, preserves null scores, and leaves no server CSV files. Neighbor behavior is covered by the varied small fixtures.
+Preconditions: the disposable database has pgvector and Apache AGE installed. Failure modes: any mismatch or AGE query failure fails the fixture.
+
+Run: pytest tests/test_section_store.py -v
 """
 from __future__ import annotations
 
@@ -10,12 +19,14 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from psycopg import sql
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
 
 import section_store as st
+import age_graph
 
 
 def test_or_query_ors_the_words_once_and_drops_punctuation():
@@ -148,6 +159,120 @@ def test_neighbours_rank_by_weight_exclude_seeds_and_cap(conn):
     assert [n["ord"] for n in out[2]] == [3, 1]                          # 2's edges: 3 (w2), 1 (w.5), 0 is a seed
     assert out[2][0]["weight"] == 2.0 and abs(out[2][0]["dense_sim"] - 0.8) < 1e-6
     assert [n["ord"] for n in st.neighbours(conn, b, [2], 1)[2]] == [3]
+
+
+@pytest.mark.parametrize(
+    "build_id,node_count,edges,seeds,cap",
+    [
+        (9201, 6, [
+            (0, 1, 0.9, 0.85, 0.75, 1), (0, 2, 0.9, 0.84, 0.76, 1),
+            (0, 3, 0.7, 0.65, 0.55, 2), (0, 4, 0.6, 0.56, 0.50, 0),
+            (2, 5, 0.8, 0.79, 0.61, 3),
+        ], [0, 2, 5], 2),
+        (9202, 4, [
+            (0, 1, 0.4, 0.30, 0.20, 1), (0, 2, 0.4, 0.31, 0.19, 1),
+            (1, 3, 0.9, 0.88, 0.82, 3), (2, 3, 0.9, 0.87, 0.83, 3),
+        ], [0, 1], 3),
+        (9203, 7, [
+            (0, 1, 0.1, 0.2, 0.3, 0), (2, 3, 0.1, None, 0.2, 0),
+            (3, 4, 0.5, 0.45, None, 2), (5, 6, 0.5, 0.55, 0.65, 2),
+        ], [2, 5, 1], 5),
+    ],
+)
+def test_age_neighbors_match_sql_on_varied_graphs(conn, build_id, node_count, edges, seeds, cap):
+    conn.execute("CREATE TEMP TABLE sect_build (build_id bigint PRIMARY KEY, n_nodes int, n_edges int)")
+    conn.execute("CREATE TEMP TABLE sect_node (build_id bigint, ord int, PRIMARY KEY(build_id, ord))")
+    conn.execute("CREATE TEMP TABLE sect_edge (build_id bigint, a int, b int, weight real, dense_sim real, sparse_sim real, sig smallint)")
+    conn.execute("CREATE TEMP VIEW sect_edge_sym AS "
+                 "SELECT build_id, a AS src, b AS dst, weight, dense_sim, sparse_sim, sig FROM sect_edge "
+                 "UNION ALL SELECT build_id, b, a, weight, dense_sim, sparse_sim, sig FROM sect_edge")
+    conn.execute("INSERT INTO sect_build VALUES (%s, %s, %s)", (build_id, node_count, len(edges)))
+    with conn.cursor() as cur:
+        cur.executemany("INSERT INTO sect_node VALUES (%s, %s)", [(build_id, ord_) for ord_ in range(node_count)])
+        cur.executemany(
+            "INSERT INTO sect_edge VALUES (%s, %s, %s, %s, %s, %s, %s)",
+            [(build_id, *edge) for edge in edges],
+        )
+
+    age_graph.rebuild_from_relational(conn, build_id)
+    assert age_graph.neighbours(conn, build_id, seeds, cap) == st.neighbours(conn, build_id, seeds, cap)
+
+
+def test_age_bulk_loader_scales_and_matches_relational_counts(conn):
+    """Check that server-side COPY feeds AGE's loader at the measured graph size.
+
+    Require: `conn` is the isolated rollback-only AGE test connection.
+    Guarantee: 81,473 vertices and 10,000 relationships load with exact counts.
+    Maintain: no fixture rows, AGE graph, or temporary CSV files survive the test transaction.
+    Assert: loaded counts match source counts and nullable scores remain null.
+
+    Args:
+        conn: Disposable PostgreSQL connection supplied by the test fixture.
+
+    Returns:
+        None.
+
+    Raises:
+        AssertionError: If loaded counts, null properties, or cleanup differ.
+
+    Called by:
+        pytest.
+
+    Depends on:
+        `age_graph.rebuild_from_relational` and AGE's graph label tables.
+    """
+    build_id, node_count, edge_count = 9204, 81473, 10000
+    conn.execute("CREATE TEMP TABLE sect_build (build_id bigint PRIMARY KEY, n_nodes int, n_edges int)")
+    conn.execute("CREATE TEMP TABLE sect_node (build_id bigint, ord int, PRIMARY KEY(build_id, ord))")
+    conn.execute("CREATE TEMP TABLE sect_edge (build_id bigint, a int, b int, weight real, dense_sim real, sparse_sim real, sig smallint)")
+    conn.execute("CREATE TEMP VIEW sect_edge_sym AS "
+                 "SELECT build_id, a AS src, b AS dst, weight, dense_sim, sparse_sim, sig FROM sect_edge "
+                 "UNION ALL SELECT build_id, b, a, weight, dense_sim, sparse_sim, sig FROM sect_edge")
+    conn.execute("INSERT INTO sect_build VALUES (%s, %s, %s)", (build_id, node_count, edge_count))
+    conn.execute(
+        "INSERT INTO sect_node SELECT %s, ord FROM generate_series(0, %s - 1) AS ord",
+        (build_id, node_count),
+    )
+    conn.execute(
+        "INSERT INTO sect_edge "
+        "SELECT %s, i - 1, i, 0.5, CASE WHEN i = 1 THEN NULL::real ELSE 0.4 END, "
+        "CASE WHEN i = 2 THEN NULL::real ELSE 0.6 END, 3 "
+        "FROM generate_series(1, %s) AS i",
+        (build_id, edge_count),
+    )
+
+    age_graph.rebuild_from_relational(conn, build_id)
+    assert conn.execute("SELECT count(*) FROM sect_node WHERE build_id = %s", (build_id,)).fetchone()[0] == node_count
+    assert conn.execute("SELECT count(*) FROM sect_edge WHERE build_id = %s", (build_id,)).fetchone()[0] == edge_count
+    with age_graph._age_context(conn):
+        vertex_count = conn.execute(
+            sql.SQL("SELECT count(*) FROM {}.{}").format(
+                sql.Identifier(age_graph.graph_name(build_id)), sql.Identifier("Section"),
+            )
+        ).fetchone()[0]
+        relationship_count = conn.execute(
+            sql.SQL("SELECT count(*) FROM {}.{}").format(
+                sql.Identifier(age_graph.graph_name(build_id)), sql.Identifier("SIMILAR_TO"),
+            )
+        ).fetchone()[0]
+        null_dense = conn.execute(
+            sql.SQL("SELECT count(*) FROM {}.{} WHERE properties->'\"dense_sim\"'::ag_catalog.agtype = 'null'::ag_catalog.agtype").format(
+                sql.Identifier(age_graph.graph_name(build_id)), sql.Identifier("SIMILAR_TO"),
+            )
+        ).fetchone()[0]
+        null_sparse = conn.execute(
+            sql.SQL("SELECT count(*) FROM {}.{} WHERE properties->'\"sparse_sim\"'::ag_catalog.agtype = 'null'::ag_catalog.agtype").format(
+                sql.Identifier(age_graph.graph_name(build_id)), sql.Identifier("SIMILAR_TO"),
+            )
+        ).fetchone()[0]
+    assert (vertex_count, relationship_count) == (node_count, edge_count)
+    assert null_dense == 1
+    assert null_sparse == 1
+    staged_files = conn.execute(
+        "SELECT count(*) FROM pg_ls_dir(%s) AS files(name) WHERE name LIKE %s",
+        (age_graph.AGE_IMPORT_DIR, f"age_section_{build_id}_%"),
+    ).fetchone()[0]
+    assert staged_files == 0
 
 
 def test_genre_vectors_are_stored_with_their_axes_and_seed_the_dense_arm_from_emb_b(conn):

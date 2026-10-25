@@ -78,6 +78,21 @@ Measured (`.tmp/hop_grid_stage_a.log`, `.tmp/mask_vs_topup.log`, 200 queries eac
 finding the source section of a sentence (0.445 to 0.450 against 0.555; second query 0.41 against 0.505), hops 1, 2 and 3 score the same, and
 `topup` ties `mask`. Stage B (60 questions, `docs/experiments/stage_b_result.txt`): the walk is worse than a same-size hybrid list at finding the source section at every hop setting and search count (0.48 against 0.67 with 3 searches at hops 2, paired 2 against 13), hops 1-3 are not distinguishable, and cross-encoder precision is a small loss. Answer quality is not measured. The replaced Jev gate (`docs/experiments/jev_gate_probe_result.txt`, run before it was removed; 60 in-corpus questions, all 415 summaries scored solo): at 0.50 no community passes for 29 of 60 (0.48), so the reject rule rejects them; the source section's own community passes in 13 of 60 and ranks within the top 10 in 24; raising or lowering the cut only trades rejections against that. With the gate in the stage B loop (`stage_b_gate_result.txt`) 35 of 60 are rejected, and on the 25 answered the walk finds the source section in 9 against 15 for a same-size hybrid list; over all 60 the whole system finds it in 0.15-0.17 against 0.52 for a plain hybrid list (known-item sentences, source-section recall, not answer quality). A model-judged blind comparison of four answer arms on the 25 answered questions (`docs/experiments/blind_cmp_result.txt`) ranks them 2.70 / 2.48 / 2.48 / 2.34 (hybrid only / + subgraph / + global / + agent; random is 2.50), no difference; judge and writer are the same small model and no human read the answers. That test cannot see whether hops improve an answer; answer quality is not measured.
 
+### PostgreSQL AGE retrieval path
+
+The live PostgreSQL image runs Apache AGE 1.7.0 on the same PostgreSQL 18 / pgvector 0.8.1 base. The
+existing `graph_graphdata` volume is preserved, and the live `xpa` build 1163 has an AGE graph. For arXiv
+retrieval, AGE mirrors each `sect_build` section vertex and `sect_edge` similarity relationship; it
+handles neighbor expansion only. Dense and sparse ranking, BM25, section text, metadata, communities,
+and answer synthesis remain in their existing relational/API path. `graph_backend` defaults to `sql`;
+AGE must be selected explicitly and reports the backend actually used. A missing or mismatched AGE graph
+returns an error rather than silently switching back to SQL.
+
+`src/owui_filter.py` remains the SQL-path reference and calls `/agent`; it does not query JSONB itself.
+`src/owui_filter_age.py` is the separate opt-in Function and requires the API to confirm `graph_backend=age`.
+The JSONB fields in the general ChunkGraph schema remain for their current term and metadata consumers;
+this retrieval change does not convert arbitrary payload fields into graph relationships.
+
 ### What the map looks like
 
 One card per community, largest first, with its Dunning terms, its top entities, its exemplar sections and the

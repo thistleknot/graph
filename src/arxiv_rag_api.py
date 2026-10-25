@@ -10,6 +10,7 @@
 | EXPAND | Rebuild each hit from eligible BM25 chunks and preserve its whole-section response. | [mandatory] | Q3, Q10 |
 | ANNOTATE | Add community, URL, and version metadata. | [mandatory] | Q3 |
 | AGENT | `POST /agent` returns the agent answer separately from text-bearing evidence records. | [contract] | A1, A2 |
+| AGGREGATE JOB | Submit, inspect, and resume bounded global semantic tallies. | [opt] | A5 |
 | BOUND | Share a configurable deadline across internal model calls and retries. | [contract] | A4 |
 
 Q1 A query is weighted with the live build's own vocabulary and idf. A term the build never saw carries no
@@ -40,6 +41,13 @@ Q7 API startup must verify a live build, load and validate the BPE chunk sparsev
 Q8 `/agent` reads graph sections and community terms from `CHUNKGRAPH_DSN` and BM25 vectors/tokenizer/metadata from `ARXIV_BM25_DSN`; startup verifies complete section-key coverage before serving.
 Q9 Startup migrates legacy section embeddings and BM25 vectors into their narrow tables before retrieval validation; the generation's column numbering is checked against the zero-based query representation.
 Q10 `/search` preserves its whole-section response shape and sparse/dense/hybrid modes while using the exact split-store retrieval path; no active API route queries legacy HNSW vectors.
+Q11 `/agent` accepts `graph_backend=sql|age`; SQL is the default, AGE requires a matching build graph, and backend identity is returned in the report.
+Q12 `POST /aggregate` pins the live xpa source build, model/prompt identity, random seed, draw order, and fixed call budget before work begins.
+Q13 `GET /aggregate/{job_id}` reports queued/running/incomplete/completed/failed state, call counts, result, and errors.
+Q14 `POST /aggregate/{job_id}/resume` reuses committed responses and unchanged budgets; uncertain calls remain visible failures.
+Q15 Aggregate work runs with a bounded worker pool and uses the existing tally SQLite database for durable job state.
+Q16 `/agent` keeps retrieval as its default; `answer_kind=auto` routes only recognizable corpus-wide count questions to a bounded semantic tally job.
+Q17 The optional aggregate job SQLite path configures both job state and semantic label checkpoints; default storage is the shared `.tmp/global_aggregate_tally.sqlite` file.
 
 CLOSED: `/search` and `/agent` share the exact split-store retrieval path; `/agent` adds graph-agent iteration and selected-term controls.
 Lazy first-request loading of local retrieval models is replaced by startup warmup. No Open WebUI chat bridge or
@@ -58,24 +66,29 @@ from __future__ import annotations
 
 import argparse
 from contextlib import asynccontextmanager
+from dataclasses import asdict
+import hashlib
 import logging
+import random
+import re
 import sys
 import threading
 import time
 import urllib.error
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Callable, Literal, Mapping
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
 
 import numpy as np
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Response
 from pydantic import BaseModel, Field
 
 import config
+from aggregate_jobs import AggregateJobs
 import sparsevec_store as ss
 import section_store as store
 from domain_corpora import SECTION_DISPLAY_CAP, arxiv_url, reaggregate_section
@@ -493,6 +506,75 @@ class AgentRequest(BaseModel):
     max_chars: int = Field(default=6000, ge=500, le=20000)
     selected_terms: list[str] = Field(default_factory=list, max_length=32, description="Community Dunning terms to add to lexical retrieval and use for post-fusion community reweighting.")
     timeout_seconds: float = Field(default=180.0, ge=5.0, le=480.0, description="Shared wall-time budget for history resolution and graph-agent model calls.")
+    graph_backend: Literal["sql", "age"] = Field(default="sql", description="Section-neighbor traversal backend; AGE never falls back to SQL.")
+    answer_kind: Literal["retrieval", "auto", "lexical_term", "semantic", "summary"] = Field(
+        default="retrieval", description="Answer path; retrieval remains the compatibility default.")
+
+
+class AggregateRequest(BaseModel):
+    """Validated request contract for one bounded global semantic tally.
+
+    Require: predicate describes a binary corpus property.
+    Guarantee: budgets and source scope are bounded and explicit.
+    Maintain: model defaults to the configured classifier when omitted.
+    Assert: pilot budget is no larger than the total call budget.
+    """
+
+    predicate: str = Field(min_length=1, max_length=2000)
+    model: str | None = Field(None, max_length=200)
+    seed: int = Field(default=0, ge=0, le=2**31 - 1)
+    budget: int = Field(default=400, ge=1, le=2000)
+    pilot_budget: int = Field(default=200, ge=1, le=2000)
+    target_halfwidth: float = Field(default=0.02, gt=0, le=1)
+
+
+def aggregate_population(conn, source_build_id: int) -> dict[str, int]:
+    """Load one canonical paper and primary community per source paper.
+
+    Require: source build exists in sect_node.
+    Guarantee: modal section community with lowest-ID tie break matches global_aggregate grouping.
+    Maintain: only stable IDs and assignments are loaded; source text stays out of the job manifest.
+    Assert: each canonical paper has exactly one selected primary community.
+
+    Args:
+        conn: PostgreSQL connection to the graph corpus.
+        source_build_id: Immutable section build identifier.
+    Returns:
+        Canonical paper ID to primary community mapping.
+    Raises:
+        RuntimeError: If the selected build has no canonical papers.
+    """
+    rows = conn.execute(
+        "WITH counts AS (SELECT CASE WHEN right(doc_id,8)='_methods' THEN left(doc_id,length(doc_id)-8) "
+        "ELSE doc_id END AS paper_id, community AS community_id, count(*) AS n FROM sect_node "
+        "WHERE build_id=%s GROUP BY 1,2), ranked AS (SELECT paper_id, community_id, "
+        "row_number() OVER (PARTITION BY paper_id ORDER BY n DESC, community_id ASC) AS rn FROM counts) "
+        "SELECT paper_id, community_id FROM ranked WHERE rn=1 ORDER BY paper_id", (source_build_id,)
+    ).fetchall()
+    if not rows:
+        raise RuntimeError(f"source build {source_build_id} contains no canonical papers")
+    return {paper_id: community_id for paper_id, community_id in rows}
+
+
+def infer_aggregate_predicate(question: str) -> str | None:
+    """Recognize explicit global count questions and extract their binary predicate.
+
+    Require: a natural-language question.
+    Guarantee: returns a predicate only for explicit corpus count/prevalence wording.
+    Maintain: ambiguous questions fall through to section retrieval.
+    Assert: returned text excludes the count lead-in and is non-empty.
+
+    Args:
+        question: User's natural-language question.
+    Returns:
+        Predicate text, or None when count intent is not explicit.
+    """
+    match = re.search(
+        r"\b(?:how many|what (?:fraction|proportion|percentage)|what percent(?:age)? of)\s+papers?\s+"
+        r"(?:discuss|mention|study|studied|use|using|contain|include|are about|focus on|address)\s+(.+?)\s*[?!.]*$",
+        question.strip(), re.IGNORECASE,
+    )
+    return match.group(1).strip() if match and match.group(1).strip() else None
 
 
 def json_safe(value: Any) -> Any:
@@ -511,13 +593,25 @@ def json_safe(value: Any) -> Any:
 
 
 def create_app(label: str = BM25_LABEL, dsn: str | None = None, *, warm_start: bool = True,
-               bm25_dsn: str | None = None) -> FastAPI:
+               bm25_dsn: str | None = None,
+               aggregate_jobs_path: str | Path | None = None) -> FastAPI:
     """Require: database and local model assets for `label`; guarantee: warm search and agent routes over live builds.
 
     Maintain: `/search` retains its documented response contract and modes; `warm_start=False` is test-only.
     Assert: startup validates both stores and warms the section encoder and cross-encoder before serving.
+
+    Args:
+        label: Live BM25 generation label.
+        dsn: Optional graph database connection string.
+        warm_start: Whether startup validates and warms retrieval dependencies.
+        bm25_dsn: Optional separate BM25 database connection string.
+        aggregate_jobs_path: SQLite location shared by durable jobs and semantic labels.
+    Returns:
+        Configured FastAPI application.
     """
     state = {"build": None}
+    jobs_path = Path(aggregate_jobs_path) if aggregate_jobs_path else ROOT / ".tmp" / "global_aggregate_tally.sqlite"
+    aggregate_jobs = AggregateJobs(jobs_path, max_workers=2)
 
     def connect():
         return ss.connect(dsn) if dsn else ss.connect()
@@ -549,7 +643,10 @@ def create_app(label: str = BM25_LABEL, dsn: str | None = None, *, warm_start: b
     async def lifespan(_app):
         if warm_start:
             warm_retrieval()
-        yield
+        try:
+            yield
+        finally:
+            aggregate_jobs.close(wait=True)
 
     app = FastAPI(
         title="arXiv paper library",
@@ -578,9 +675,187 @@ def create_app(label: str = BM25_LABEL, dsn: str | None = None, *, warm_start: b
             conn.close()
             bm25_conn.close()
 
+    def run_aggregate(job_id: str) -> dict[str, Any]:
+        """Run a pinned semantic tally from the durable job manifest.
+
+        Require: job was created with a source build, complete paper population, and frozen draw order.
+        Guarantee: each classifier response passes through the durable job-call ledger.
+        Maintain: model calls, source text, and database connections remain worker-local.
+        Assert: the population digest still matches the submitted manifest.
+
+        Args:
+            job_id: Durable identifier of a queued or resumed job.
+        Returns:
+            JSON-safe tally result.
+        Raises:
+            KeyError: If the job disappeared before execution.
+            RuntimeError: If its pinned population or draw order changed.
+        """
+        import global_aggregate as ga
+
+        snapshot = aggregate_jobs.get(job_id)
+        if snapshot is None:
+            raise KeyError(job_id)
+        request_data = snapshot.manifest["request"]
+        source_build_id = int(snapshot.manifest["source_build_id"])
+        conn = connect()
+        try:
+            population = aggregate_population(conn, source_build_id)
+            digest = hashlib.sha256("\n".join(f"{pid}\t{population[pid]}" for pid in sorted(population)).encode()).hexdigest()
+            if digest != snapshot.manifest["population_sha256"]:
+                raise RuntimeError("pinned source population changed after job submission")
+            expected_order = snapshot.manifest["draw_order"]
+            for community_id in sorted(set(population.values())):
+                paper_ids = sorted(pid for pid, cid in population.items() if cid == community_id)
+                random.Random(f"{snapshot.manifest['seed']}:{community_id}").shuffle(paper_ids)
+                if expected_order.get(str(community_id)) != paper_ids:
+                    raise RuntimeError("pinned sample draw order no longer matches the source population")
+            text_loader = lambda ids, cap: ga.load_paper_texts(conn, source_build_id, ids, cap)
+            selected_model = (request_data.get("model") or ga.interpret.OPENROUTER_MODEL).removeprefix("openrouter/")
+            config_obj = ga.SemanticTallyConfig(
+                budget=int(snapshot.manifest["budget"]),
+                sample_budget=int(snapshot.manifest["budget"]),
+                pilot_budget=min(int(snapshot.manifest["pilot_budget"]), int(snapshot.manifest["budget"])),
+                target_halfwidth=float(snapshot.manifest["target_halfwidth"]),
+                seed=int(snapshot.manifest["seed"]),
+                classifier_version=str(snapshot.manifest["classifier_version"]),
+                cache_path=jobs_path,
+            )
+            provider_attempts = 0
+
+            def durable_call(key: str, callback: Callable[[], Mapping]) -> Mapping:
+                """Track whether this worker invokes the provider or reuses a committed response."""
+                nonlocal provider_attempts
+
+                def counted_callback():
+                    nonlocal provider_attempts
+                    provider_attempts += 1
+                    return callback()
+
+                return aggregate_jobs.call(job_id, key, counted_callback)
+
+            result = ga.semantic_tally(
+                population, str(request_data["predicate"]), text_loader,
+                lambda predicate, text, truncated: ga.classify_predicate(
+                    predicate, text, truncated, model=selected_model),
+                config_obj, source_build_id,
+                call_executor=durable_call,
+            )
+            result_data = asdict(result)
+            result_data["provider_attempts_this_run"] = provider_attempts
+            result_data["durable_responses_reused"] = result.calls - provider_attempts
+            return result_data
+        finally:
+            conn.close()
+
+    @app.post("/aggregate", status_code=202, operation_id="submit_global_aggregate",
+              summary="Submit a resumable corpus-wide semantic tally")
+    def submit_aggregate(request: AggregateRequest, response: Response):
+        """Pin a source population and enqueue one bounded semantic count.
+
+        Args:
+            request: Predicate, model, seed, sample budget, and stopping target.
+            response: FastAPI response used to return HTTP 202 and the job location.
+        Returns:
+            Submission receipt containing job ID and immutable manifest.
+        Raises:
+            HTTPException: If source build, strata count, or worker pool is unavailable.
+        Require: The live xpa build is readable and budgets cover every community.
+        Guarantee: Job inputs are persisted before the receipt is returned.
+        Maintain: The submitted budget and sample order do not change on resume.
+        Assert: Every submitted paper ID belongs to exactly one primary community.
+        """
+        import global_aggregate as ga
+
+        if request.pilot_budget > request.budget:
+            raise HTTPException(status_code=422, detail="pilot_budget cannot exceed budget")
+        conn = connect()
+        try:
+            live = store.live_build(conn, "xpa")
+            if live is None:
+                raise HTTPException(status_code=503, detail="no live xpa source build")
+            source_build_id = int(live[0])
+            population = aggregate_population(conn, source_build_id)
+        finally:
+            conn.close()
+        if request.budget < len(set(population.values())) or request.pilot_budget < len(set(population.values())):
+            raise HTTPException(status_code=422, detail="budgets must cover every primary community")
+        draw_order = {}
+        for community_id in sorted(set(population.values())):
+            paper_ids = sorted(pid for pid, cid in population.items() if cid == community_id)
+            random.Random(f"{request.seed}:{community_id}").shuffle(paper_ids)
+            draw_order[str(community_id)] = paper_ids
+        population_digest = hashlib.sha256("\n".join(
+            f"{pid}\t{population[pid]}" for pid in sorted(population)).encode()).hexdigest()
+        classifier_model = (request.model or ga.interpret.OPENROUTER_MODEL).removeprefix("openrouter/")
+        classifier_version = classifier_model + ":" + ga.PREDICATE_PROMPT_VERSION
+        manifest = {
+            "source_build_id": source_build_id,
+            "population_sha256": population_digest,
+            "population_size": len(population),
+            "community_count": len(draw_order),
+            "seed": request.seed,
+            "draw_order": draw_order,
+            "budget": request.budget,
+            "pilot_budget": request.pilot_budget,
+            "target_halfwidth": request.target_halfwidth,
+            "classifier_version": classifier_version,
+            "prompt_version": ga.PREDICATE_PROMPT_VERSION,
+        }
+        job_id = aggregate_jobs.create(request.model_dump(), manifest)
+        if not aggregate_jobs.start(job_id, run_aggregate):
+            raise HTTPException(status_code=503, detail="aggregate worker pool is unavailable")
+        response.status_code = 202
+        response.headers["Location"] = f"/aggregate/{job_id}"
+        return {"job_id": job_id, "status": "queued", "manifest": manifest}
+
+    @app.get("/aggregate/{job_id}", operation_id="get_global_aggregate")
+    def get_aggregate(job_id: str):
+        """Return durable progress, uncertainty, errors, and completed results.
+
+        Args:
+            job_id: Durable job identifier.
+        Returns:
+            Persisted job snapshot.
+        Raises:
+            HTTPException: If the job does not exist.
+        Require: job_id is URL-decoded by FastAPI.
+        Guarantee: Response includes persisted status and call counts.
+        Maintain: Read operations do not mutate the job.
+        Assert: Snapshot data is JSON serializable.
+        """
+        snapshot = aggregate_jobs.get(job_id)
+        if snapshot is None:
+            raise HTTPException(status_code=404, detail="aggregate job not found")
+        return asdict(snapshot)
+
+    @app.post("/aggregate/{job_id}/resume", status_code=202, operation_id="resume_global_aggregate")
+    def resume_aggregate(job_id: str):
+        """Resume a pinned job without increasing its original call budget.
+
+        Args:
+            job_id: Durable job identifier.
+        Returns:
+            HTTP 202 receipt for accepted work.
+        Raises:
+            HTTPException: For absent, active, completed, or uncertain jobs.
+        Require: Job has no unconfirmed provider call.
+        Guarantee: Accepted work reuses the persisted manifest and completed responses.
+        Maintain: The total call budget remains unchanged.
+        Assert: A runner is scheduled only for incomplete or failed jobs.
+        """
+        snapshot = aggregate_jobs.get(job_id)
+        if snapshot is None:
+            raise HTTPException(status_code=404, detail="aggregate job not found")
+        if snapshot.calls_uncertain:
+            raise HTTPException(status_code=409, detail="job has an unconfirmed provider call; reconcile before resume")
+        if not aggregate_jobs.resume(job_id, run_aggregate):
+            raise HTTPException(status_code=409, detail=f"job cannot resume from {snapshot.status}")
+        return {"job_id": job_id, "status": "queued"}
+
     @app.post("/agent", operation_id="answer_with_section_graph",
               summary="Answer with the section-graph agent and return its trace and evidence")
-    def agent_ep(request: AgentRequest):
+    def agent_ep(request: AgentRequest, response: Response):
         """Require: validated question and live xpa graph. Guarantee: JSON-safe answer, trace, gate, and bounded evidence.
 
         Maintain: one request-local connection and only public report fields. Assert: close the connection on every exit.
@@ -588,11 +863,23 @@ def create_app(label: str = BM25_LABEL, dsn: str | None = None, *, warm_start: b
         import section_graphrag as graph
         import section_store as store
 
+        if request.answer_kind in {"lexical_term", "summary"}:
+            raise HTTPException(status_code=501,
+                                detail=f"answer_kind={request.answer_kind} is not implemented; use auto, semantic, or retrieval")
+        predicate = (infer_aggregate_predicate(request.question) if request.answer_kind == "auto" else
+                     request.question if request.answer_kind == "semantic" else None)
+        if predicate:
+            receipt = submit_aggregate(AggregateRequest(
+                predicate=predicate,
+                model=request.model,
+            ), response)
+            return {"aggregate_job": receipt, "answer_kind": "semantic", "question": request.question}
+
         deadline = time.monotonic() + request.timeout_seconds
         conn = connect()
         bm25_conn = connect_bm25()
         try:
-            sg = graph.SectionGraph(conn, "xpa", bm25_conn=bm25_conn)
+            sg = graph.SectionGraph(conn, "xpa", bm25_conn=bm25_conn, graph_backend=request.graph_backend)
             selected_model = request.model.removeprefix("openrouter/") if request.model else None
             question = request.question
             if request.history:
@@ -680,10 +967,14 @@ def create_app(label: str = BM25_LABEL, dsn: str | None = None, *, warm_start: b
             summaries = store.summaries(conn, sg.build, sorted(community_ids)) if community_ids else {}
             report["communities"] = summaries
             report["build"] = sg.build
+            report["graph_backend"] = request.graph_backend
             return json_safe(report)
         except TimeoutError as exc:
             LOG.warning("Graph agent timed out: %s", exc)
             raise HTTPException(504, f"Graph agent exceeded its {request.timeout_seconds:g}-second request budget: {exc}") from exc
+        except RuntimeError as exc:
+            LOG.warning("Graph agent backend unavailable: %s", exc)
+            raise HTTPException(503, f"Graph retrieval backend unavailable: {exc}") from exc
         except urllib.error.HTTPError as exc:
             LOG.warning("Graph agent upstream HTTP error: %s", exc.code)
             raise HTTPException(502, f"OpenRouter model request failed with HTTP {exc.code}: {exc.reason}") from exc

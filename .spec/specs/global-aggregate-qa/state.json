@@ -1,0 +1,25 @@
+{
+  "feature": "global-aggregate-qa",
+  "kind": "feature",
+  "phase": "implement",
+  "approvals": {
+    "requirements": "2026-10-25: user approved proposed plan and requested implementation",
+    "design": "2026-10-25: user approved proposed plan and requested implementation",
+    "tasks": "2026-10-25: user approved proposed plan and requested implementation"
+  },
+  "scope": [
+    "src/global_aggregate.py",
+    "tests/test_global_aggregate.py",
+    "sql/*.sql",
+    "docs/cookbook/*.py",
+    "docs/cookbook/*.md",
+    "src/aggregate_jobs.py",
+    "src/arxiv_rag_api.py",
+    "src/interpret.py",
+    "src/owui_filter_age.py",
+    "tests/test_aggregate_jobs.py",
+    "tests/test_arxiv_rag_api.py",
+    "tests/test_owui_filter.py"
+  ],
+  "created": "2026-10-25T17:03:32Z"
+}
