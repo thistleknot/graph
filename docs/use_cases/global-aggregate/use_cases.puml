@@ -1,0 +1,19 @@
+@startuml Global Aggregate
+left to right direction
+
+actor "Operator" as operator
+actor "Chat User" as chatuser
+actor "Open WebUI" as openwebui
+actor "LLM Provider" as llmprovider
+
+rectangle "Global Aggregate" {
+    usecase "UC-009\nBuild Global Aggregate Index" as UC009
+    usecase "UC-010\nAnswer Global Question" as UC010
+}
+
+operator --> UC009
+chatuser --> UC010
+openwebui --> UC010
+llmprovider --> UC010
+
+@enduml

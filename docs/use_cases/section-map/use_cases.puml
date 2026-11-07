@@ -1,0 +1,18 @@
+@startuml Section Map
+left to right direction
+
+actor "Operator" as operator
+actor "LLM Provider" as llmprovider
+
+rectangle "Section Map" {
+    usecase "UC-004\nBuild Section Map" as UC004
+    usecase "UC-005\nEnrich Section Map" as UC005
+    usecase "UC-006\nReview Community Map" as UC006
+}
+
+operator --> UC004
+operator --> UC005
+operator --> UC006
+llmprovider --> UC005
+
+@enduml

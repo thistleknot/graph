@@ -1,0 +1,35 @@
+@startuml Modules
+left to right direction
+
+actor "Operator" as operator
+actor "Scheduler" as scheduler
+actor "Chat User" as chatuser
+actor "Open WebUI" as openwebui
+actor "API Client" as apiclient
+actor "LLM Provider" as llmprovider
+
+package "Chunk Graph" as chunkgraph
+package "Lexical Index" as lexical
+package "Section Map" as sectionmap
+package "Question Answering" as qa
+package "Global Aggregate" as aggregate
+
+operator --> chunkgraph
+operator --> lexical
+operator --> sectionmap
+operator --> qa
+operator --> aggregate
+scheduler --> lexical
+chatuser --> qa
+chatuser --> aggregate
+openwebui --> qa
+openwebui --> aggregate
+apiclient --> qa
+llmprovider --> sectionmap
+llmprovider --> qa
+llmprovider --> aggregate
+qa ..> lexical : "keyword search"
+qa ..> sectionmap : "sections and communities"
+aggregate ..> sectionmap : "pinned section build"
+
+@enduml

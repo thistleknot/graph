@@ -1,0 +1,15 @@
+@startuml Lexical Index
+left to right direction
+
+actor "Operator" as operator
+actor "Scheduler" as scheduler
+
+rectangle "Lexical Index" {
+    usecase "UC-002\nBuild Lexical Index" as UC002
+    usecase "UC-003\nKeep Corpus Current" as UC003
+}
+
+operator --> UC002
+scheduler --> UC003
+
+@enduml

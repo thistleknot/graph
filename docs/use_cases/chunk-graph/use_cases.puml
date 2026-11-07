@@ -1,0 +1,12 @@
+@startuml Chunk Graph
+left to right direction
+
+actor "Operator" as operator
+
+rectangle "Chunk Graph" {
+    usecase "UC-001\nBuild Chunk Graph" as UC001
+}
+
+operator --> UC001
+
+@enduml

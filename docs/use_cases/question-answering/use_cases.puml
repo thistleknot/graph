@@ -1,0 +1,21 @@
+@startuml Question Answering
+left to right direction
+
+actor "Operator" as operator
+actor "Chat User" as chatuser
+actor "Open WebUI" as openwebui
+actor "API Client" as apiclient
+actor "LLM Provider" as llmprovider
+
+rectangle "Question Answering" {
+    usecase "UC-007\nAsk Question" as UC007
+    usecase "UC-008\nLook Up Sections" as UC008
+}
+
+operator --> UC007
+chatuser --> UC007
+openwebui --> UC007
+llmprovider --> UC007
+apiclient --> UC008
+
+@enduml
